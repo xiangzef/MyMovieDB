@@ -1,3 +1,13 @@
+# Info 目录（运行时数据，不跟踪）
+info/movies/*
+info/backup/*
+info/covers/*
+info/logs/*
+!info/movies/.gitkeep
+!info/backup/.gitkeep
+!info/covers/.gitkeep
+!info/logs/.gitkeep
+
 # Python
 __pycache__/
 *.py[cod]

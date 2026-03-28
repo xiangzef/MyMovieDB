@@ -851,7 +851,7 @@
                     </div>
                     <div class="video-actions">
                         <button v-if="v.code && !v.scraped" class="btn btn-sm btn-success" @click="scrapeOneLocal(v)" :disabled="scrapeRunning">刮削</button>
-                        <button v-if="v.scraped" class="btn btn-sm btn-secondary" @click="showMovieDetail(v.movie_id)">详情</button>
+                        <button v-if="v.scraped && v.movie_id" class="btn btn-sm btn-secondary" @click="showMovieDetail(v.movie_id)">详情</button>
                         <button class="btn btn-sm btn-danger" @click="deleteLocalVideo(v.id)">删除</button>
                     </div>
                 </div>
@@ -1036,12 +1036,20 @@ createApp({
                     ? `${API}/search?q=${encodeURIComponent(searchKeyword.value)}&page=${currentPage.value}&page_size=${pageSize.value}`
                     : `${API}/movies?page=${currentPage.value}&page_size=${pageSize.value}`;
                 const res = await fetch(url);
+                if (!res.ok) {
+                    showToast(`影片库加载失败 (HTTP ${res.status})，请重启后端`, 'error');
+                    movies.value = [];
+                    total.value = 0;
+                    loading.value = false;
+                    return;
+                }
                 const data = await res.json();
                 movies.value = data.items || [];
                 total.value = data.total || 0;
             } catch (e) {
-                showToast('获取影片失败', 'error');
+                showToast('影片库加载失败，请检查后端是否运行', 'error');
                 movies.value = [];
+                total.value = 0;
             }
             loading.value = false;
         };
@@ -1236,11 +1244,17 @@ createApp({
             document.body.style.overflow = '';
         };
         const showMovieDetail = async (movieId) => {
+            if (!movieId) return showToast('影片信息不完整，请重新刮削', 'error');
             try {
                 const res = await fetch(`${API}/movies/${movieId}`);
+                if (res.status === 404) return showToast('该影片已被删除', 'error');
+                if (!res.ok) {
+                    showToast(`获取详情失败 (HTTP ${res.status})，请重启后端`, 'error');
+                    return;
+                }
                 const m = await res.json();
                 showDetail(m);
-            } catch (e) { showToast('获取详情失败', 'error'); }
+            } catch (e) { showToast('网络错误，请检查后端连接', 'error'); }
         };
         const getCoverUrl = (m, type = 'poster') => {
             // 优先级：poster_path / thumb_path / fanart_path > local_cover_path > cover_url
@@ -1429,8 +1443,10 @@ createApp({
                 const data = await res.json();
                 if (data.success) {
                     showToast(`刮削成功: ${data.movie.title}`, 'success');
+                    // 同时刷新本地视频库和影片库，保证两侧数据同步
                     loadLocalVideos();
                     loadSources();
+                    loadMovies();
                 } else {
                     showToast(`刮削失败: ${data.message}`, 'error');
                 }

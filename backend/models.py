@@ -1,26 +1,29 @@
 """
 数据模型定义
+Pydantic v2 兼容，所有可选字段均用 | None 语法，extra='ignore' 防止意外字段报错
 """
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Optional, List
 from datetime import datetime
 
 
 class MovieBase(BaseModel):
     """影片基础模型"""
-    code: str                    # 影片编号，如 MIUM-1211
-    title: str                   # 影片标题
-    title_jp: Optional[str] = None  # 日文标题
-    release_date: Optional[str] = None  # 发布日期
-    duration: Optional[int] = None  # 时长（分钟）
-    studio: Optional[str] = None  # 制作商
-    maker: Optional[str] = None  # 片商
-    director: Optional[str] = None  # 导演
-    cover_url: Optional[str] = None  # 封面图 URL
-    preview_url: Optional[str] = None  # 预览图 URL
-    genres: List[str] = []       # 类别标签
-    actors: List[str] = []       # 演员（女优）
-    actors_male: List[str] = []  # 男优
+    model_config = ConfigDict(extra='ignore')
+
+    code: str
+    title: str
+    title_jp: str | None = None
+    release_date: str | None = None
+    duration: int | None = None
+    studio: str | None = None
+    maker: str | None = None
+    director: str | None = None
+    cover_url: str | None = None
+    preview_url: str | None = None
+    genres: List[str] | None = None
+    actors: List[str] | None = None
+    actors_male: List[str] | None = None
 
 
 class MovieCreate(MovieBase):
@@ -33,27 +36,24 @@ class MovieResponse(MovieBase):
     id: int
     created_at: datetime
     updated_at: datetime
-    local_video_id: Optional[int] = None
-    # 本地多图路径（来自 local_videos 表的关联记录）
-    fanart_path: Optional[str] = None
-    poster_path: Optional[str] = None
-    thumb_path: Optional[str] = None
-
-    class Config:
-        from_attributes = True
+    local_video_id: int | None = None
+    # 本地多图路径（来自 local_videos 表的 LEFT JOIN 关联）
+    fanart_path: str | None = None
+    poster_path: str | None = None
+    thumb_path: str | None = None
 
 
 class ScrapeRequest(BaseModel):
     """刮削请求"""
-    keyword: str  # 搜索关键词，如影片编号 MIUM-1211
-    save_cover: bool = True  # 是否保存封面图到本地
+    keyword: str
+    save_cover: bool = True
 
 
 class ScrapeResponse(BaseModel):
     """刮削响应"""
     success: bool
     message: str
-    movie: Optional[MovieResponse] = None
+    movie: MovieResponse | None = None
 
 
 class MovieListResponse(BaseModel):

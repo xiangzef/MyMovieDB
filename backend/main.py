@@ -325,13 +325,21 @@ async def get_movies(
 ):
     """获取影片列表"""
     total, movies = db.get_all_movies(page, page_size)
-    
-    # 转换数据格式
+
     items = []
+    errors = []
     for movie in movies:
-        movie = db.row_to_movie_response(movie)
-        items.append(MovieResponse(**movie))
-    
+        try:
+            movie = db.row_to_movie_response(movie)
+            items.append(MovieResponse(**movie))
+        except Exception as e:
+            errors.append((movie.get('id'), movie.get('code'), str(e)[:80]))
+
+    # 如果有失败项，记录但不阻断响应
+    if errors:
+        import logging
+        logging.warning(f"[get_movies] {len(errors)} 条记录转换失败: {errors}")
+
     return MovieListResponse(
         total=total,
         page=page,
@@ -344,24 +352,32 @@ async def get_movies(
 async def get_movie(movie_id: int):
     """获取单个影片详情"""
     movie = db.get_movie_by_id(movie_id)
-    
+
     if not movie:
         raise HTTPException(status_code=404, detail="影片不存在")
-    
+
     movie = db.row_to_movie_response(movie)
-    return MovieResponse(**movie)
+    try:
+        return MovieResponse(**movie)
+    except Exception as e:
+        logging.error(f"[get_movie] Pydantic 验证失败 id={movie_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"影片数据格式错误 (id={movie_id}): {str(e)[:100]}")
 
 
 @app.get("/movies/code/{code}", response_model=MovieResponse)
 async def get_movie_by_code(code: str):
     """根据编号获取影片"""
     movie = db.get_movie_by_code(code)
-    
+
     if not movie:
         raise HTTPException(status_code=404, detail="影片不存在")
-    
+
     movie = db.row_to_movie_response(movie)
-    return MovieResponse(**movie)
+    try:
+        return MovieResponse(**movie)
+    except Exception as e:
+        logging.error(f"[get_movie_by_code] Pydantic 验证失败 code={code}: {e}")
+        raise HTTPException(status_code=500, detail=f"影片数据格式错误 ({code}): {str(e)[:100]}")
 
 
 @app.get("/search")
@@ -372,12 +388,15 @@ async def search_movies(
 ):
     """搜索影片"""
     total, movies = db.search_movies(q, page, page_size)
-    
+
     items = []
     for movie in movies:
-        movie = db.row_to_movie_response(movie)
-        items.append(MovieResponse(**movie))
-    
+        try:
+            movie = db.row_to_movie_response(movie)
+            items.append(MovieResponse(**movie))
+        except Exception as e:
+            logging.warning(f"[search] 记录转换失败 id={movie.get('id')}: {str(e)[:60]}")
+
     return MovieListResponse(
         total=total,
         page=page,

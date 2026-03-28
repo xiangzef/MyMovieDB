@@ -354,10 +354,16 @@ def row_to_movie_response(row: dict) -> dict:
     """将数据库行转换为响应格式"""
     if row.get("genres") and isinstance(row["genres"], str):
         row["genres"] = json.loads(row["genres"])
+    else:
+        row["genres"] = None
     if row.get("actors") and isinstance(row["actors"], str):
         row["actors"] = json.loads(row["actors"])
+    else:
+        row["actors"] = None
     if row.get("actors_male") and isinstance(row["actors_male"], str):
         row["actors_male"] = json.loads(row["actors_male"])
+    else:
+        row["actors_male"] = None
     return row
 
 
