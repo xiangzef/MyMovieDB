@@ -136,13 +136,14 @@ def download_and_crop_cover(cover_url: str, code: str, save_dir: Path) -> Option
     参数:
         cover_url: 封面图 URL
         code: 影片番号（用于命名文件）
-        save_dir: 保存目录
-    返回: {"fanart": path, "poster": path, "thumb": path} 或 None
+        save_dir: 保存目录（基础目录，会在其中创建番号子文件夹）
+    返回: {"fanart": path, "poster": path, "thumb": path, "folder": path} 或 None
     依赖: PIL.Image, requests
     说明:
         - fanart: 横向 1920x1080 (用于背景)
         - poster: 竖向 1000x1500 (用于海报)
         - thumb: 缩略图 300x450
+        - 文件结构: {save_dir}/{code}/{code}-{type}.jpg
     """
     if not PIL_AVAILABLE or not cover_url:
         return None
@@ -158,15 +159,15 @@ def download_and_crop_cover(cover_url: str, code: str, save_dir: Path) -> Option
         img = Image.open(BytesIO(response.content))
         original_width, original_height = img.size
 
-        # 创建保存目录
-        save_dir.mkdir(parents=True, exist_ok=True)
-
-        # 文件名
+        # 创建番号子文件夹
         safe_code = re.sub(r'[<>:"/\\|?*]', '_', code)
+        code_dir = save_dir / safe_code
+        code_dir.mkdir(parents=True, exist_ok=True)
+
         paths = {}
 
         # 1. Poster (竖向 1000x1500)
-        poster_path = save_dir / f"{safe_code}-poster.jpg"
+        poster_path = code_dir / f"{safe_code}-poster.jpg"
         if original_height > original_width:
             # 原图是竖向
             poster = img.copy()
@@ -179,7 +180,7 @@ def download_and_crop_cover(cover_url: str, code: str, save_dir: Path) -> Option
         paths["poster"] = str(poster_path)
 
         # 2. Fanart (横向 1920x1080)
-        fanart_path = save_dir / f"{safe_code}-fanart.jpg"
+        fanart_path = code_dir / f"{safe_code}-fanart.jpg"
         if original_width > original_height:
             # 原图是横向
             fanart = img.copy()
@@ -192,12 +193,15 @@ def download_and_crop_cover(cover_url: str, code: str, save_dir: Path) -> Option
         paths["fanart"] = str(fanart_path)
 
         # 3. Thumb (缩略图 300x450)
-        thumb_path = save_dir / f"{safe_code}-thumb.jpg"
+        thumb_path = code_dir / f"{safe_code}-thumb.jpg"
         thumb = img.copy()
         thumb.thumbnail((300, 450), Image.Resampling.LANCZOS)
         thumb = thumb.convert("RGB")
         thumb.save(thumb_path, "JPEG", quality=85)
         paths["thumb"] = str(thumb_path)
+
+        # 返回文件夹路径
+        paths["folder"] = str(code_dir)
 
         logger.info(f"封面裁切成功: {code}")
         return paths
@@ -205,6 +209,106 @@ def download_and_crop_cover(cover_url: str, code: str, save_dir: Path) -> Option
     except Exception as e:
         logger.error(f"封面处理失败 {code}: {e}")
         return None
+
+
+def generate_nfo(movie_data: dict, nfo_path: Path, local_video_path: str = None) -> bool:
+    """
+    功能: 生成 NFO 元数据文件（Kodi/Plex 兼容格式）
+    文件: scraper.py
+    参数:
+        movie_data: 影片数据字典
+        nfo_path: NFO 文件保存路径
+        local_video_path: 本地视频文件路径（可选）
+    返回: True/False
+    说明:
+        - NFO 格式兼容 Kodi、Plex、Emby 等媒体中心
+        - 包含本地视频路径字段
+    """
+    try:
+        # 安全处理 XML 特殊字符
+        def escape_xml(text):
+            if not text:
+                return ""
+            text = str(text)
+            text = text.replace("&", "&amp;")
+            text = text.replace("<", "&lt;")
+            text = text.replace(">", "&gt;")
+            text = text.replace('"', "&quot;")
+            text = text.replace("'", "&apos;")
+            return text
+
+        # 构建 NFO 内容
+        lines = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>']
+        lines.append('<movie>')
+
+        # 基本信息
+        lines.append(f'  <title>{escape_xml(movie_data.get("title", ""))}</title>')
+        lines.append(f'  <code>{escape_xml(movie_data.get("code", ""))}</code>')
+        if movie_data.get("release_date"):
+            lines.append(f'  <releasedate>{escape_xml(movie_data.get("release_date"))}</releasedate>')
+            lines.append(f'  <year>{movie_data.get("release_date", "")[:4]}</year>')
+        if movie_data.get("duration"):
+            lines.append(f'  <runtime>{movie_data.get("duration")}</runtime>')
+        if movie_data.get("studio"):
+            lines.append(f'  <studio>{escape_xml(movie_data.get("studio"))}</studio>')
+        if movie_data.get("maker"):
+            lines.append(f'  <maker>{escape_xml(movie_data.get("maker"))}</maker>')
+        if movie_data.get("director"):
+            lines.append(f'  <director>{escape_xml(movie_data.get("director"))}</director>')
+
+        # 演员
+        actors = movie_data.get("actors", [])
+        if isinstance(actors, str):
+            actors = [a.strip() for a in actors.split(",") if a.strip()]
+        for actor in (actors or []):
+            lines.append(f'  <actor>')
+            lines.append(f'    <name>{escape_xml(actor)}</name>')
+            lines.append(f'    <type>Actress</type>')
+            lines.append(f'  </actor>')
+
+        # 男演员
+        actors_male = movie_data.get("actors_male", [])
+        if isinstance(actors_male, str):
+            actors_male = [a.strip() for a in actors_male.split(",") if a.strip()]
+        for actor in (actors_male or []):
+            lines.append(f'  <actor>')
+            lines.append(f'    <name>{escape_xml(actor)}</name>')
+            lines.append(f'    <type>Actor</type>')
+            lines.append(f'  </actor>')
+
+        # 标签
+        genres = movie_data.get("genres", [])
+        if isinstance(genres, str):
+            genres = [g.strip() for g in genres.split(",") if g.strip()]
+        for genre in (genres or []):
+            lines.append(f'  <genre>{escape_xml(genre)}</genre>')
+
+        # 封面图
+        if movie_data.get("fanart_path"):
+            lines.append(f'  <fanart>{escape_xml(movie_data.get("fanart_path"))}</fanart>')
+        if movie_data.get("poster_path"):
+            lines.append(f'  <thumb>{escape_xml(movie_data.get("poster_path"))}</thumb>')
+
+        # 本地视频路径
+        if local_video_path:
+            lines.append(f'  <filenameandpath>{escape_xml(local_video_path)}</filenameandpath>')
+
+        # 简介
+        if movie_data.get("plot"):
+            lines.append(f'  <plot>{escape_xml(movie_data.get("plot"))}</plot>')
+
+        lines.append('</movie>')
+
+        # 写入文件
+        with open(nfo_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines))
+
+        logger.info(f"NFO 文件生成成功: {nfo_path}")
+        return True
+
+    except Exception as e:
+        logger.error(f"NFO 文件生成失败: {e}")
+        return False
 
 
 def _crop_to_portrait(img: Image, target_width: int, target_height: int) -> Image:

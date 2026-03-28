@@ -618,7 +618,7 @@ async def scrape_batch(req: ScrapeRequest):
                     
                     # 下载并裁切封面（如果启用）
                     if req.save_cover and movie_data.get("cover_url"):
-                        from scraper import download_and_crop_cover
+                        from scraper import download_and_crop_cover, generate_nfo
                         from pathlib import Path
                         covers_dir = Path(cfg.COVERS_DIR)
                         covers_dir.mkdir(parents=True, exist_ok=True)
@@ -627,6 +627,10 @@ async def scrape_batch(req: ScrapeRequest):
                         )
                         if crop_paths:
                             movie_data.update(crop_paths)
+                            # 生成 NFO 文件
+                            safe_code = re.sub(r'[<>:"/\\|?*]', '_', code)
+                            nfo_path = Path(crop_paths.get("folder", covers_dir / safe_code)) / f"{safe_code}.nfo"
+                            generate_nfo(movie_data, nfo_path, local_path)
                     
                     movie_id, is_new = db.upsert_movie(movie_data)
                     # 标记本地视频已刮削
