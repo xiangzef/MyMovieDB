@@ -1019,6 +1019,10 @@ class EnhancedMultiScraper:
             if cn_title and cn_title != merged_data["title_jp"]:
                 merged_data["title"] = make_bilingual_title(merged_data["title_jp"], cn_title)
 
+        # 如果没有提取到标题，用 code 作为兜底标题（避免数据库 NOT NULL 约束报错）
+        if merged_data.get("code") and not merged_data.get("title"):
+            merged_data["title"] = f"[{merged_data['code']}]（标题待补充）"
+
         return merged_data if merged_data.get("code") else None
 
 
@@ -1042,6 +1046,10 @@ def scrape_movie_enhanced(keyword: str, save_cover: bool = True) -> Optional[Dic
     """
     scraper = EnhancedMultiScraper()
     return scraper.scrape(keyword)
+
+
+# 兼容性别名（main.py 中的旧代码导入 scrape_movie）
+scrape_movie = scrape_movie_enhanced
 
 
 # ===============================================================================

@@ -302,10 +302,19 @@ covers_dir = data_dir / "covers"
 covers_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/covers", StaticFiles(directory=str(covers_dir)), name="covers")
 
+# 挂载前端目录（让127.0.0.1:8000 直接打开前端页面）
+frontend_dir = Path(__file__).parent.parent / "frontend"
+if frontend_dir.exists():
+    app.mount("/frontend", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
+
 
 @app.get("/")
 async def root():
-    """API 根路径"""
+    """API 根路径 - 重定向到前端页面"""
+    frontend_index = Path(__file__).parent.parent / "frontend" / "index.html"
+    if frontend_index.exists():
+        from fastapi.responses import FileResponse
+        return FileResponse(str(frontend_index))
     return {"message": "MyMovieDB API", "version": "1.0.0"}
 
 
@@ -889,16 +898,16 @@ async def get_local_video_stats():
 @app.post("/local-videos/cleanup", tags=["本地视频"])
 async def cleanup_invalid_local_videos():
     """
-    清理无效番号的本地视频记录
-    - 使用与扫描相同的验证规则
-    - 删除不再符合番号格式的记录
-    - 返回删除的数量和被删除的番号列表
+    清理本地视频库中的无效记录。
+    使用与扫描相同的番号提取逻辑验证文件名，
+    并检查文件是否在本地存在。
+    删除：(1) 文件名无法提取有效番号的记录  (2) 文件本地不存在的记录
     """
-    deleted_count, deleted_codes = db.cleanup_invalid_codes()
+    deleted_count, deleted_infos = db.cleanup_invalid_codes()
     return {
         "success": True,
         "deleted_count": deleted_count,
-        "deleted_codes": deleted_codes
+        "deleted_items": deleted_infos
     }
 
 

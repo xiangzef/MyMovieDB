@@ -649,106 +649,69 @@ def cleanup_videos_without_code():
 
 def cleanup_invalid_codes():
     """
-    清理数据库中无效番号的本地视频记录
-    使用与扫描时相同的验证规则
-    返回: (deleted_count, list_of_deleted_names)
+    清理本地视频库中无效的记录。
+    使用与扫描相同的番号提取逻辑验证文件名，
+    并检查文件是否在本地存在。
+    删除：(1) 文件名无法提取有效番号的记录  (2) 文件本地不存在的记录
+    返回: (deleted_count, list_of_deleted_info)
     """
-    import re
+    import os
+    import re as _re
 
-    # 验证规则（与 main.py 中保持一致）
-    EXCLUDE_PREFIXES = {
-        '390', '123', 'HD', 'SD', 'WEB', 'BD', 'DVD', 'XXX', 'SEX', 'TEST',
-        'DEMO', 'SAMPLE', 'TS', 'TC', 'UNCEN', 'CEN', 'SUB', 'DUB', 'RAW',
-        'PROPER', 'REPACK', 'RERIP', 'LIMITED', 'REMASTERED', 'UNRATED',
-        'EXTENDED', 'THEATRICAL', 'FINAL', 'DUAL', 'MULTI', 'DUBBED'
-    }
+    # 复用 main.py 中扫描用的番号提取函数
+    # （内部使用同一套正则规则和验证逻辑）
+    try:
+        from main import _extract_code_from_filename
+    except ImportError:
+        # 兜底：文件不存在则使用简单提取
+        def _extract_code_from_filename(name):
+            match = _re.search(r'([A-Z]{2,6})-(\d{2,5})', name.upper())
+            return f"{match.group(1)}-{int(match.group(2))}" if match else None
 
-    MIXED_PREFIXES = {'WEB', 'HD', 'BD', 'DVD', '720', '1080', '4K', 'UHD', 'SD'}
-
-    CODE_PATTERN = re.compile(r'([A-Z]{2,6})-(\d{2,5})')
-
-    def is_valid_code(prefix: str, number: str) -> bool:
-        """验证番号是否有效"""
-        # 1. 前缀不能全为数字
-        if prefix.isdigit():
-            return False
-        # 2. 不能在排除列表
-        if prefix.upper() in EXCLUDE_PREFIXES:
-            return False
-        # 3. 数字必须>=2位
-        if len(number) < 2:
-            return False
-        return True
-
-    def extract_code_from_filename(filename: str) -> Optional[str]:
-        """从文件名提取有效番号"""
-        name_without_ext = re.sub(r'\.(mp4|mkv|avi|mov|wmv|flv|m4v|webm)$', '', filename, flags=re.IGNORECASE)
-
-        # 检查特殊番号
-        special_patterns = [
-            re.compile(r'(FC2-PPV-\d{5,7})', re.IGNORECASE),
-            re.compile(r'(HEYDOUGA-\d{4}-\d{3,5})', re.IGNORECASE),
-        ]
-        for pattern in special_patterns:
-            match = pattern.search(name_without_ext)
-            if match:
-                return match.group(1).upper()
-
-        # 通用番号匹配
-        matches = list(CODE_PATTERN.finditer(name_without_ext))
-        for match in matches:
-            prefix = match.group(1)
-            number = match.group(2)
-            before_match = name_without_ext[:match.start()]
-
-            # 检查是否以排除前缀开头
-            combined = before_match + prefix
-            skip = False
-            for exclude in MIXED_PREFIXES:
-                if combined.upper().startswith(exclude):
-                    skip = True
-                    break
-
-            if skip:
-                continue
-
-            if is_valid_code(prefix, number):
-                # 标准化：去掉数字前导零
-                normalized = f"{prefix}-{int(number)}"
-                return normalized
-
-        return None
+    VIDEO_EXTS = {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv',
+                  '.webm', '.m4v', '.mpg', '.mpeg', '.ts', '.mts',
+                  '.m2ts', '.vob', '.ogv'}
 
     conn = get_db()
     cursor = conn.cursor()
 
-    deleted_names = []
-
-    # 第一步：删除 code 为 NULL 或空字符串的记录
-    cursor.execute("DELETE FROM local_videos WHERE code IS NULL OR code = ''")
-    null_deleted = cursor.rowcount
-    conn.commit()
-
-    # 第二步：获取所有有番号的记录，验证是否仍然有效
-    cursor.execute("SELECT id, name, code FROM local_videos")
+    cursor.execute("SELECT id, name, path FROM local_videos WHERE path IS NOT NULL AND path != ''")
     rows = cursor.fetchall()
 
-    for row in rows:
-        video_id, name, code = row['id'], row['name'], row['code']
+    deleted_count = 0
+    deleted_infos = []
 
-        # 用原始文件名验证番号是否仍然有效
-        valid_code = extract_code_from_filename(name)
-        if valid_code is None:
-            # 番号无效，删除记录
+    for row in rows:
+        video_id = row['id']
+        name = row['name']
+        path = row['path']
+
+        should_delete = False
+        reason = ""
+
+        # 步骤1：用扫描同款函数检查番号是否有效
+        ext = _re.search(r'(\.[^.]+)$', name, _re.I)
+        ext = ext.group(1) if ext else ""
+        name_without_ext = name[:-len(ext)] if ext else name
+
+        extracted = _extract_code_from_filename(name_without_ext)
+
+        if extracted is None:
+            should_delete = True
+            reason = "番号无效"
+        elif not os.path.exists(path):
+            should_delete = True
+            reason = "文件不存在"
+
+        if should_delete:
             cursor.execute("DELETE FROM local_videos WHERE id = ?", (video_id,))
-            deleted_names.append(name)
-        # 如果 valid_code 存在但和现有 code 不同（可能是规范化差异），不修改，保留现有记录
+            deleted_count += 1
+            deleted_infos.append(f"[{reason}] {name} ({path})")
 
     conn.commit()
-    deleted_count = null_deleted + len(deleted_names)
     conn.close()
 
-    return deleted_count, deleted_names
+    return deleted_count, deleted_infos
 
 
 def get_local_video_stats() -> dict:
