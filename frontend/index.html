@@ -424,6 +424,51 @@
         .progress-stats .fail { color: #dc3545; }
         .progress-stats .skip { color: #ffc107; }
 
+        /* 清理结果提示 */
+        .cleanup-result {
+            margin: 12px 0;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .cleanup-result.has-deleted {
+            background: #fff3f3;
+            border: 1px solid #f5c6cb;
+        }
+        .cleanup-result.no-deleted {
+            background: #f0fff4;
+            border: 1px solid #c3e6cb;
+        }
+        .cleanup-result-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 14px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        .cleanup-result.has-deleted .cleanup-result-header { color: #c0392b; }
+        .cleanup-result.no-deleted .cleanup-result-header { color: #27ae60; }
+        .cleanup-result-files {
+            max-height: 200px;
+            overflow-y: auto;
+            border-top: 1px solid rgba(0,0,0,0.06);
+            padding: 4px 0;
+        }
+        .cleanup-file-item {
+            padding: 3px 14px;
+            font-size: 12px;
+            color: #666;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .cleanup-file-more {
+            padding: 4px 14px;
+            font-size: 12px;
+            color: #999;
+            font-style: italic;
+        }
+
         /* 进度浮层 */
         .scrape-overlay {
             display: none;
@@ -693,6 +738,18 @@
                 <button class="btn btn-sm btn-danger" @click="cleanupInvalidCodes" :disabled="cleaning">
                     🗑️ {{ cleaning ? '清理中...' : '清理无效番号' }}
                 </button>
+            </div>
+
+            <!-- 清理结果提示 -->
+            <div v-if="cleanupResult" class="cleanup-result" :class="cleanupResult.count > 0 ? 'has-deleted' : 'no-deleted'">
+                <div class="cleanup-result-header">
+                    <span>{{ cleanupResult.count > 0 ? '✅ 清理完成，已删除 ' + cleanupResult.count + ' 条无效记录' : '✅ 没有需要清理的无效记录' }}</span>
+                    <button class="btn btn-sm btn-secondary" @click="cleanupResult = null">×</button>
+                </div>
+                <div v-if="cleanupResult.count > 0 && cleanupResult.names && cleanupResult.names.length > 0" class="cleanup-result-files">
+                    <div v-for="name in cleanupResult.names" :key="name" class="cleanup-file-item">❌ {{ name }}</div>
+                    <div v-if="cleanupResult.names.length >= 10" class="cleanup-file-more">... 还有 {{ cleanupResult.count - 10 }} 个</div>
+                </div>
             </div>
 
             <!-- 筛选 -->
@@ -1276,24 +1333,24 @@ createApp({
         };
 
         const cleaning = ref(false);
+        const cleanupResult = ref(null);  // { count, names }
         const cleanupInvalidCodes = async () => {
             if (!confirm('确定清理无效番号记录？被清理的影片信息将被删除（仅删除数据库记录，文件不会被删除）。')) return;
             cleaning.value = true;
+            cleanupResult.value = null;
             try {
                 const res = await fetch(`${API}/local-videos/cleanup`, { method: 'POST' });
                 const data = await res.json();
                 if (data.success) {
-                    if (data.deleted_count > 0) {
-                        showToast(`已清理 ${data.deleted_count} 条无效记录`, 'success');
-                        if (data.deleted_codes && data.deleted_codes.length > 0) {
-                            console.log('已删除的文件:', data.deleted_codes);
-                        }
-                    } else {
-                        showToast('没有需要清理的无效记录', 'info');
-                    }
+                    cleanupResult.value = {
+                        count: data.deleted_count,
+                        names: data.deleted_codes || []
+                    };
                     loadLocalVideos();
                     loadSources();
                     loadVideoStats();
+                } else {
+                    showToast('清理失败', 'error');
                 }
             } catch (e) { showToast('清理失败: ' + e.message, 'error'); }
             cleaning.value = false;
@@ -1350,7 +1407,7 @@ createApp({
             localVideos, videoStats, localVideosLoading, videoPage, videoPageSize, videoFilter,
             videoTotalPages, videoVisiblePages,
             loadVideoStats, loadLocalVideos, videoPrevPage, videoNextPage, videoGoToPage,
-            scrapeOneLocal, deleteLocalVideo, cleanupInvalidCodes, cleaning, formatSize,
+            scrapeOneLocal, deleteLocalVideo, cleanupInvalidCodes, cleanupResult, cleaning, formatSize,
             // Scrape Panel
             scrapePanel, scrapeLogEl,
             // Misc

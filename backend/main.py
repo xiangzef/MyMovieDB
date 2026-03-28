@@ -731,8 +731,8 @@ async def scan_local_sources():
     total_found = 0
     scan_results = []
 
-    # 扫描前清理所有源的无番号旧记录
-    db.cleanup_videos_without_code()
+    # 扫描前清理所有无效番号记录（NULL代码 + 不符合识别规则的代码）
+    db.cleanup_invalid_codes()
 
     for source in sources:
         source_id = source["id"]
