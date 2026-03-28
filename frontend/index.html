@@ -931,15 +931,21 @@
                 <div class="modal-row"><span class="modal-label">演员</span>
                     <span class="modal-value">{{ formatArray(selectedMovie.actors) }}</span>
                 </div>
+                <!-- 刮削状态 -->
+                <div class="modal-row">
+                    <span class="modal-label">刮削状态</span>
+                    <span class="modal-value" :style="selectedMovie.scrape_status === 'complete' ? 'color:#28a745;' : 'color:#ffc107;'">
+                        {{ selectedMovie.scrape_status === 'complete' ? '✅ 已完成' : '⚠️ 缺失部分内容' }}
+                    </span>
+                </div>
+                <!-- 本地视频路径（显示文件夹） -->
                 <div v-if="selectedMovie.local_video_id" class="modal-row">
                     <span class="modal-label" style="color:#17a2b8;">本地视频</span>
                     <span class="modal-value" style="color:#17a2b8;font-size:12px;">
-                        <a :href="'file:///' + (selectedMovie.local_video_path || '')"
-                           :title="selectedMovie.local_video_path || ''"
-                           style="color:#17a2b8;text-decoration:underline;"
-                           target="_blank"
+                        <a :title="selectedMovie.local_video_path || ''"
+                           style="color:#17a2b8;text-decoration:underline;cursor:pointer;"
                            @click.prevent="openLocalVideo(selectedMovie.local_video_path)">
-                            {{ selectedMovie.local_video_path ? selectedMovie.local_video_path.split(/[/\\]/).pop() : '已关联' }}
+                            📁 {{ getFolderPath(selectedMovie.local_video_path) || '已关联' }}
                         </a>
                     </span>
                 </div>
@@ -1358,6 +1364,7 @@ createApp({
             scraping.value = false;
         };
 
+
         // ========== 打开本地视频 ==========
         const openLocalVideo = (path) => {
             if (!path) {
@@ -1374,6 +1381,15 @@ createApp({
             } else {
                 showToast('请手动复制路径: ' + path, 'warning');
             }
+        };
+
+        // ========== 获取文件夹路径 ==========
+        const getFolderPath = (path) => {
+            if (!path) return '';
+            // 去掉文件名，只保留文件夹路径
+            const parts = path.split(/[/\\]/);
+            parts.pop(); // 移除文件名
+            return parts.join('\\');
         };
 
         // ========== 本地目录 ==========
@@ -1652,7 +1668,7 @@ createApp({
             // Scrape Panel
             scrapePanel, scrapeLogEl,
             // Rescrape
-            rescrapeMovie, openLocalVideo,
+            rescrapeMovie, openLocalVideo, getFolderPath,
             // Misc
             switchTab, toasts
         };
