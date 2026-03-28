@@ -1233,21 +1233,27 @@ createApp({
         };
 
         const showDetail = (m) => {
-            selectedMovie.value = m;
-            // 构建详情页多图列表
-            const thumbs = [];
-            if (m.poster_path) thumbs.push(m.poster_path);
-            if (m.thumb_path) thumbs.push(m.thumb_path);
-            if (m.fanart_path) thumbs.push(m.fanart_path);
-            // 如果没有本地多图但有网络封面，也加入
-            if (thumbs.length === 0 && (m.local_cover_path || m.cover_url)) {
-                thumbs.push(`${API}/covers/${m.code}.jpg`);
+            try {
+                selectedMovie.value = m;
+                // 构建详情页多图列表
+                const thumbs = [];
+                if (m.poster_path) thumbs.push(m.poster_path);
+                if (m.thumb_path) thumbs.push(m.thumb_path);
+                if (m.fanart_path) thumbs.push(m.fanart_path);
+                // 如果没有本地多图但有网络封面，也加入
+                if (thumbs.length === 0 && (m.local_cover_path || m.cover_url)) {
+                    thumbs.push(`${API}/covers/${m.code}.jpg`);
+                }
+                detailThumbs.value = thumbs;
+                // 默认主图用 poster
+                detailMainSrc.value = thumbs[0] || getCoverUrl(m, 'detail');
+                detailActiveThumb.value = 0;
+                document.body.style.overflow = 'hidden';
+                console.log('[showDetail] 弹窗已打开, code:', m?.code);
+            } catch (e) {
+                console.error('[showDetail] 错误:', e);
+                showToast('打开详情失败: ' + e.message, 'error');
             }
-            detailThumbs.value = thumbs;
-            // 默认主图用 poster
-            detailMainSrc.value = thumbs[0] || getCoverUrl(m, 'detail');
-            detailActiveThumb.value = 0;
-            document.body.style.overflow = 'hidden';
         };
         // 点击主演示图在可用图片间切换
         const cycleDetailMain = () => {
@@ -1269,10 +1275,18 @@ createApp({
                     return;
                 }
                 const m = await res.json();
+                console.log('[showMovieDetail] 获取影片数据:', m.code, m.title);
                 showDetail(m);
-            } catch (e) { showToast('网络错误，请检查后端连接', 'error'); }
+                console.log('[showMovieDetail] selectedMovie:', selectedMovie.value?.code);
+            } catch (e) {
+                console.error('[showMovieDetail] 错误:', e);
+                showToast('网络错误，请检查后端连接', 'error');
+            }
         };
         const getCoverUrl = (m, type = 'poster') => {
+            // 防御性检查
+            if (!m || !m.code) return SAMPLE_IMG;
+
             // 优先级：poster_path / thumb_path / fanart_path > local_cover_path > cover_url
             // type: 'poster'=缩略图(grid), 'detail'=完整大图, 'thumb'=小预览, 'fanart'=背景
             const SAMPLE_IMG = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect fill="%230f3460" width="100" height="100"/><text x="50" y="55" text-anchor="middle" fill="%23666" font-size="12">No Cover</text></svg>';
