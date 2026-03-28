@@ -1386,7 +1386,10 @@ createApp({
                 backendStatus.value = '离线';
             }
 
+            // 页面加载时同时拉取所有数据（电影 + 本地目录 + 视频库统计）
             loadMovies();
+            loadSources();
+            loadVideoStats();
 
             document.addEventListener('keydown', (e) => {
                 if (e.key === 'Escape') closeDetail();
