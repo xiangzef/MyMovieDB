@@ -24,6 +24,7 @@ from models import (
 )
 from pydantic import BaseModel, Field
 import database as db
+import config as cfg
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -289,29 +290,26 @@ app = FastAPI(
 # 配置 CORS（允许前端访问）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 生产环境建议限制具体域名
-    allow_credentials=True,
+    allow_origins=["*"] if cfg.CORS_ORIGINS == "*" else [cfg.CORS_ORIGINS],
+    allow_credentials=cfg.CORS_CREDENTIALS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # 挂载静态文件目录（封面图）
-data_dir = Path(__file__).parent.parent / "data"
-data_dir.mkdir(parents=True, exist_ok=True)
-covers_dir = data_dir / "covers"
-covers_dir.mkdir(parents=True, exist_ok=True)
-app.mount("/covers", StaticFiles(directory=str(covers_dir)), name="covers")
+cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
+cfg.COVERS_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/covers", StaticFiles(directory=str(cfg.COVERS_DIR)), name="covers")
 
 # 挂载前端目录（让127.0.0.1:8000 直接打开前端页面）
-frontend_dir = Path(__file__).parent.parent / "frontend"
-if frontend_dir.exists():
-    app.mount("/frontend", StaticFiles(directory=str(frontend_dir), html=True), name="frontend")
+if cfg.FRONTEND_DIR.exists():
+    app.mount("/frontend", StaticFiles(directory=str(cfg.FRONTEND_DIR), html=True), name="frontend")
 
 
 @app.get("/")
 async def root():
     """API 根路径 - 重定向到前端页面"""
-    frontend_index = Path(__file__).parent.parent / "frontend" / "index.html"
+    frontend_index = cfg.FRONTEND_DIR / "index.html"
     if frontend_index.exists():
         from fastapi.responses import FileResponse
         return FileResponse(str(frontend_index))
