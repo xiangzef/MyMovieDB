@@ -1,6 +1,6 @@
 """
 数据模型定义
-Pydantic v2 兼容，所有可选字段均用 | None 语法，extra='ignore' 防止意外字段报错
+Python 3.7 兼容，所有可选字段均用 Optional[] 语法，extra='ignore' 防止意外字段报错
 """
 from pydantic import BaseModel, ConfigDict
 from typing import Optional, List
@@ -13,17 +13,17 @@ class MovieBase(BaseModel):
 
     code: str
     title: str
-    title_jp: str | None = None
-    release_date: str | None = None
-    duration: int | None = None
-    studio: str | None = None
-    maker: str | None = None
-    director: str | None = None
-    cover_url: str | None = None
-    preview_url: str | None = None
-    genres: List[str] | None = None
-    actors: List[str] | None = None
-    actors_male: List[str] | None = None
+    title_jp: Optional[str] = None
+    release_date: Optional[str] = None
+    duration: Optional[int] = None
+    studio: Optional[str] = None
+    maker: Optional[str] = None
+    director: Optional[str] = None
+    cover_url: Optional[str] = None
+    preview_url: Optional[str] = None
+    genres: Optional[List[str]] = None
+    actors: Optional[List[str]] = None
+    actors_male: Optional[List[str]] = None
 
 
 class MovieCreate(MovieBase):
@@ -36,11 +36,11 @@ class MovieResponse(MovieBase):
     id: int
     created_at: datetime
     updated_at: datetime
-    local_video_id: int | None = None
+    local_video_id: Optional[int] = None
     # 本地多图路径（来自 local_videos 表的 LEFT JOIN 关联）
-    fanart_path: str | None = None
-    poster_path: str | None = None
-    thumb_path: str | None = None
+    fanart_path: Optional[str] = None
+    poster_path: Optional[str] = None
+    thumb_path: Optional[str] = None
 
 
 class ScrapeRequest(BaseModel):
@@ -53,7 +53,7 @@ class ScrapeResponse(BaseModel):
     """刮削响应"""
     success: bool
     message: str
-    movie: MovieResponse | None = None
+    movie: Optional[MovieResponse] = None
 
 
 class MovieListResponse(BaseModel):
