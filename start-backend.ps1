@@ -10,4 +10,4 @@ Get-ChildItem -Path $backendDir -Recurse -Directory -Filter __pycache__ | Remove
 Write-Host "✅ 缓存清除完毕，启动后端..." -ForegroundColor Green
 
 Set-Location $backendDir
-& python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
+& python -m uvicorn main:app --host 0.0.0.0 --port 8000
