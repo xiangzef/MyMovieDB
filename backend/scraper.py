@@ -720,40 +720,67 @@ class AvbaseScraper(BaseScraper):
     BASE_URL = "https://www.avbase.net"
 
     def search(self, keyword: str) -> List[Dict]:
-        """搜索影片 - Avbase 详情页格式: /works/CODE"""
+        """搜索影片 - Avbase 使用搜索参数: /works?q=CODE"""
         results = []
 
-        # 直接访问详情页
-        detail_url = f"{self.BASE_URL}/works/{quote(keyword)}"
-        soup = self._get(detail_url)
+        # 使用搜索 URL 格式
+        search_url = f"{self.BASE_URL}/works?q={quote(keyword)}"
+        soup = self._get(search_url)
 
         if not soup:
             return results
 
-        # 提取标题
-        title_tag = soup.select_one("h1, .title, .works-title")
-        title = title_tag.get_text(strip=True) if title_tag else ""
-
-        # 提取番号
-        code_match = re.search(r"([A-Z0-9]{1,6}-\d{2,5})", soup.get_text(), re.IGNORECASE)
-        code = code_match.group(1).upper() if code_match else keyword.upper()
-
-        # 提取封面
-        imgs = soup.select("img")
-        cover = ""
-        for img in imgs:
-            src = img.get("src", "") or img.get("data-src", "")
-            if src and "favicon" not in src and "logo" not in src.lower():
-                cover = src
-                break
-
-        results.append({
-            "code": code,
-            "title": title,
-            "detail_url": detail_url,
-            "cover_url": cover,
-            "source": "avbase",
-        })
+        # 查找搜索结果中的影片链接
+        items = soup.select(".item, .movie-item, .works-item, a[href*='/works/']")
+        
+        for item in items[:5]:
+            # 获取链接
+            link = item if item.name == 'a' else item.select_one("a")
+            if not link:
+                continue
+            
+            href = link.get("href", "")
+            if not href or "/works/" not in href:
+                continue
+            
+            # 补全 URL
+            if not href.startswith("http"):
+                href = self.BASE_URL + href
+            
+            # 检查是否包含目标番号
+            if keyword.upper() not in href.upper():
+                continue
+            
+            # 获取详情页
+            detail_soup = self._get(href)
+            if not detail_soup:
+                continue
+            
+            # 提取标题
+            title_tag = detail_soup.select_one("h1, .title, .works-title")
+            title = title_tag.get_text(strip=True) if title_tag else ""
+            
+            # 提取番号
+            code_match = re.search(r"([A-Z0-9]{1,6}-\d{2,5})", detail_soup.get_text(), re.IGNORECASE)
+            code = code_match.group(1).upper() if code_match else keyword.upper()
+            
+            # 提取封面
+            imgs = detail_soup.select("img")
+            cover = ""
+            for img in imgs:
+                src = img.get("src", "") or img.get("data-src", "")
+                if src and "favicon" not in src.lower() and "logo" not in src.lower():
+                    cover = src
+                    break
+            
+            results.append({
+                "code": code,
+                "title": title,
+                "detail_url": href,
+                "cover_url": cover,
+                "source": "avbase",
+            })
+            break  # 找到第一个匹配的即可
 
         logger.info(f"Avbase 找到 {len(results)} 个结果")
         return results

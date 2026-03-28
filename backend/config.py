@@ -73,10 +73,10 @@ SCRAPER_SOURCES: List[Dict] = [
         "name": "Avbase",
         "name_cn": "Avbase",
         "base_url": "https://www.avbase.net",
-        "search_url": "/search?q={code}",
+        "search_url": "/works?q={code}",
         "enabled": True,
         "priority": 4,
-        "notes": "",
+        "notes": "搜索 URL 格式: /works?q=CODE",
         "anti_bot": False,
     },
     {
