@@ -900,7 +900,7 @@
         <div class="modal-content" v-if="selectedMovie">
             <!-- Fanart 背景 -->
             <div class="modal-fanart"
-                :style="selectedMovie.fanart_path ? {backgroundImage: `url(${selectedMovie.fanart_path})`} : {}">
+                :style="selectedMovie.fanart_path ? {backgroundImage: `url(${getCoverUrl(selectedMovie, 'fanart')})`} : {}">
             </div>
             <button class="modal-close" @click="closeDetail">×</button>
             <!-- 左侧：poster + thumb 栏 -->
@@ -1269,9 +1269,18 @@ createApp({
                 selectedMovie.value = m;
                 // 构建详情页多图列表
                 const thumbs = [];
-                if (m.poster_path) thumbs.push(m.poster_path);
-                if (m.thumb_path) thumbs.push(m.thumb_path);
-                if (m.fanart_path) thumbs.push(m.fanart_path);
+                // 辅助函数：将本地路径转换为 API 路径
+                const localToApi = (localPath) => {
+                    if (!localPath) return null;
+                    const match = localPath.match(/[\/\\]covers[\/\\]([^\/\\]+[\/\\][^\/\\]+)$/);
+                    if (match) {
+                        return `${API}/covers/${match[1].replace(/\\/g, '/')}`;
+                    }
+                    return null;
+                };
+                if (m.poster_path) thumbs.push(localToApi(m.poster_path));
+                if (m.thumb_path) thumbs.push(localToApi(m.thumb_path));
+                if (m.fanart_path) thumbs.push(localToApi(m.fanart_path));
                 // 如果没有本地多图但有网络封面，也加入
                 if (thumbs.length === 0 && (m.local_cover_path || m.cover_url)) {
                     thumbs.push(`${API}/covers/${m.code}.jpg`);
@@ -1323,14 +1332,26 @@ createApp({
             // type: 'poster'=缩略图(grid), 'detail'=完整大图, 'thumb'=小预览, 'fanart'=背景
             const SAMPLE_IMG = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect fill="%230f3460" width="100" height="100"/><text x="50" y="55" text-anchor="middle" fill="%23666" font-size="12">No Cover</text></svg>';
 
+            // 辅助函数：将本地路径转换为 API 路径
+            const localToApi = (localPath) => {
+                if (!localPath) return null;
+                // 从路径中提取番号和文件名
+                // 例如：F:\...\covers\SSIS-254\SSIS-254-poster.jpg → /covers/SSIS-254/SSIS-254-poster.jpg
+                const match = localPath.match(/[\/\\]covers[\/\\]([^\/\\]+[\/\\][^\/\\]+)$/);
+                if (match) {
+                    return `${API}/covers/${match[1].replace(/\\/g, '/')}`;
+                }
+                return null;
+            };
+
             if (type === 'fanart') {
-                return m.fanart_path || SAMPLE_IMG;
+                return localToApi(m.fanart_path) || SAMPLE_IMG;
             }
             if (type === 'thumb') {
-                return m.thumb_path || m.local_cover_path ? `${API}/covers/${m.code}.jpg` : SAMPLE_IMG;
+                return localToApi(m.thumb_path) || (m.local_cover_path ? `${API}/covers/${m.code}.jpg` : SAMPLE_IMG);
             }
             // poster / detail：优先用本地 poster_path
-            if (m.poster_path) return m.poster_path;
+            if (m.poster_path) return localToApi(m.poster_path) || SAMPLE_IMG;
             if (m.local_cover_path || m.cover_url) return `${API}/covers/${m.code}.jpg`;
             return SAMPLE_IMG;
         };
