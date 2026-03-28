@@ -745,11 +745,13 @@ class AvdanyuwikiScraper(BaseScraper):
             detail["actors_male"] = males
 
         # --------------------------------------------------------------------------
-        # 提取監督（导演）- 新格式：監督：	苺原
+        # 提取監督（导演）- 新格式：監督：	嵐山みちる
         # --------------------------------------------------------------------------
-        director_match = re.search(r"監督[：:]\s*([^\n]+?)(?=\n|シリーズ|$)", page_text)
+        director_match = re.search(r"監督[：:]\s*([^\n]+)", page_text)
         if director_match:
-            detail["director"] = director_match.group(1).strip()
+            director = director_match.group(1).strip()
+            if director:
+                detail["director"] = director
 
         # --------------------------------------------------------------------------
         # 提取メーカー（制作商）- 新格式：メーカー：	エスワン ナンバーワンスタイル
@@ -1343,6 +1345,14 @@ class FanzaScraper(BaseScraper):
             # 排除干扰项
             if director and director not in ["Blu-ray商品", "DVD商品", "商品一覧"]:
                 data["director"] = director
+
+        # 如果链接没找到，从页面文本提取
+        if not data.get("director"):
+            director_match = re.search(r"監督[：:]\s*([^\n]+)", page_text)
+            if director_match:
+                director = director_match.group(1).strip()
+                if director:
+                    data["director"] = director
 
         # 提取类型
         genre_links = soup.select('a[href*="article=genre"]')

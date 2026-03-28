@@ -41,6 +41,7 @@ class MovieResponse(MovieBase):
     fanart_path: Optional[str] = None
     poster_path: Optional[str] = None
     thumb_path: Optional[str] = None
+    local_video_path: Optional[str] = None  # 本地视频文件路径
 
 
 class ScrapeRequest(BaseModel):
