@@ -213,7 +213,7 @@
             display: none;
             position: fixed;
             top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(0,0,0,0.88);
+            background: rgba(0,0,0,0.92);
             z-index: 200;
             overflow-y: auto;
         }
@@ -221,26 +221,86 @@
         .modal-content {
             background: #16213e;
             border-radius: 16px;
-            max-width: 900px;
+            max-width: 980px;
             width: 100%;
             display: flex;
             overflow: hidden;
             position: relative;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.7);
+        }
+        /* Fanart 背景层 */
+        .modal-fanart {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-size: cover;
+            background-position: center top;
+            opacity: 0.18;
+            filter: blur(12px);
         }
         .modal-close {
             position: absolute;
             top: 15px; right: 15px;
             width: 36px; height: 36px;
             border: none; border-radius: 50%;
-            background: #e94560;
+            background: rgba(233,69,96,0.9);
             color: #fff;
             font-size: 20px;
             cursor: pointer;
             z-index: 10;
             line-height: 1;
         }
-        .modal-poster { width: 300px; object-fit: cover; flex-shrink: 0; }
-        .modal-info { padding: 30px; flex: 1; }
+        /* 左侧：完整 poster（保持 DVD 原始比例 379×538，aspect=0.705） */
+        .modal-poster-wrap {
+            flex-shrink: 0;
+            width: 300px;
+            position: relative;
+            z-index: 2;
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+            background: #0d1b3e;
+        }
+        .modal-poster {
+            width: 300px;
+            /* height:auto with max-height to show full poster */
+            height: auto;
+            max-height: 450px;
+            object-fit: cover;
+            object-position: top center;
+            display: block;
+            background: #0a1628;
+        }
+        /* 下方缩略图（thumb） */
+        .modal-thumb-strip {
+            display: flex;
+            gap: 4px;
+            padding: 6px 8px;
+            background: #0a1628;
+            overflow-x: auto;
+            flex-shrink: 0;
+        }
+        .modal-thumb-strip::-webkit-scrollbar { height: 3px; }
+        .modal-thumb-strip::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+        .modal-thumb-img {
+            width: 52px;
+            height: 52px;
+            object-fit: cover;
+            border-radius: 4px;
+            cursor: pointer;
+            border: 2px solid transparent;
+            transition: border-color 0.2s, transform 0.2s;
+            flex-shrink: 0;
+        }
+        .modal-thumb-img:hover { border-color: #e94560; transform: scale(1.05); }
+        .modal-thumb-img.active { border-color: #e94560; }
+        /* 右侧信息区 */
+        .modal-info {
+            padding: 30px 28px;
+            flex: 1;
+            position: relative;
+            z-index: 2;
+            min-width: 0;
+        }
         .modal-code { color: #e94560; font-size: 26px; font-weight: bold; margin-bottom: 8px; }
         .modal-title { font-size: 18px; margin-bottom: 20px; color: #ccc; line-height: 1.5; }
         .modal-row { display: flex; margin-bottom: 14px; color: #aaa; }
@@ -556,7 +616,8 @@
 
         @media (max-width: 768px) {
             .modal-content { flex-direction: column; }
-            .modal-poster { width: 100%; height: 300px; }
+            .modal-poster-wrap { width: 100%; }
+            .modal-poster { width: 100%; max-height: 420px; }
             .movie-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
             .add-source-form { flex-direction: column; }
             .add-source-form input { width: 100%; }
@@ -748,7 +809,7 @@
                 </div>
                 <div v-if="cleanupResult.count > 0 && cleanupResult.names && cleanupResult.names.length > 0" class="cleanup-result-files">
                     <div v-for="name in cleanupResult.names" :key="name" class="cleanup-file-item">❌ {{ name }}</div>
-                    <div v-if="cleanupResult.names.length >= 10" class="cleanup-file-more">... 还有 {{ cleanupResult.count - 10 }} 个</div>
+                    <div v-if="cleanupResult.names.length >= 10" class="cleanup-file-more">... 还有 {{ cleanupResult.count - cleanupResult.names.length }} 个</div>
                 </div>
             </div>
 
@@ -836,8 +897,28 @@
     <!-- 详情弹窗 -->
     <div class="modal-overlay" :class="{show: selectedMovie}" @click.self="closeDetail">
         <div class="modal-content" v-if="selectedMovie">
+            <!-- Fanart 背景 -->
+            <div class="modal-fanart"
+                :style="selectedMovie.fanart_path ? {backgroundImage: `url(${selectedMovie.fanart_path})`} : {}">
+            </div>
             <button class="modal-close" @click="closeDetail">×</button>
-            <img :src="getCoverUrl(selectedMovie)" class="modal-poster" @error="handleImgError">
+            <!-- 左侧：poster + thumb 栏 -->
+            <div class="modal-poster-wrap">
+                <!-- 主演示大图（点击切换到 fanart/thumb） -->
+                <img :src="detailMainSrc" class="modal-poster" @error="handleImgError" style="cursor:pointer;"
+                    :title="'点击查看完整封面'" @click="cycleDetailMain">
+                <!-- 缩略图条 -->
+                <div class="modal-thumb-strip" v-if="detailThumbs.length > 0">
+                    <img v-for="(src, idx) in detailThumbs" :key="idx"
+                        :src="src" class="modal-thumb-img"
+                        :class="{active: detailActiveThumb === idx}"
+                        @click="detailActiveThumb = idx; detailMainSrc = src"
+                        @error="e => e.target.style.display='none'">
+                </div>
+                <!-- 无图时显示纯色占位 -->
+                <div v-else style="height:4px;background:#0a1628;"></div>
+            </div>
+            <!-- 右侧信息区 -->
             <div class="modal-info">
                 <div class="modal-code">{{ selectedMovie.code }}</div>
                 <div class="modal-title">{{ selectedMovie.title }}</div>
@@ -849,9 +930,9 @@
                 <div class="modal-row"><span class="modal-label">演员</span>
                     <span class="modal-value">{{ selectedMovie.actors?.join(', ') || '-' }}</span>
                 </div>
-                <div v-if="selectedMovie.local_video_id || selectedMovie.local_path" class="modal-row">
+                <div v-if="selectedMovie.local_video_id" class="modal-row">
                     <span class="modal-label" style="color:#17a2b8;">本地视频</span>
-                    <span class="modal-value" style="color:#17a2b8;font-size:12px;">{{ selectedMovie.local_path || '已关联' }}</span>
+                    <span class="modal-value" style="color:#17a2b8;font-size:12px;">已关联</span>
                 </div>
                 <div class="modal-tags">
                     <span v-for="g in (selectedMovie.genres||[])" :key="g" class="tag">{{ g }}</span>
@@ -886,6 +967,10 @@ createApp({
         const scrapeKeyword = ref('');
         const scraping = ref(false);  // 标记是否有刮削在进行
         const selectedMovie = ref(null);
+        // 详情弹窗多图状态
+        const detailMainSrc = ref('');
+        const detailActiveThumb = ref(-1);
+        const detailThumbs = ref([]);
 
         // 刮削进度浮层
         const scrapePanel = ref({
@@ -1125,7 +1210,26 @@ createApp({
 
         const showDetail = (m) => {
             selectedMovie.value = m;
+            // 构建详情页多图列表
+            const thumbs = [];
+            if (m.poster_path) thumbs.push(m.poster_path);
+            if (m.thumb_path) thumbs.push(m.thumb_path);
+            if (m.fanart_path) thumbs.push(m.fanart_path);
+            // 如果没有本地多图但有网络封面，也加入
+            if (thumbs.length === 0 && (m.local_cover_path || m.cover_url)) {
+                thumbs.push(`${API}/covers/${m.code}.jpg`);
+            }
+            detailThumbs.value = thumbs;
+            // 默认主图用 poster
+            detailMainSrc.value = thumbs[0] || getCoverUrl(m, 'detail');
+            detailActiveThumb.value = 0;
             document.body.style.overflow = 'hidden';
+        };
+        // 点击主演示图在可用图片间切换
+        const cycleDetailMain = () => {
+            if (detailThumbs.value.length === 0) return;
+            detailActiveThumb.value = (detailActiveThumb.value + 1) % detailThumbs.value.length;
+            detailMainSrc.value = detailThumbs.value[detailActiveThumb.value];
         };
         const closeDetail = () => {
             selectedMovie.value = null;
@@ -1138,9 +1242,21 @@ createApp({
                 showDetail(m);
             } catch (e) { showToast('获取详情失败', 'error'); }
         };
-        const getCoverUrl = (m) => {
+        const getCoverUrl = (m, type = 'poster') => {
+            // 优先级：poster_path / thumb_path / fanart_path > local_cover_path > cover_url
+            // type: 'poster'=缩略图(grid), 'detail'=完整大图, 'thumb'=小预览, 'fanart'=背景
+            const SAMPLE_IMG = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect fill="%230f3460" width="100" height="100"/><text x="50" y="55" text-anchor="middle" fill="%23666" font-size="12">No Cover</text></svg>';
+
+            if (type === 'fanart') {
+                return m.fanart_path || SAMPLE_IMG;
+            }
+            if (type === 'thumb') {
+                return m.thumb_path || m.local_cover_path ? `${API}/covers/${m.code}.jpg` : SAMPLE_IMG;
+            }
+            // poster / detail：优先用本地 poster_path
+            if (m.poster_path) return m.poster_path;
             if (m.local_cover_path || m.cover_url) return `${API}/covers/${m.code}.jpg`;
-            return 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect fill="%230f3460" width="100" height="100"/><text x="50" y="55" text-anchor="middle" fill="%23666" font-size="12">No Cover</text></svg>';
+            return SAMPLE_IMG;
         };
         const handleImgError = (e) => {
             e.target.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect fill="%230f3460" width="100" height="100"/><text x="50" y="55" text-anchor="middle" fill="%23666" font-size="12">No Cover</text></svg>';
@@ -1342,9 +1458,11 @@ createApp({
                 const res = await fetch(`${API}/local-videos/cleanup`, { method: 'POST' });
                 const data = await res.json();
                 if (data.success) {
+                    // 后端返回 deleted_items: [{code, reason, path}]，兼容旧字段 deleted_count / deleted_codes
+                    const items = data.deleted_items || [];
                     cleanupResult.value = {
-                        count: data.deleted_count,
-                        names: data.deleted_codes || []
+                        count: data.deleted_count ?? items.length,
+                        names: data.deleted_codes || items.map(i => i.code || i.path || '')
                     };
                     loadLocalVideos();
                     loadSources();

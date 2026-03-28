@@ -122,17 +122,32 @@ def get_movie_by_code(code: str) -> Optional[dict]:
 
 
 def get_movie_by_id(movie_id: int) -> Optional[dict]:
-    """根据ID查询影片"""
+    """根据ID查询影片，同时取出关联本地视频的多图路径"""
     conn = get_db()
     cursor = conn.cursor()
     
     cursor.execute("SELECT * FROM movies WHERE id = ?", (movie_id,))
     row = cursor.fetchone()
-    conn.close()
     
-    if row:
-        return dict(row)
-    return None
+    if not row:
+        conn.close()
+        return None
+    
+    result = dict(row)
+    
+    # 额外取关联的 local_videos 的图片路径
+    local_video_id = result.get("local_video_id")
+    if local_video_id:
+        cursor.execute(
+            "SELECT fanart_path, poster_path, thumb_path FROM local_videos WHERE id = ?",
+            (local_video_id,)
+        )
+        lv_row = cursor.fetchone()
+        if lv_row:
+            result.update(dict(lv_row))
+    
+    conn.close()
+    return result
 
 
 def get_all_movies(page: int = 1, page_size: int = 20) -> tuple:
@@ -145,8 +160,10 @@ def get_all_movies(page: int = 1, page_size: int = 20) -> tuple:
     
     offset = (page - 1) * page_size
     cursor.execute("""
-        SELECT * FROM movies 
-        ORDER BY created_at DESC 
+        SELECT m.*, lv.fanart_path, lv.poster_path, lv.thumb_path
+        FROM movies m
+        LEFT JOIN local_videos lv ON m.local_video_id = lv.id
+        ORDER BY m.created_at DESC
         LIMIT ? OFFSET ?
     """, (page_size, offset))
     
@@ -170,9 +187,11 @@ def search_movies(keyword: str, page: int = 1, page_size: int = 20) -> tuple:
     
     offset = (page - 1) * page_size
     cursor.execute("""
-        SELECT * FROM movies 
-        WHERE code LIKE ? OR title LIKE ? OR title_jp LIKE ?
-        ORDER BY created_at DESC 
+        SELECT m.*, lv.fanart_path, lv.poster_path, lv.thumb_path
+        FROM movies m
+        LEFT JOIN local_videos lv ON m.local_video_id = lv.id
+        WHERE m.code LIKE ? OR m.title LIKE ? OR m.title_jp LIKE ?
+        ORDER BY m.created_at DESC
         LIMIT ? OFFSET ?
     """, (search_pattern, search_pattern, search_pattern, page_size, offset))
     
@@ -503,6 +522,7 @@ def upsert_local_video(video_data: dict) -> tuple:
         cursor.execute("""
             UPDATE local_videos
             SET name = ?, code = ?, extension = ?, file_size = ?,
+                fanart_path = ?, poster_path = ?, thumb_path = ?,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
         """, (
@@ -510,6 +530,9 @@ def upsert_local_video(video_data: dict) -> tuple:
             video_data.get("code"),
             video_data.get("extension"),
             video_data.get("file_size", 0),
+            video_data.get("fanart_path"),
+            video_data.get("poster_path"),
+            video_data.get("thumb_path"),
             video_id
         ))
         conn.commit()
@@ -517,8 +540,8 @@ def upsert_local_video(video_data: dict) -> tuple:
         return video_id, False
     else:
         cursor.execute("""
-            INSERT INTO local_videos (source_id, name, path, code, extension, file_size)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO local_videos (source_id, name, path, code, extension, file_size, fanart_path, poster_path, thumb_path)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             video_data.get("source_id"),
             video_data.get("name"),
@@ -526,6 +549,9 @@ def upsert_local_video(video_data: dict) -> tuple:
             video_data.get("code"),
             video_data.get("extension"),
             video_data.get("file_size", 0),
+            video_data.get("fanart_path"),
+            video_data.get("poster_path"),
+            video_data.get("thumb_path"),
         ))
         video_id = cursor.lastrowid
         conn.commit()

@@ -33,6 +33,11 @@ class MovieResponse(MovieBase):
     id: int
     created_at: datetime
     updated_at: datetime
+    local_video_id: Optional[int] = None
+    # 本地多图路径（来自 local_videos 表的关联记录）
+    fanart_path: Optional[str] = None
+    poster_path: Optional[str] = None
+    thumb_path: Optional[str] = None
 
     class Config:
         from_attributes = True

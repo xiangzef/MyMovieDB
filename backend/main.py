@@ -703,6 +703,17 @@ async def remove_local_source(source_id: int):
     return {"success": True, "message": "已删除"}
 
 
+def _find_image_path(directory: str, code: str, image_type: str) -> Optional[str]:
+    """
+    在指定目录查找 {code}-{type}.jpg 图片文件
+    例如: SSIS-254-fanart.jpg, ABP-875-poster.jpg
+    """
+    import os
+    filename = f"{code}-{image_type}.jpg"
+    path = os.path.join(directory, filename)
+    return path if os.path.isfile(path) else None
+
+
 @app.post("/local-sources/scan", tags=["本地视频"])
 async def scan_local_sources():
     """
@@ -783,6 +794,10 @@ async def scan_local_sources():
                         "code": code,
                         "extension": ext,
                         "file_size": file_size,
+                        # 提取同目录下的 fanart / poster / thumb 图片
+                        "fanart_path": _find_image_path(root, code, "fanart"),
+                        "poster_path": _find_image_path(root, code, "poster"),
+                        "thumb_path": _find_image_path(root, code, "thumb"),
                     }
 
                     vid_id, is_new = db.upsert_local_video(video_data)
