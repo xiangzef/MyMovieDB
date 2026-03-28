@@ -742,9 +742,7 @@ def cleanup_invalid_codes():
             # 番号无效，删除记录
             cursor.execute("DELETE FROM local_videos WHERE id = ?", (video_id,))
             deleted_names.append(name)
-        elif valid_code.upper() != code.upper():
-            # 番号不匹配（可能是大小写或标准化问题），更新
-            cursor.execute("UPDATE local_videos SET code = ? WHERE id = ?", (valid_code, video_id))
+        # 如果 valid_code 存在但和现有 code 不同（可能是规范化差异），不修改，保留现有记录
 
     conn.commit()
     deleted_count = null_deleted + len(deleted_names)
