@@ -57,6 +57,12 @@ def init_db():
         "local_cover_path": "ALTER TABLE movies ADD COLUMN local_cover_path TEXT",
         "actors_male": "ALTER TABLE movies ADD COLUMN actors_male TEXT",
         "local_video_id": "ALTER TABLE movies ADD COLUMN local_video_id INTEGER",
+        "scrape_status": "ALTER TABLE movies ADD COLUMN scrape_status TEXT DEFAULT 'partial'",  # complete/partial/empty
+        "scrape_source": "ALTER TABLE movies ADD COLUMN scrape_source TEXT",  # 记录数据来源
+        "title_cn": "ALTER TABLE movies ADD COLUMN title_cn TEXT",  # 中文标题
+        "fanart_path": "ALTER TABLE movies ADD COLUMN fanart_path TEXT",  # Jellyfin/Kodi 背景
+        "poster_path": "ALTER TABLE movies ADD COLUMN poster_path TEXT",  # Jellyfin/Kodi 海报
+        "thumb_path": "ALTER TABLE movies ADD COLUMN thumb_path TEXT",  # Jellyfin/Kodi 缩略图
     }
     for col_name, sql in new_columns.items():
         if col_name not in existing_columns:
@@ -66,6 +72,10 @@ def init_db():
                 pass  # 已存在则忽略
     
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_movies_code ON movies(code)")
+    
+    # 添加演员索引（JSON 数组字段无法直接索引，使用 LIKE 查询时会有性能损失）
+    # 如需优化演员查询，可考虑单独建立 actors 表
+    # cursor.execute("CREATE INDEX IF NOT EXISTS idx_movies_actors ON movies(actors)")
     
     conn.commit()
     conn.close()
@@ -78,14 +88,16 @@ def create_movie(movie_data: dict) -> int:
 
     cursor.execute("""
         INSERT INTO movies (
-            code, title, title_jp, release_date, duration,
+            code, title, title_jp, title_cn, release_date, duration,
             studio, maker, director, cover_url, preview_url,
-            detail_url, genres, actors, actors_male, local_cover_path, local_video_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            detail_url, genres, actors, actors_male, local_cover_path, local_video_id,
+            scrape_status, scrape_source, fanart_path, poster_path, thumb_path
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         movie_data.get("code"),
         movie_data.get("title"),
         movie_data.get("title_jp"),
+        movie_data.get("title_cn"),
         movie_data.get("release_date"),
         movie_data.get("duration"),
         movie_data.get("studio"),
@@ -99,6 +111,11 @@ def create_movie(movie_data: dict) -> int:
         json.dumps(movie_data.get("actors_male", []), ensure_ascii=False),
         movie_data.get("local_cover_path"),
         movie_data.get("local_video_id"),
+        movie_data.get("scrape_status", "partial"),
+        movie_data.get("scrape_source"),
+        movie_data.get("fanart_path"),
+        movie_data.get("poster_path"),
+        movie_data.get("thumb_path"),
     ))
 
     movie_id = cursor.lastrowid
@@ -212,10 +229,11 @@ def merge_movie_data(existing: dict, new_data: dict) -> dict:
     
     # 需要比较和更新的字段
     updatable_fields = [
-        "title", "title_jp", "release_date", "duration",
+        "title", "title_jp", "title_cn", "release_date", "duration",
         "studio", "maker", "director", "cover_url",
         "preview_url", "detail_url", "genres", "actors",
-        "actors_male", "local_cover_path", "local_video_id"
+        "actors_male", "local_cover_path", "local_video_id",
+        "scrape_source", "fanart_path", "poster_path", "thumb_path"
     ]
     
     for field in updatable_fields:
@@ -232,6 +250,9 @@ def merge_movie_data(existing: dict, new_data: dict) -> dict:
             # 普通字段：如果新数据有值，更新
             if new_value and new_value != old_value:
                 merged[field] = new_value
+    
+    # 重新计算削刮状态
+    merged["scrape_status"] = calculate_scrape_status(merged)
     
     return merged
 
@@ -289,6 +310,9 @@ def upsert_movie(movie_data: dict) -> tuple:
     code = movie_data.get("code")
     if not code:
         raise ValueError("影片编号不能为空")
+
+    # 计算削刮状态
+    movie_data["scrape_status"] = calculate_scrape_status(movie_data)
 
     existing = get_movie_by_code(code)
 
@@ -365,6 +389,60 @@ def row_to_movie_response(row: dict) -> dict:
     else:
         row["actors_male"] = None
     return row
+
+
+def calculate_scrape_status(movie_data: dict) -> str:
+    """
+    计算削刮完整度状态
+    complete: 有图片、有女演员、有发行商、有发布时间
+    partial: 部分字段有值
+    empty: 仅番号，无其他信息
+    """
+    # 必填字段：cover_url, actors, studio, release_date
+    has_cover = bool(movie_data.get("cover_url"))
+    has_release_date = bool(movie_data.get("release_date"))
+    has_studio = bool(movie_data.get("studio"))
+    
+    # 演员字段特殊处理（可能是列表或JSON字符串）
+    actors = movie_data.get("actors")
+    has_actors = False
+    if actors:
+        if isinstance(actors, list) and len(actors) > 0:
+            has_actors = True
+        elif isinstance(actors, str) and actors.strip() not in ("", "[]"):
+            try:
+                parsed = json.loads(actors)
+                has_actors = isinstance(parsed, list) and len(parsed) > 0
+            except:
+                pass
+    
+    # 判断完整度：必须同时满足4个条件
+    if has_cover and has_actors and has_studio and has_release_date:
+        return "complete"
+    elif has_cover or has_actors or has_studio or has_release_date:
+        return "partial"
+    else:
+        return "empty"
+
+
+def update_movie_scrape_status(movie_id: int):
+    """更新影片的削刮状态（重新计算）"""
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT * FROM movies WHERE id = ?", (movie_id,))
+    row = cursor.fetchone()
+    
+    if row:
+        movie_data = dict(row)
+        status = calculate_scrape_status(movie_data)
+        cursor.execute(
+            "UPDATE movies SET scrape_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (status, movie_id)
+        )
+        conn.commit()
+    
+    conn.close()
 
 
 # ========== 本地视频源管理 ==========

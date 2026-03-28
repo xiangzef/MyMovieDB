@@ -563,6 +563,7 @@ async def scrape_batch(req: ScrapeRequest):
         success_count = 0
         fail_count = 0
         local_link_count = 0
+        skipped_count = 0
 
         for i, code in enumerate(codes):
             # 检查停止标志
@@ -587,6 +588,22 @@ async def scrape_batch(req: ScrapeRequest):
                 "pct": int((i / total) * 100)
             })
 
+            # 检查是否已有完整削刮记录
+            existing = db.get_movie_by_code(code)
+            if existing and existing.get("scrape_status") == "complete":
+                skipped_count += 1
+                yield _send_sse({
+                    "type": "skipped",
+                    "job_id": job_id,
+                    "code": code,
+                    "title": existing.get("title", ""),
+                    "message": "已有完整削刮记录，跳过",
+                    "index": i + 1,
+                    "total": total,
+                    "pct": int(((i + 1) / total) * 100)
+                })
+                continue
+
             # 检查本地库是否有该番号的视频
             local_video = db.get_local_video_by_code(code)
             local_video_id = local_video["id"] if local_video else None
@@ -598,6 +615,19 @@ async def scrape_batch(req: ScrapeRequest):
                     # 注入本地视频关联
                     if local_video_id:
                         movie_data["local_video_id"] = local_video_id
+                    
+                    # 下载并裁切封面（如果启用）
+                    if req.save_cover and movie_data.get("cover_url"):
+                        from scraper import download_and_crop_cover
+                        from pathlib import Path
+                        covers_dir = Path(config.COVERS_DIR)
+                        covers_dir.mkdir(parents=True, exist_ok=True)
+                        crop_paths = download_and_crop_cover(
+                            movie_data["cover_url"], code, covers_dir
+                        )
+                        if crop_paths:
+                            movie_data.update(crop_paths)
+                    
                     movie_id, is_new = db.upsert_movie(movie_data)
                     # 标记本地视频已刮削
                     if local_video_id:
@@ -648,9 +678,10 @@ async def scrape_batch(req: ScrapeRequest):
         yield _send_sse({
             "type": "done",
             "job_id": job_id,
-            "processed": success_count + fail_count,
+            "processed": success_count + fail_count + skipped_count,
             "success_count": success_count,
             "fail_count": fail_count,
+            "skipped_count": skipped_count,
             "local_link_count": local_link_count,
             "total": total
         })

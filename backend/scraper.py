@@ -41,6 +41,18 @@ from pathlib import Path                         # 路径处理
 from urllib.parse import quote, urljoin, urlparse  # URL 处理
 from typing import Optional, Dict, List          # 类型提示
 import logging                                   # 日志记录
+from io import BytesIO                           # 字节流处理
+
+# ===============================================================================
+# 可选依赖：PIL 图片处理
+# ===============================================================================
+# 功能: 下载封面并裁切为 fanart/poster/thumb 尺寸
+try:
+    from PIL import Image
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+    print("警告: Pillow 未安装，将跳过封面裁切")
 
 # ===============================================================================
 # 可选依赖：Google 翻译
@@ -111,6 +123,124 @@ def translate_to_chinese(text: str, retry: int = 2) -> str:
                 time.sleep(1)  # 等待1秒后重试
 
     return text  # 所有重试都失败，返回原文
+
+
+# ===============================================================================
+# 图片下载与裁切
+# ===============================================================================
+
+def download_and_crop_cover(cover_url: str, code: str, save_dir: Path) -> Optional[Dict[str, str]]:
+    """
+    功能: 下载封面图并裁切为 fanart/poster/thumb 三种尺寸
+    文件: scraper.py
+    参数:
+        cover_url: 封面图 URL
+        code: 影片番号（用于命名文件）
+        save_dir: 保存目录
+    返回: {"fanart": path, "poster": path, "thumb": path} 或 None
+    依赖: PIL.Image, requests
+    说明:
+        - fanart: 横向 1920x1080 (用于背景)
+        - poster: 竖向 1000x1500 (用于海报)
+        - thumb: 缩略图 300x450
+    """
+    if not PIL_AVAILABLE or not cover_url:
+        return None
+
+    try:
+        # 下载原图
+        response = requests.get(cover_url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        if response.status_code != 200:
+            logger.warning(f"封面下载失败: {cover_url}")
+            return None
+
+        # 打开图片
+        img = Image.open(BytesIO(response.content))
+        original_width, original_height = img.size
+
+        # 创建保存目录
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        # 文件名
+        safe_code = re.sub(r'[<>:"/\\|?*]', '_', code)
+        paths = {}
+
+        # 1. Poster (竖向 1000x1500)
+        poster_path = save_dir / f"{safe_code}-poster.jpg"
+        if original_height > original_width:
+            # 原图是竖向
+            poster = img.copy()
+            poster.thumbnail((1000, 1500), Image.Resampling.LANCZOS)
+        else:
+            # 原图是横向，裁切中间部分
+            poster = _crop_to_portrait(img, 1000, 1500)
+        poster = poster.convert("RGB")
+        poster.save(poster_path, "JPEG", quality=90)
+        paths["poster"] = str(poster_path)
+
+        # 2. Fanart (横向 1920x1080)
+        fanart_path = save_dir / f"{safe_code}-fanart.jpg"
+        if original_width > original_height:
+            # 原图是横向
+            fanart = img.copy()
+            fanart.thumbnail((1920, 1080), Image.Resampling.LANCZOS)
+        else:
+            # 原图是竖向，裁切中间部分
+            fanart = _crop_to_landscape(img, 1920, 1080)
+        fanart = fanart.convert("RGB")
+        fanart.save(fanart_path, "JPEG", quality=90)
+        paths["fanart"] = str(fanart_path)
+
+        # 3. Thumb (缩略图 300x450)
+        thumb_path = save_dir / f"{safe_code}-thumb.jpg"
+        thumb = img.copy()
+        thumb.thumbnail((300, 450), Image.Resampling.LANCZOS)
+        thumb = thumb.convert("RGB")
+        thumb.save(thumb_path, "JPEG", quality=85)
+        paths["thumb"] = str(thumb_path)
+
+        logger.info(f"封面裁切成功: {code}")
+        return paths
+
+    except Exception as e:
+        logger.error(f"封面处理失败 {code}: {e}")
+        return None
+
+
+def _crop_to_portrait(img: Image, target_width: int, target_height: int) -> Image:
+    """裁切为竖向比例"""
+    width, height = img.size
+    target_ratio = target_width / target_height
+    current_ratio = width / height
+
+    if current_ratio > target_ratio:
+        # 原图更宽，裁切左右
+        new_width = int(height * target_ratio)
+        left = (width - new_width) // 2
+        return img.crop((left, 0, left + new_width, height))
+    else:
+        # 原图更高，裁切上下
+        new_height = int(width / target_ratio)
+        top = (height - new_height) // 2
+        return img.crop((0, top, width, top + new_height))
+
+
+def _crop_to_landscape(img: Image, target_width: int, target_height: int) -> Image:
+    """裁切为横向比例"""
+    width, height = img.size
+    target_ratio = target_width / target_height
+    current_ratio = width / height
+
+    if current_ratio > target_ratio:
+        # 原图更宽，裁切左右
+        new_width = int(height * target_ratio)
+        left = (width - new_width) // 2
+        return img.crop((left, 0, left + new_width, height))
+    else:
+        # 原图更高，裁切上下
+        new_height = int(width / target_ratio)
+        top = (height - new_height) // 2
+        return img.crop((0, top, width, top + new_height))
 
 
 def make_bilingual_title(jp_title: str, cn_title: str = None) -> str:
@@ -321,27 +451,73 @@ class AvdanyuwikiScraper(BaseScraper):
         依赖: _get(), _parse_page_text()
         URL 格式: https://avdanyuwiki.com/?s=KEYWORD
         """
-        soup = self._get(f"{self.BASE_URL}/?s={quote(keyword)}")
+        # 生成多种搜索格式（Avdanyuwiki 可能使用不同格式）
+        search_variants = self._generate_search_variants(keyword)
+        
+        for search_term in search_variants:
+            soup = self._get(f"{self.BASE_URL}/?s={quote(search_term)}")
 
-        if not soup:
-            return []
+            if not soup:
+                continue
 
-        results = []
-        page_text = soup.get_text()  # 获取页面纯文本
+            results = []
+            page_text = soup.get_text()  # 获取页面纯文本
 
-        # 检查搜索词是否在页面中
-        if keyword.upper() not in page_text.upper() and keyword.lower() not in page_text.lower():
-            logger.warning(f"Avdanyuwiki 未找到: {keyword}")
-            return []
+            # 检查搜索词是否在页面中
+            if search_term.upper() not in page_text.upper() and search_term.lower() not in page_text.lower():
+                # 检查原始番号是否在页面中
+                if keyword.upper() not in page_text.upper():
+                    continue
 
-        # 解析页面数据
-        data = self._parse_page_text(page_text, soup)
+            # 解析页面数据
+            data = self._parse_page_text(page_text, soup)
 
-        if data.get("code"):
-            results.append(data)
+            if data.get("code"):
+                results.append(data)
+                logger.info(f"Avdanyuwiki 找到 {len(results)} 个结果 (使用格式: {search_term})")
+                return results
 
-        logger.info(f"Avdanyuwiki 找到 {len(results)} 个结果")
-        return results
+        logger.warning(f"Avdanyuwiki 未找到: {keyword}")
+        return []
+
+    def _generate_search_variants(self, keyword: str) -> List[str]:
+        """
+        功能: 生成多种搜索格式变体
+        文件: scraper.py
+        参数:
+            keyword: 原始番号（如 "SSIS-254"）
+        返回: 搜索变体列表
+        说明:
+            - SSIS-254 → ["SSIS 254", "SSIS00254", "SSIS254"]
+            - 横线替换为空格，补零到5位，去掉横线
+        """
+        variants = []
+        
+        # 提取前缀和数字
+        match = re.match(r'([A-Z]+)-(\d+)', keyword.upper())
+        if match:
+            prefix, number = match.groups()
+            
+            # 1. 横线替换为空格（SSIS 254）
+            variants.append(f"{prefix} {number}")
+            
+            # 2. 补零到5位（SSIS00254）
+            if len(number) < 5:
+                padded = number.zfill(5)
+                variants.append(f"{prefix}{padded}")
+            
+            # 3. 去掉横线（SSIS254）
+            variants.append(f"{prefix}{number}")
+            
+            # 4. 补零到3位
+            if len(number) < 3:
+                padded = number.zfill(3)
+                variants.append(f"{prefix}{padded}")
+        else:
+            # 如果没有横线，直接使用
+            variants.append(keyword.upper())
+        
+        return variants
 
     def _parse_page_text(self, page_text: str, soup: BeautifulSoup) -> Dict:
         """
@@ -380,27 +556,54 @@ class AvdanyuwikiScraper(BaseScraper):
             detail["code"] = code_matches[0].upper()
 
         # --------------------------------------------------------------------------
-        # 提取标题 - 在 h2 标签中查找日文内容
-        # 语法: bs4.find_all(标签名) 查找所有匹配标签
-        #       any(条件 for item in 列表) 检查是否有任何匹配
+        # 提取标题 - 新格式：番号后紧跟标题
+        # 格式："SSIS00254"
+        #       激イキ109回！痙攣3900回！イキ潮2000cc超え！...
         # --------------------------------------------------------------------------
-        h2_tags = soup.find_all("h2")
-        for h2 in h2_tags:
-            h2_text = h2.get_text(strip=True)
-            # 检查是否包含日文字符（Unicode 范围 \u3040-\u30ff）
-            if any('\u3040' <= c <= '\u30ff' for c in h2_text) and len(h2_text) > 5:
-                detail["title_jp"] = h2_text
-                detail["title"] = h2_text
+        # 方法1：查找番号后的第一行日文标题
+        lines = page_text.split('\n')
+        for i, line in enumerate(lines):
+            line = line.strip()
+            # 找到包含番号的行
+            if detail["code"] and detail["code"].replace("-", "") in line.replace("-", "").upper():
+                # 后面几行找标题
+                for j in range(i+1, min(i+5, len(lines))):
+                    next_line = lines[j].strip()
+                    # 标题特征：包含日文且长度>10
+                    if len(next_line) > 10 and any('\u3040' <= c <= '\u30ff' for c in next_line):
+                        # 排除"出演AV男優"等非标题行
+                        if "出演" not in next_line and "ジャンル" not in next_line:
+                            detail["title_jp"] = next_line
+                            detail["title"] = next_line
+                            break
                 break
 
+        # 方法2：查找 h1 标签
+        if not detail["title_jp"]:
+            h1 = soup.find("h1")
+            if h1:
+                h1_text = h1.get_text(strip=True)
+                if len(h1_text) > 10 and any('\u3040' <= c <= '\u30ff' for c in h1_text):
+                    detail["title_jp"] = h1_text
+                    detail["title"] = h1_text
+
+        # 方法3：查找 h2 标签中的日文内容
+        if not detail["title_jp"]:
+            h2_tags = soup.find_all("h2")
+            for h2 in h2_tags:
+                h2_text = h2.get_text(strip=True)
+                if any('\u3040' <= c <= '\u30ff' for c in h2_text) and len(h2_text) > 5:
+                    detail["title_jp"] = h2_text
+                    detail["title"] = h2_text
+                    break
+
         # --------------------------------------------------------------------------
-        # 提取发布日期
-        # 语法: re.search(正则, 文本) 查找第一个匹配
+        # 提取发布日期 - 新格式：配信開始日：	2021/11/19
         # --------------------------------------------------------------------------
         date_patterns = [
-            r"商品発送日[：:]\s*(\d{4}[/\-]\d{2}[/\-]\d{2})",
-            r"商品発売日[：:]\s*(\d{4}[/\-]\d{2}[/\-]\d{2})",
             r"配信開始日[：:]\s*(\d{4}[/\-]\d{2}[/\-]\d{2})",
+            r"商品発売日[：:]\s*(\d{4}[/\-]\d{2}[/\-]\d{2})",
+            r"商品発送日[：:]\s*(\d{4}[/\-]\d{2}[/\-]\d{2})",
             r"(\d{4}[/\-]\d{2}[/\-]\d{2})",
         ]
         for pattern in date_patterns:
@@ -410,66 +613,63 @@ class AvdanyuwikiScraper(BaseScraper):
                 break
 
         # --------------------------------------------------------------------------
-        # 提取时长
+        # 提取时长 - 新格式：収録時間：	120分
         # --------------------------------------------------------------------------
-        duration_match = re.search(r"収録時間[：:]\s*(\d+)", page_text)
+        duration_match = re.search(r"収録時間[：:]\s*(\d+)\s*分", page_text)
         if duration_match:
             detail["duration"] = int(duration_match.group(1))
 
         # --------------------------------------------------------------------------
-        # 提取出演者（女优）
-        # 语法: 捕获组 () 提取特定部分
+        # 提取出演者（女优）- 新格式：出演者：	楓ふうあ
         # --------------------------------------------------------------------------
-        actor_match = re.search(r"出演者[：:]\s*([^出演\n]+?)(?=\n|出演|$)", page_text)
+        actor_match = re.search(r"出演者[：:]\s*([^\n]+?)(?=\n|出演男優|監督|$)", page_text)
         if actor_match:
             actors_text = actor_match.group(1).strip()
-            # 语法: str.split(分隔符) 分割字符串
-            actors = [a.strip() for a in actors_text.split(",") if a.strip()]
+            # 按空格或逗号分割
+            actors = re.split(r'[,\s、]+', actors_text)
+            actors = [a.strip() for a in actors if a.strip() and len(a.strip()) > 1]
             detail["actors"] = actors
 
         # --------------------------------------------------------------------------
-        # 提取出演男優
+        # 提取出演男優 - 新格式：出演男優： 貞松大輔 , イセドン内村...
         # --------------------------------------------------------------------------
-        male_match = re.search(r"出演男優[：:]\s*([^出演\n]+?)(?=\n|監督|$)", page_text)
+        male_match = re.search(r"出演男優[：:]\s*([^\n]+?)(?=\n|監督|$)", page_text)
         if male_match:
             male_text = male_match.group(1).strip()
-            males = [m.strip() for m in male_text.split(",") if m.strip()]
+            males = re.split(r'[,\s、]+', male_text)
+            males = [m.strip() for m in males if m.strip() and len(m.strip()) > 1]
             detail["actors_male"] = males
 
         # --------------------------------------------------------------------------
-        # 提取監督（导演）
+        # 提取監督（导演）- 新格式：監督：	苺原
         # --------------------------------------------------------------------------
         director_match = re.search(r"監督[：:]\s*([^\n]+?)(?=\n|シリーズ|$)", page_text)
         if director_match:
             detail["director"] = director_match.group(1).strip()
 
         # --------------------------------------------------------------------------
-        # 提取メーカー（制作商）
+        # 提取メーカー（制作商）- 新格式：メーカー：	エスワン ナンバーワンスタイル
         # --------------------------------------------------------------------------
         maker_match = re.search(r"メーカー[：:]\s*([^\n]+?)(?=\n|レーベル|$)", page_text)
         if maker_match:
             detail["maker"] = maker_match.group(1).strip()
 
         # --------------------------------------------------------------------------
-        # 提取レーベル（发行商）
+        # 提取レーベル（发行商）- 新格式：レーベル：	S1 NO.1 STYLE
         # --------------------------------------------------------------------------
         label_match = re.search(r"レーベル[：:]\s*([^\n]+?)(?=\n|ジャンル|$)", page_text)
         if label_match:
             detail["studio"] = label_match.group(1).strip()
 
         # --------------------------------------------------------------------------
-        # 提取ジャンル（类型/标签）
+        # 提取ジャンル（类型）- 新格式：ジャンル：	ハイビジョン  独占配信...
         # --------------------------------------------------------------------------
-        genre_match = re.search(r"ジャンル[：:]\s*([^\n]+)", page_text)
+        genre_match = re.search(r"ジャンル[：:]\s*([^\n]+?)(?=\n|品番|$)", page_text)
         if genre_match:
-            genres_text = genre_match.group(1).strip()
-            genres = []
-            for g in genres_text.split():
-                g = g.strip()
-                # 过滤条件：长度<20、不含数字、不含特殊符号、不含常见噪声词
-                if g and len(g) < 20 and not re.search(r'\d', g) and not re.search(r'[◆○●□■▲△▼▽★☆♪]', g):
-                    if g not in ['配信品番：', 'メーカー品番：', 'FANZA', 'PR', '当当は', 'を利用しています']:
-                        genres.append(g)
+            genre_text = genre_match.group(1).strip()
+            # 按空格分割
+            genres = re.split(r'\s+', genre_text)
+            genres = [g.strip() for g in genres if g.strip()]
             detail["genres"] = genres
 
         # --------------------------------------------------------------------------
@@ -485,12 +685,16 @@ class AvdanyuwikiScraper(BaseScraper):
                 break
 
         # --------------------------------------------------------------------------
-        # 处理双语标题
+        # 处理双语标题 + 提取中文标题
         # --------------------------------------------------------------------------
         if detail.get("title_jp"):
             cn_title = translate_to_chinese(detail["title_jp"])
             if cn_title and cn_title != detail["title_jp"]:
-                detail["title"] = make_bilingual_title(detail["title_jp"], cn_title)
+                detail["title_cn"] = cn_title
+                detail["title"] = f"{cn_title}\n{detail['title_jp']}"
+            else:
+                detail["title_cn"] = ""
+                detail["title"] = detail["title_jp"]
 
         return detail
 
@@ -576,16 +780,93 @@ class AvWikiScraper(BaseScraper):
         return data
 
     def _parse_detail_page(self, soup: BeautifulSoup, url: str) -> Dict:
-        """解析详情页面"""
+        """
+        功能: 解析 AV-Wiki 详情页面
+        文件: scraper.py
+        优化: 2026-03-28 - 增强信息提取
+        """
         data = make_basic_data(url)
 
+        # 提取标题
         title_tag = soup.select_one("h1, .entry-title")
         if title_tag:
             data["title"] = title_tag.get_text(strip=True)
+            data["title_jp"] = data["title"]
 
+        # 提取番号
         code_match = re.search(r"([A-Z]{1,6}-\d{2,5})", soup.get_text(), re.IGNORECASE)
         if code_match:
             data["code"] = code_match.group(1).upper()
+
+        # 查找文章内容
+        article = soup.select_one("article, .entry-content, .post-content")
+        if article:
+            article_text = article.get_text()
+
+            # 提取日期
+            date_match = re.search(r"(\d{4}[-/]\d{2}[-/]\d{2})", article_text)
+            if date_match:
+                data["release_date"] = date_match.group(1).replace("/", "-")
+
+            # 提取演员
+            actor_match = re.search(r'出演[：:]\s*([^\n]+)', article_text)
+            if actor_match:
+                actors_text = actor_match.group(1).strip()
+                actors = re.split(r'[,\s、]+', actors_text)
+                actors = [a for a in actors if a and len(a) > 1]
+                if actors:
+                    data["actors"] = actors
+
+            # 提取男优
+            male_match = re.search(r'男優[：:]\s*([^\n]+)', article_text)
+            if male_match:
+                males_text = male_match.group(1).strip()
+                males = re.split(r'[,\s、]+', males_text)
+                males = [m for m in males if m and len(m) > 1]
+                if males:
+                    data["actors_male"] = males
+
+            # 提取导演
+            director_match = re.search(r'監督[：:]\s*([^\n]+)', article_text)
+            if director_match:
+                data["director"] = director_match.group(1).strip()
+
+            # 提取制作商
+            maker_match = re.search(r'メーカー[：:]\s*([^\n]+)', article_text)
+            if maker_match:
+                data["maker"] = maker_match.group(1).strip()
+
+            # 提取发行商
+            label_match = re.search(r'レーベル[：:]\s*([^\n]+)', article_text)
+            if label_match:
+                data["studio"] = label_match.group(1).strip()
+
+            # 提取类型
+            genre_match = re.search(r'ジャンル[：:]\s*([^\n]+)', article_text)
+            if genre_match:
+                genre_text = genre_match.group(1).strip()
+                genres = re.split(r'[,\s、]+', genre_text)
+                genres = [g for g in genres if g and len(g) > 1]
+                if genres:
+                    data["genres"] = genres
+
+            # 提取时长
+            duration_match = re.search(r'(\d+)\s*分', article_text)
+            if duration_match:
+                data["duration"] = int(duration_match.group(1))
+
+        # 提取封面
+        imgs = soup.find_all("img")
+        for img in imgs:
+            src = img.get("src", "") or img.get("data-src", "")
+            # 跳过延迟加载的占位图和 logo
+            if src and "data:image" not in src and "favicon" not in src and "logo" not in src:
+                # 优先选择 DMM 图片
+                if "dmm" in src.lower():
+                    data["cover_url"] = src
+                    break
+                elif not data["cover_url"]:
+                    data["cover_url"] = src
 
         return data
 
@@ -688,20 +969,104 @@ class AvbaseScraper(BaseScraper):
         return data
 
     def _parse_detail_page(self, soup: BeautifulSoup, url: str) -> Dict:
-        """解析详情页面"""
+        """
+        功能: 解析 Avbase 详情页面
+        文件: scraper.py
+        优化: 2026-03-28 - 增强信息提取，正确提取演员/时长/导演
+        """
         data = make_basic_data(url)
+        page_text = soup.get_text()
 
+        # 提取标题
         title_tag = soup.select_one("h1, .title, .works-title")
         if title_tag:
             data["title"] = title_tag.get_text(strip=True)
+            data["title_jp"] = data["title"]
 
-        code_match = re.search(r"([A-Z0-9]{1,6}-\d{2,5})", soup.get_text(), re.IGNORECASE)
+        # 提取番号
+        code_match = re.search(r"([A-Z0-9]{1,6}-\d{2,5})", page_text, re.IGNORECASE)
         if code_match:
             data["code"] = code_match.group(1).upper()
 
-        date_match = re.search(r"(\d{4}[-/]\d{2}[-/]\d{2})", soup.get_text())
+        # 提取日期
+        date_match = re.search(r"(\d{4}[-/]\d{2}[-/]\d{2})", page_text)
         if date_match:
             data["release_date"] = date_match.group(1).replace("/", "-")
+
+        # 提取封面（优先 DMM 图片）
+        imgs = soup.find_all("img")
+        for img in imgs:
+            src = img.get("src", "") or img.get("data-src", "")
+            if src and "dmm" in src.lower() and "pl" in src:
+                data["cover_url"] = src
+                break
+
+        # 提取演员 - 从 /talents/ 链接中提取
+        actor_links = soup.select('a[href*="/talents/"]')
+        if actor_links:
+            actors = [link.get_text(strip=True) for link in actor_links if link.get_text(strip=True)]
+            if actors:
+                data["actors"] = actors
+
+        # 提取时长 - 从页面文本中提取 "収録分数120"
+        duration_match = re.search(r"収録分数\s*(\d+)", page_text)
+        if duration_match:
+            data["duration"] = int(duration_match.group(1))
+
+        # 提取制作商 - 从页面文本中提取 "メーカー..."
+        # 查找 "メーカー" 关键词后的文本
+        lines = page_text.split('\n')
+        for i, line in enumerate(lines):
+            line = line.strip()
+            if line == "メーカー" and i+1 < len(lines):
+                # 下一行是制作商名称
+                maker = lines[i+1].strip()
+                if maker and len(maker) < 50:
+                    data["maker"] = maker
+                    break
+            elif line.startswith("メーカー"):
+                # 同一行包含制作商名称
+                maker = line.replace("メーカー", "").strip()
+                if maker and len(maker) < 50:
+                    data["maker"] = maker
+                    break
+
+        # 提取发行商 - 从页面文本中提取 "レーベル..."
+        for i, line in enumerate(lines):
+            line = line.strip()
+            if line == "レーベル" and i+1 < len(lines):
+                label = lines[i+1].strip()
+                if label and len(label) < 50:
+                    data["studio"] = label
+                    break
+            elif line.startswith("レーベル"):
+                label = line.replace("レーベル", "").strip()
+                if label and len(label) < 50:
+                    data["studio"] = label
+                    break
+
+        # 提取导演 - 从页面文本中提取 "監督..."
+        for i, line in enumerate(lines):
+            line = line.strip()
+            if line == "監督" and i+1 < len(lines):
+                director = lines[i+1].strip()
+                if director and len(director) < 30:
+                    data["director"] = director
+                    break
+            elif line.startswith("監督"):
+                director = line.replace("監督", "").strip()
+                if director and len(director) < 30:
+                    data["director"] = director
+                    break
+
+        # 提取类型 - 从 "タグ" 后面的关键词提取
+        tag_keywords = ["ギリモザ", "単体作品", "3P・4P", "淫乱・ハード系", "潮吹き", "独占配信"]
+        genres = []
+        for keyword in tag_keywords:
+            if keyword in page_text:
+                genres.append(keyword)
+        if genres:
+            data["genres"] = genres
 
         return data
 
@@ -709,6 +1074,190 @@ class AvbaseScraper(BaseScraper):
 # ===============================================================================
 # Javcup 爬虫
 # ===============================================================================
+
+class FanzaScraper(BaseScraper):
+    """
+    功能: Fanza (DMM) 数据源爬虫
+    文件: scraper.py
+    网站: https://www.dmm.co.jp
+    特点: DMM 官方站点，数据最全最准
+    URL 格式: https://www.dmm.co.jp/mono/dvd/-/detail/=/cid=CODE/
+    说明: 需要将番号转换为 DMM 格式（SSIS-254 → ssis254）
+          需要设置年龄验证 Cookie
+    """
+
+    BASE_URL = "https://www.dmm.co.jp"
+
+    def __init__(self, **kwargs):
+        """初始化 Fanza 爬虫"""
+        super().__init__(**kwargs)
+        # 设置年龄验证 Cookie
+        self.session.cookies.set("age_check_done", "1", domain=".dmm.co.jp")
+
+    def search(self, keyword: str) -> List[Dict]:
+        """
+        功能: 搜索 Fanza (DMM)
+        文件: scraper.py
+        URL 格式: https://www.dmm.co.jp/mono/dvd/-/detail/=/cid=ssis254/
+        """
+        results = []
+
+        # 转换番号格式：SSIS-254 → ssis254
+        code_dmm = keyword.upper().replace("-", "").lower()
+
+        # 尝试补零（SSIS254 → ssis00254）
+        match = re.match(r'([a-z]+)(\d+)', code_dmm)
+        if match:
+            prefix, number = match.groups()
+            
+            # DMM 格式：补零到 3-5 位，尝试多种格式
+            variants = []
+            
+            # 1. 原格式
+            variants.append(code_dmm)
+            
+            # 2. 补零到 3 位
+            if len(number) < 3:
+                variants.append(f"{prefix}{number.zfill(3)}")
+            
+            # 3. 补零到 5 位
+            if len(number) < 5:
+                variants.append(f"{prefix}{number.zfill(5)}")
+            
+            # 遍历尝试
+            for variant in variants:
+                url = f"{self.BASE_URL}/mono/dvd/-/detail/=/cid={variant}/"
+                soup = self._get(url)
+
+                if soup and self._is_valid_page(soup, keyword):
+                    # 直接解析详情页，不再返回 search 结果
+                    detail = self._parse_detail_page(soup, url)
+                    detail["code"] = keyword.upper()
+                    detail["source"] = "fanza"
+                    logger.info(f"Fanza 找到结果: {url}")
+                    return [detail]  # 返回包含完整信息的列表
+
+        logger.warning(f"Fanza 未找到: {keyword}")
+        return results
+
+    def _is_valid_page(self, soup: BeautifulSoup, keyword: str) -> bool:
+        """检查页面是否有效（避免 404 或空页面）"""
+        page_text = soup.get_text()
+        # 检查是否包含番号关键词
+        return keyword.upper() in page_text.upper() or keyword.upper().replace("-", "") in page_text.upper()
+
+    def scrape(self, keyword: str) -> Optional[Dict]:
+        """
+        功能: 刮削影片（覆盖父类方法，直接返回详情）
+        文件: scraper.py
+        """
+        results = self.search(keyword)
+        if results:
+            return results[0]  # search() 已返回完整详情
+        return None
+
+    def get_detail(self, detail_url: str) -> Optional[Dict]:
+        """获取影片详情"""
+        soup = self._get(detail_url)
+        if not soup:
+            return None
+
+        data = self._parse_detail_page(soup, detail_url)
+        data["source"] = "fanza"
+        return data
+
+    def _parse_detail_page(self, soup: BeautifulSoup, url: str) -> Dict:
+        """
+        功能: 解析 Fanza 详情页面
+        文件: scraper.py
+        优化: 2026-03-28 - 提取完整信息
+        """
+        data = make_basic_data(url)
+        page_text = soup.get_text()
+
+        # 提取标题
+        title_tag = soup.select_one("h1, #title")
+        if title_tag:
+            title = title_tag.get_text(strip=True)
+            data["title"] = title
+            data["title_jp"] = title
+
+        # 提取番号
+        code_match = re.search(r"([A-Z]{2,6}-\d{2,5})", page_text, re.IGNORECASE)
+        if code_match:
+            data["code"] = code_match.group(1).upper()
+
+        # 提取日期 - 尝试多种格式
+        date_patterns = [
+            r"(\d{4}年\d{2}月\d{2}日)",  # 2021年11月19日
+            r"発売日[：:]\s*(\d{4}/\d{2}/\d{2})",  # 発売日：2021/11/19
+            r"(\d{4}/\d{2}/\d{2})",  # 2021/11/19
+        ]
+        for pattern in date_patterns:
+            date_match = re.search(pattern, page_text)
+            if date_match:
+                date_str = date_match.group(1)
+                # 转换格式：2021年11月19日 → 2021-11-19
+                date_str = re.sub(r'[年月]', '-', date_str).replace('日', '').replace('/', '-')
+                data["release_date"] = date_str
+                break
+
+        # 提取时长
+        duration_match = re.search(r"(\d+)\s*分", page_text)
+        if duration_match:
+            data["duration"] = int(duration_match.group(1))
+
+        # 提取女演员（出演者）
+        actor_links = soup.select('a[href*="article=actress"], a[href*="actress"]')
+        if actor_links:
+            actors = []
+            for link in actor_links:
+                text = link.get_text(strip=True)
+                # 过滤干扰项
+                if text and text not in ["AV女優一覧", "AV女優", "女優一覧", "一覧"]:
+                    actors.append(text)
+            if actors:
+                data["actors"] = actors
+
+        # 提取男演员（出演男優）- Fanza 可能没有单独标注
+        # 暂时留空，可从页面文本中尝试提取
+
+        # 提取制作商（メーカー）
+        maker_link = soup.select_one('a[href*="article=maker"]')
+        if maker_link:
+            data["maker"] = maker_link.get_text(strip=True)
+
+        # 提取发行商（レーベル）
+        label_link = soup.select_one('a[href*="article=label"]')
+        if label_link:
+            data["studio"] = label_link.get_text(strip=True)
+
+        # 提取导演（監督）
+        director_link = soup.select_one('a[href*="article=director"]')
+        if director_link:
+            director = director_link.get_text(strip=True)
+            # 排除干扰项
+            if director and director not in ["Blu-ray商品", "DVD商品", "商品一覧"]:
+                data["director"] = director
+
+        # 提取类型
+        genre_links = soup.select('a[href*="article=genre"]')
+        if genre_links:
+            genres = [link.get_text(strip=True) for link in genre_links if link.get_text(strip=True)]
+            if genres:
+                data["genres"] = genres
+
+        # 提取封面
+        img = soup.select_one('img[src*="pics.dmm"]')
+        if img:
+            src = img.get("src", "") or img.get("data-src", "")
+            # 替换为高清封面
+            if src and "ps.jpg" in src:
+                src = src.replace("ps.jpg", "pl.jpg")
+            data["cover_url"] = src
+
+        return data
+
 
 class JavcupScraper(BaseScraper):
     """
@@ -781,20 +1330,52 @@ class JavcupScraper(BaseScraper):
         return data
 
     def _parse_detail_page(self, soup: BeautifulSoup, url: str) -> Dict:
-        """解析详情页面"""
+        """
+        功能: 解析 Javcup 详情页面
+        文件: scraper.py
+        优化: 2026-03-28 - 修复封面路径，增强信息提取
+        """
         data = make_basic_data(url)
 
+        # 提取标题
         title_tag = soup.select_one("h1, .title")
         if title_tag:
-            data["title"] = title_tag.get_text(strip=True)
+            title = title_tag.get_text(strip=True)
+            # 去除番号前缀（如 "SSIS-254 标题..."）
+            if title and "-" in title:
+                parts = title.split(None, 1)
+                if len(parts) > 1 and re.match(r'^[A-Z]+-\d+', parts[0]):
+                    title = parts[1]
+            data["title"] = title
+            data["title_jp"] = title
 
+        # 提取番号
         code_match = re.search(r"([A-Z]{1,6}-\d{2,5})", soup.get_text(), re.IGNORECASE)
         if code_match:
             data["code"] = code_match.group(1).upper()
 
+        # 提取日期
         date_match = re.search(r"(\d{4}[-/]\d{2}[-/]\d{2})", soup.get_text())
         if date_match:
             data["release_date"] = date_match.group(1).replace("/", "-")
+
+        # 提取演员
+        actor_tags = soup.select(".actress, .actor, .performer")
+        if actor_tags:
+            actors = [tag.get_text(strip=True) for tag in actor_tags if tag.get_text(strip=True)]
+            if actors:
+                data["actors"] = actors
+
+        # 提取封面（修复相对路径）
+        imgs = soup.find_all("img")
+        for img in imgs:
+            src = img.get("src", "") or img.get("data-src", "")
+            if src and "favicon" not in src and "logo" not in src and "javcup.png" not in src:
+                # 修复相对路径
+                if src.startswith("/"):
+                    src = self.BASE_URL + src
+                data["cover_url"] = src
+                break
 
         return data
 
@@ -929,17 +1510,11 @@ class EnhancedMultiScraper:
         """
         # 爬虫类映射表
         scraper_map = {
-            "avdanyuwiki": AvdanyuwikiScraper,
-            "av-wiki": AvWikiScraper,
+            "fanza": FanzaScraper,
             "avbase": AvbaseScraper,
+            "av-wiki": AvWikiScraper,
             "javcup": JavcupScraper,
-            # 以下已禁用，不再使用
-            # "javdb": JavDBScraper,
-            # "javbus": JavBusScraper,
-            # "javbooks": JavbooksScraper,
-            # "javhoo": JavhooScraper,
-            # "javd": JavdScraper,
-            # "javinfo": JavInfoScraper,
+            "avdanyuwiki": AvdanyuwikiScraper,
         }
 
         # 从配置获取启用的数据源（按 priority 排序）
@@ -962,10 +1537,8 @@ class EnhancedMultiScraper:
         算法:
             1. 按优先级遍历所有启用的爬虫
             2. 第一个成功的爬虫返回结果
-            3. 如果已获取 code + title + cover，提前退出
+            3. 只使用第一个成功的数据源，不再合并多个源
         """
-        merged_data = {}
-
         for scraper in self.scrapers:
             logger.info(f"尝试数据源: {scraper.__class__.__name__}")
             try:
@@ -973,38 +1546,33 @@ class EnhancedMultiScraper:
                 if result and result.get("code"):
                     logger.info(f"OK 成功从 {scraper.__class__.__name__} 获取数据")
 
-                    # 智能合并数据
-                    for key, value in result.items():
-                        if value:
-                            if key not in merged_data or not merged_data[key]:
-                                merged_data[key] = value
-                            elif isinstance(value, list) and isinstance(merged_data.get(key), list):
-                                for item in value:
-                                    if item not in merged_data[key]:
-                                        merged_data[key].append(item)
+                    # 处理双语标题 + 提取中文标题
+                    if result.get("title_jp") and not result.get("title"):
+                        cn_title = translate_to_chinese(result["title_jp"])
+                        if cn_title and cn_title != result["title_jp"]:
+                            result["title_cn"] = cn_title
+                            result["title"] = f"{cn_title}\n{result['title_jp']}"
+                        else:
+                            result["title_cn"] = ""
+                            result["title"] = result["title_jp"]
+                    elif result.get("title_jp") and "\n" not in result.get("title", ""):
+                        cn_title = translate_to_chinese(result["title_jp"])
+                        if cn_title and cn_title != result["title_jp"]:
+                            result["title_cn"] = cn_title
+                            result["title"] = f"{cn_title}\n{result['title_jp']}"
 
-                    # 如果已获取足够数据，提前退出
-                    if merged_data.get("code") and merged_data.get("title") and merged_data.get("cover_url"):
-                        break
+                    # 如果没有提取到标题，用 code 作为兜底标题（避免数据库 NOT NULL 约束报错）
+                    if result.get("code") and not result.get("title"):
+                        result["title"] = f"[{result['code']}]（标题待补充）"
+                        result["title_cn"] = ""
+
+                    return result
 
             except Exception as e:
                 logger.warning(f"X {scraper.__class__.__name__} 失败: {e}")
                 continue
 
-        # 处理双语标题
-        if merged_data.get("title_jp") and not merged_data.get("title"):
-            cn_title = translate_to_chinese(merged_data["title_jp"])
-            merged_data["title"] = make_bilingual_title(merged_data["title_jp"], cn_title)
-        elif merged_data.get("title_jp") and "\n" not in merged_data.get("title", ""):
-            cn_title = translate_to_chinese(merged_data["title_jp"])
-            if cn_title and cn_title != merged_data["title_jp"]:
-                merged_data["title"] = make_bilingual_title(merged_data["title_jp"], cn_title)
-
-        # 如果没有提取到标题，用 code 作为兜底标题（避免数据库 NOT NULL 约束报错）
-        if merged_data.get("code") and not merged_data.get("title"):
-            merged_data["title"] = f"[{merged_data['code']}]（标题待补充）"
-
-        return merged_data if merged_data.get("code") else None
+        return None
 
 
 # ===============================================================================
