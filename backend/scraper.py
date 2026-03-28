@@ -60,32 +60,11 @@ except ImportError:
 # 导入配置文件
 # ===============================================================================
 # 功能: 从 config.py 读取网站配置和全局设置
-# 依赖: config.DEFAULT_DELAY, config.DEFAULT_TIMEOUT, config.SCRAPER_SOURCES 等
+# 依赖: config.DEFAULT_DELAY, config.DEFAULT_TIMEOUT, config.DEFAULT_RETRY,
+#       config.DEFAULT_HEADERS, config.SCRAPER_SOURCES, config.get_enabled_sources,
+#       config.get_source_by_id
 
-try:
-    import config
-    DEFAULT_DELAY = config.DEFAULT_DELAY        # 默认请求延迟（秒）
-    DEFAULT_TIMEOUT = config.DEFAULT_TIMEOUT     # 默认请求超时（秒）
-    DEFAULT_RETRY = config.DEFAULT_RETRY         # 默认重试次数
-    DEFAULT_HEADERS = config.DEFAULT_HEADERS     # 默认 HTTP 头
-    SCRAPER_SOURCES = config.SCRAPER_SOURCES     # 网站配置列表
-    get_enabled_sources = config.get_enabled_sources  # 获取启用数据源
-    get_source_by_id = config.get_source_by_id    # 根据 ID 获取数据源
-except ImportError:
-    # 如果 config.py 不存在，使用硬编码默认值
-    DEFAULT_DELAY = 1.0
-    DEFAULT_TIMEOUT = 30
-    DEFAULT_RETRY = 2
-    DEFAULT_HEADERS = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-    }
-    SCRAPER_SOURCES = []
-    def get_enabled_sources():
-        return []
-    def get_source_by_id(x):
-        return None
+import config
 
 # ===============================================================================
 # 日志配置
@@ -179,13 +158,15 @@ class BaseScraper:
     依赖: requests.Session, bs4.BeautifulSoup, time.sleep
     """
 
-    def __init__(self, timeout: int = 30, delay: float = 1.0):
+    def __init__(self, timeout: int = None, delay: float = None):
         """
         功能: 初始化爬虫基类
         参数:
-            timeout: 请求超时时间（秒）
-            delay: 请求间隔时间（秒），防止请求过快
+            timeout: 请求超时时间（秒），默认从 config 读取
+            delay: 请求间隔时间（秒），默认从 config 读取
         """
+        timeout = timeout if timeout is not None else config.SCRAPE_TIMEOUT
+        delay = delay if delay is not None else config.DEFAULT_DELAY
         self.timeout = timeout
         self.delay = delay
         # 创建持久的 HTTP Session
@@ -961,14 +942,14 @@ class EnhancedMultiScraper:
             # "javinfo": JavInfoScraper,
         }
 
-        # 从配置获取启用的数据源
-        for source in SCRAPER_SOURCES:
+        # 从配置获取启用的数据源（按 priority 排序）
+        for source in config.get_enabled_sources():
             source_id = source["id"]
-            # 检查是否启用且在映射表中
-            if source_id in scraper_map and source.get("enabled", True):
+            # 检查是否在爬虫映射表中
+            if source_id in scraper_map:
                 scraper_class = scraper_map[source_id]
                 # 如果有反爬，增加请求延迟
-                delay = DEFAULT_DELAY * (2 if source.get("anti_bot") else 1)
+                delay = config.DEFAULT_DELAY * (2 if source.get("anti_bot") else 1)
                 self.scrapers.append(scraper_class(delay=delay))
 
     def scrape(self, keyword: str) -> Optional[Dict]:
