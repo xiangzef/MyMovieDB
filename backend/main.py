@@ -700,13 +700,13 @@ async def scan_local_sources():
     扫描所有已添加的目录，查找视频文件
     
     功能:
-        - 遍历每个已添加的视频源目录
+        - 遍历每个已添加的视频源目录（递归所有子文件夹）
         - 识别有效 AV 番号的视频文件
         - 排除非 AV 文件（如普通电影、综艺节目等）
         - 排除网站前缀干扰（如 390JNT-114 -> JNT-114）
     
     依赖:
-        - os.scandir(): 遍历目录
+        - os.walk(): 递归遍历目录树
         - os.path.splitext(): 分离文件名和扩展名
         - _extract_code_from_filename(): 从文件名提取有效番号
     
@@ -743,43 +743,42 @@ async def scan_local_sources():
             scan_results.append({"source_id": source_id, "path": base_path, "status": "目录不存在", "count": 0})
             continue
 
-        # 遍历目录（只扫描一级，不递归）
+        # 遍历目录（递归扫描所有子文件夹）
         try:
-            for entry in os.scandir(base_path):
-                if not entry.is_file():
-                    continue
+            for root, dirs, files in os.walk(base_path):
+                for filename in files:
+                    ext = os.path.splitext(filename)[1].lower()
 
-                filename = entry.name
-                ext = os.path.splitext(filename)[1].lower()
+                    if ext not in VIDEO_EXTENSIONS:
+                        continue
 
-                if ext not in VIDEO_EXTENSIONS:
-                    continue
+                    # 提取编号（使用增强的番号识别函数）
+                    name_without_ext = os.path.splitext(filename)[0]
+                    code = _extract_code_from_filename(name_without_ext)
 
-                # 提取编号（使用增强的番号识别函数）
-                name_without_ext = os.path.splitext(filename)[0]
-                code = _extract_code_from_filename(name_without_ext)
+                    # 只保存有番号的视频
+                    if not code:
+                        continue
 
-                try:
-                    file_size = entry.stat().st_size
-                except OSError:
-                    file_size = 0
+                    file_path = os.path.join(root, filename)
 
-                # 只保存有番号的视频
-                if not code:
-                    continue
+                    try:
+                        file_size = os.path.getsize(file_path)
+                    except OSError:
+                        file_size = 0
 
-                video_data = {
-                    "source_id": source_id,
-                    "name": filename,
-                    "path": entry.path,
-                    "code": code,
-                    "extension": ext,
-                    "file_size": file_size,
-                }
+                    video_data = {
+                        "source_id": source_id,
+                        "name": filename,
+                        "path": file_path,
+                        "code": code,
+                        "extension": ext,
+                        "file_size": file_size,
+                    }
 
-                vid_id, is_new = db.upsert_local_video(video_data)
-                found_count += 1
-                total_found += 1
+                    vid_id, is_new = db.upsert_local_video(video_data)
+                    found_count += 1
+                    total_found += 1
 
         except PermissionError:
             scan_results.append({"source_id": source_id, "path": base_path, "status": "权限不足", "count": found_count})
