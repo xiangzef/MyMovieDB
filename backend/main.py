@@ -887,6 +887,22 @@ async def get_local_video_stats():
     return db.get_local_video_stats()
 
 
+@app.post("/local-videos/cleanup", tags=["本地视频"])
+async def cleanup_invalid_local_videos():
+    """
+    清理无效番号的本地视频记录
+    - 使用与扫描相同的验证规则
+    - 删除不再符合番号格式的记录
+    - 返回删除的数量和被删除的番号列表
+    """
+    deleted_count, deleted_codes = db.cleanup_invalid_codes()
+    return {
+        "success": True,
+        "deleted_count": deleted_count,
+        "deleted_codes": deleted_codes
+    }
+
+
 @app.delete("/local-videos/{video_id}", tags=["本地视频"])
 async def delete_local_video(video_id: int):
     """删除本地视频记录"""

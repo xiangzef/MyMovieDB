@@ -689,6 +689,10 @@
                     <div class="num">{{ videoStats.unscraped || 0 }}</div>
                     <div class="label">待刮削</div>
                 </div>
+                <div style="flex:1;"></div>
+                <button class="btn btn-sm btn-danger" @click="cleanupInvalidCodes" :disabled="cleaning">
+                    🗑️ {{ cleaning ? '清理中...' : '清理无效番号' }}
+                </button>
             </div>
 
             <!-- 筛选 -->
@@ -1271,6 +1275,26 @@ createApp({
             } catch (e) { showToast('删除失败', 'error'); }
         };
 
+        const cleaning = ref(false);
+        const cleanupInvalidCodes = async () => {
+            if (!confirm('确定清理无效番号记录？被清理的影片信息将被删除（仅删除数据库记录，文件不会被删除）。')) return;
+            cleaning.value = true;
+            try {
+                const res = await fetch(`${API}/local-videos/cleanup`, { method: 'POST' });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(`已清理 ${data.deleted_count} 条无效记录`, 'success');
+                    if (data.deleted_codes.length > 0) {
+                        console.log('已删除的番号:', data.deleted_codes);
+                    }
+                    loadLocalVideos();
+                    loadSources();
+                    loadVideoStats();
+                }
+            } catch (e) { showToast('清理失败', 'error'); }
+            cleaning.value = false;
+        };
+
         const formatSize = (bytes) => {
             if (!bytes) return '—';
             if (bytes < 1024) return bytes + ' B';
@@ -1322,7 +1346,7 @@ createApp({
             localVideos, videoStats, localVideosLoading, videoPage, videoPageSize, videoFilter,
             videoTotalPages, videoVisiblePages,
             loadVideoStats, loadLocalVideos, videoPrevPage, videoNextPage, videoGoToPage,
-            scrapeOneLocal, deleteLocalVideo, formatSize,
+            scrapeOneLocal, deleteLocalVideo, cleanupInvalidCodes, cleaning, formatSize,
             // Scrape Panel
             scrapePanel, scrapeLogEl,
             // Misc
