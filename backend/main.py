@@ -620,7 +620,7 @@ async def scrape_batch(req: ScrapeRequest):
                     if req.save_cover and movie_data.get("cover_url"):
                         from scraper import download_and_crop_cover
                         from pathlib import Path
-                        covers_dir = Path(config.COVERS_DIR)
+                        covers_dir = Path(cfg.COVERS_DIR)
                         covers_dir.mkdir(parents=True, exist_ok=True)
                         crop_paths = download_and_crop_cover(
                             movie_data["cover_url"], code, covers_dir

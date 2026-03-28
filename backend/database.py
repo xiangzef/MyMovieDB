@@ -152,16 +152,20 @@ def get_movie_by_id(movie_id: int) -> Optional[dict]:
     
     result = dict(row)
     
-    # 额外取关联的 local_videos 的图片路径
+    # 额外取关联的 local_videos 的图片路径和视频路径
     local_video_id = result.get("local_video_id")
     if local_video_id:
         cursor.execute(
-            "SELECT fanart_path, poster_path, thumb_path FROM local_videos WHERE id = ?",
+            "SELECT fanart_path, poster_path, thumb_path, path FROM local_videos WHERE id = ?",
             (local_video_id,)
         )
         lv_row = cursor.fetchone()
         if lv_row:
-            result.update(dict(lv_row))
+            lv_dict = dict(lv_row)
+            # 把 path 重命名为 local_video_path，避免与 movies.path 冲突
+            if 'path' in lv_dict:
+                lv_dict['local_video_path'] = lv_dict.pop('path')
+            result.update(lv_dict)
     
     conn.close()
     return result

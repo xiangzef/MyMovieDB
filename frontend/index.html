@@ -933,7 +933,21 @@
                 </div>
                 <div v-if="selectedMovie.local_video_id" class="modal-row">
                     <span class="modal-label" style="color:#17a2b8;">本地视频</span>
-                    <span class="modal-value" style="color:#17a2b8;font-size:12px;">已关联</span>
+                    <span class="modal-value" style="color:#17a2b8;font-size:12px;">
+                        <a :href="'file:///' + (selectedMovie.local_video_path || '')"
+                           :title="selectedMovie.local_video_path || ''"
+                           style="color:#17a2b8;text-decoration:underline;"
+                           target="_blank"
+                           @click.prevent="openLocalVideo(selectedMovie.local_video_path)">
+                            {{ selectedMovie.local_video_path ? selectedMovie.local_video_path.split(/[/\\]/).pop() : '已关联' }}
+                        </a>
+                    </span>
+                </div>
+                <!-- 二次刮削按钮 -->
+                <div class="modal-actions" v-if="selectedMovie.scrape_status !== 'complete'">
+                    <button class="btn btn-primary" @click="rescrapeMovie(selectedMovie)" :disabled="scraping">
+                        🔄 重新刮削
+                    </button>
                 </div>
                 <div class="modal-tags">
                     <span v-for="g in ensureArray(selectedMovie.genres)" :key="g" class="tag">{{ g }}</span>
@@ -1318,6 +1332,50 @@ createApp({
             e.target.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect fill="%230f3460" width="100" height="100"/><text x="50" y="55" text-anchor="middle" fill="%23666" font-size="12">No Cover</text></svg>';
         };
 
+        // ========== 二次刮削 ==========
+        const rescrapeMovie = async (m) => {
+            if (!m || !m.code || scraping.value) return;
+            scraping.value = true;
+            try {
+                const res = await fetch(`${API}/scrape`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ keyword: m.code, save_cover: true })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(`重新刮削成功: ${data.movie.title}`, 'success');
+                    closeDetail();
+                    fetchMovies();
+                    loadSources();
+                    loadVideoStats();
+                } else {
+                    showToast(`刮削失败: ${data.message}`, 'error');
+                }
+            } catch (e) {
+                showToast('请求失败，请确保后端已启动', 'error');
+            }
+            scraping.value = false;
+        };
+
+        // ========== 打开本地视频 ==========
+        const openLocalVideo = (path) => {
+            if (!path) {
+                showToast('视频路径为空', 'warning');
+                return;
+            }
+            // Windows 下用 file:/// 协议可能不生效，提示用户复制路径
+            if (navigator.clipboard) {
+                navigator.clipboard.writeText(path).then(() => {
+                    showToast('路径已复制到剪贴板: ' + path, 'success');
+                }).catch(() => {
+                    showToast('请手动复制路径: ' + path, 'warning');
+                });
+            } else {
+                showToast('请手动复制路径: ' + path, 'warning');
+            }
+        };
+
         // ========== 本地目录 ==========
         const loadSources = async () => {
             try {
@@ -1593,6 +1651,8 @@ createApp({
             scrapeOneLocal, deleteLocalVideo, cleanupInvalidCodes, cleanupResult, cleaning, formatSize,
             // Scrape Panel
             scrapePanel, scrapeLogEl,
+            // Rescrape
+            rescrapeMovie, openLocalVideo,
             // Misc
             switchTab, toasts
         };
