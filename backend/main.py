@@ -1,12 +1,18 @@
 """
 FastAPI 主入口
+依赖库:
+    - fastapi, uvicorn: Web 框架
+    - beautifulsoup4 (bs4): HTML 解析
+    - requests: HTTP 请求
+    - python-dotenv: 环境变量管理
 """
+
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 import logging
 import threading
 import re
@@ -17,11 +23,258 @@ from models import (
     ScrapeRequest, ScrapeResponse
 )
 from pydantic import BaseModel, Field
-from typing import Optional, List
 import database as db
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ============================================================
+# AV 番号识别配置
+# 参考来源: JavSP (https://github.com/Yuukiy/JavSP)
+# ============================================================
+
+# AV厂商前缀列表（常见番号前缀，2-6位字母）
+# 语法: List[str] - 存储有效厂商前缀的列表
+AV_PREFIXES = {
+    # 主流厂商 (按字母排序)
+    'ABC', 'ABP', 'ADN', 'ADV', 'AOP', 'ATK', 'AYU',
+    'BDA', 'BDC', 'BIJN', 'BIN', 'BOD', 'BT', 'BXX',
+    'CA', 'CE', 'CH', 'CJ', 'CK', 'CL', 'CWP',
+    'DADDY', 'DAH', 'DARK', 'DB', 'DDT', 'DE', 'DESU', 'DISM', 'DK', 'DM', 'DOC', 'DPM', 'DRC', 'DRG', 'DT',
+    'EBOD', 'EC', 'EDD', 'EES', 'EN', 'EVO',
+    'F8', 'FC', 'FC2', 'FCH', 'FD', 'FGA', 'FGO', 'FK', 'FP', 'FPW', 'FR', 'FS', 'FW', 'FX',
+    'GAS', 'GD', 'GE', 'GF', 'GH', 'GIH', 'GIN', 'GK', 'GM', 'GNP', 'GQ', 'GQR', 'GRE', 'GS', 'GTA', 'GTO', 'GUG', 'GVS',
+    'HA', 'HAB', 'HAME', 'HB', 'HERR', 'HEYDOUGA', 'HF', 'HHP', 'HIKARI', 'HIT', 'HJ', 'HND', 'HNI', 'HN', 'HO', 'HQ', 'HR', 'HS', 'HV', 'HX',
+    'I' , 'IBW', 'IES', 'IP', 'IPZZ', 'IU', 'IV', 'IWF',
+    'JBD', 'JB', 'JB5', 'JBD', 'JBR', 'JBS', 'JC', 'JD', 'JE', 'JFH', 'JHS', 'JIS', 'JK', 'JKT', 'JMK', 'JN', 'JNT', 'JPD', 'JPI', 'JPS', 'JR', 'JS', 'JUL', 'JUMP', 'JUX', 'JW',
+    'K', 'KA', 'KAM', 'KB', 'KD', 'KGI', 'KM', 'KN', 'KO', 'KOK', 'KRD', 'KTK', 'KT', 'KU', 'KW', 'KZ',
+    'LA', 'LB', 'LD', 'LEC', 'LG', 'LK', 'LL', 'LUXU', 'LX',
+    'MA', 'MAD', 'MCS', 'MDB', 'ME', 'MFE', 'MGM', 'MI', 'MID', 'MIM', 'MJ', 'MK', 'ML', 'MM', 'MMB', 'MPL', 'MS', 'MST', 'MTA', 'MUGEN', 'MV', 'MX', 'MZ',
+    'N', 'NAM', 'NB', 'NCT', 'ND', 'NE', 'NEW', 'NFA', 'NG', 'NH', 'NI', 'NK', 'NM', 'NN', 'NP', 'NPM', 'NR', 'NS', 'NSPS', 'NST', 'NT', 'NTR', 'NTT', 'NUK', 'NUM',
+    'OB', 'OBA', 'OL', 'ONE', 'OOO', 'OP', 'ORE', 'OU',
+    'P', 'P10', 'PAPA', 'PAR', 'PCD', 'PD', 'PE', 'PH', 'PJ', 'PK', 'PL', 'PP', 'PPV', 'PP', 'PRESTIGE', 'PRED', 'PRIME', 'PU', 'PRED',
+    'Q', 'QD', 'R', 'R18', 'RAC', 'RB', 'RCT', 'RD', 'REAL', 'RED', 'RE', 'RHEI', 'RHK', 'RID', 'RKI', 'RMC', 'RR', 'RS', 'RVS', 'RX',
+    'S', 'S1', 'S2', 'S4U', 'SA', 'SACA', 'SAME', 'SAP', 'SAS', 'SC', 'SCO', 'SD', 'SDA', 'SDF', 'SDEN', 'SEN', 'SER', 'SF', 'SGA', 'SH', 'SHIN', 'SHK', 'SHL', 'SHP', 'SI', 'SIF', 'SKY', 'SL', 'SL', 'SMA', 'SMDB', 'SML', 'SNC', 'SNIS', 'SOE', 'SOG', 'SOP', 'SOW', 'SP', 'SS', 'SSA', 'SSD', 'SSK', 'ST', 'STAR', 'STD', 'STON', 'STS', 'ST', 'SUK', 'SW', 'SWAMP', 'SX',
+    'TAK', 'TBL', 'TBS', 'TC', 'TCE', 'TD', 'TEA', 'TEN', 'TGG', 'TH', 'TIGER', 'TK', 'TM', 'TN', 'TO', 'TOGE', 'TOKYO', 'TOS', 'TP', 'TR', 'TS', 'TSU', 'TT', 'TURBO', 'TV', 'TW', 'TX',
+    'U', 'UDA', 'UFO', 'UK', 'UME', 'UMEMOTO', 'UQ', 'URC', 'URF', 'USAGI', 'USO', 'UTSUWA',
+    'V', 'VAG', 'VAL', 'VENU', 'VH', 'VHS', 'VOSS', 'VQ', 'VR', 'VS',
+    'WA', 'WAD', 'WAT', 'WIFI', 'WK', 'WN', 'WR', 'WS',
+    'X', 'XA', 'XGG', 'XI', 'XR', 'XS', 'XXX',
+    'YAD', 'YEQ', 'YMDB', 'YML', 'YP', 'YR', 'YS',
+    'Z', 'ZEX', 'ZUK', 'ZUZU'
+}
+
+# 需要排除的前缀模式（网站前缀、常见错误前缀）
+# 语法: Set[str] - 存储需要排除的字符串
+EXCLUDE_PREFIXES = {
+    # 数字前缀（可能与番号混合，如 390JNT-114）
+    '390', '123', '456', '789',
+    # 视频格式前缀
+    'HD', 'SD', 'UHD', '4K', '1080', '720', '2160',
+    # 媒体类型前缀
+    'WEB', 'BD', 'DVD', 'CD', 'VCD', 'BR', 'BluRay',
+    # 平台前缀
+    'MAC', 'PC', 'WIN', 'IOS', 'ANDROID',
+    # 成人标签（有时会出现在标题中）
+    'XXX', 'SEX', 'PORN', 'ADULT',
+    # 常见词汇
+    'HARD', 'SOFT', 'FREE', 'HOT', 'NEW', 'LATEST',
+    # 试看/预览标识
+    'TEST', 'DEMO', 'SAMPLE', 'PREVIEW', 'TRAILER', 'TEASER',
+    # 无意义单词
+    'THE', 'AND', 'FOR', 'WITH', 'FROM', 'THIS', 'THAT',
+    # 压制组/版本标识
+    'TS', 'TC', 'R3', 'CAM', 'HDRIP', 'BRRIP', 'BLURAY', 'DUBBED', 'SUBBED',
+    # 特殊处理标识
+    'UNCEN', 'CEN', 'DECENSOR', 'UNCENSOR', 'RAW', 'SUB', 'DUB',
+    # 常见错误格式
+    'OP', 'ED', 'OVA', 'EP', 'SP', 'CM', 'NC', 'PV',
+    # 其他网站标识
+    'RARBG', 'FTP', 'PTP', 'HDS', 'NTB', 'SPARKS', 'FLUX',
+}
+
+# 需要排除的前缀模式（正则表达式）
+# 用于排除如 WEBIPZZ、HDABC 等混合前缀
+# 语法: List[str] - 存储正则表达式字符串
+EXCLUDE_PREFIX_PATTERNS = [
+    r'^(WEB|BD|720|1080|4K)[A-Z]{2,6}-',  # WEBIPZZ, HDABC 等
+    r'^[A-Z]{2,3}\d{2,4}[A-Z]{2,6}-',     # 类似 390JNT 的情况
+]
+
+# ============================================================
+# 番号识别正则表达式
+# ============================================================
+
+# 提取番号的正则表达式
+# 语法: re.compile(正则, 标志)
+#   - r'...' : raw string，避免转义字符问题
+#   - (...) : 捕获组，提取需要的部分
+#   - [A-Z]{2,6} : 2-6位大写字母
+#   - -\d{2,5} : 短横线 + 2-5位数字
+CODE_PATTERN = re.compile(r'([A-Z]{2,6})-(\d{2,5})')
+
+# FC2/HEYDOUGA 等特殊番号正则（包含连字符）
+# 匹配 FC2-PPV-123456, HEYDOUGA-1234-567 等
+# 语法: re.compile(正则, 标志) - re.IGNORECASE 不区分大小写
+SPECIAL_CODE_PATTERNS = [
+    re.compile(r'(FC2-PPV-\d{5,7})', re.IGNORECASE),  # FC2-PPV-123456
+    re.compile(r'(HEYDOUGA-\d{4}-\d{3,5})', re.IGNORECASE),  # HEYDOUGA-1234-567
+]
+
+# 解析番号的正则（用于搜索）
+# 语法: re.IGNORECASE 标志表示不区分大小写
+PARSE_CODE_PATTERN = re.compile(r'^([A-Za-z]{2,6})-(\d{2,5})$', re.IGNORECASE)
+
+
+def _is_valid_av_code(prefix: str, number: str, full_match: str = "", filename: str = "") -> bool:
+    """
+    验证是否是有效的 AV 番号
+    
+    参数:
+        prefix (str): 番号前缀，如 "IPZZ"
+        number (str): 番号数字，如 "792"
+        full_match (str): 完整匹配字符串，如 "IPZZ-792"（用于模式检查）
+        filename (str): 原始文件名（用于检查前缀前的字符）
+    
+    返回:
+        bool: 是否是有效的 AV 番号
+    
+    逻辑:
+        1. 前缀不能全为数字
+        2. 前缀不能是排除前缀
+        3. 数字部分长度 >= 2
+        4. 前缀必须是已知的 AV 厂商前缀 OR 不包含排除模式
+        5. 检查匹配前是否有排除前缀（如 WEB, HD, 1080 等）
+    """
+    prefix = prefix.upper()
+    number = number.lstrip('0')  # 去掉前导零进行比较
+    
+    # 前缀不能全是数字
+    if prefix.isdigit():
+        return False
+    
+    # 检查排除列表（精确匹配）
+    if prefix in EXCLUDE_PREFIXES:
+        return False
+    
+    # 数字部分至少2位（去掉前导零后）
+    if len(number) < 2:
+        return False
+    
+    # 检查排除模式（如 WEBIPZZ, HDABC 等混合前缀）
+    if any(re.match(pat, full_match.upper()) for pat in EXCLUDE_PREFIX_PATTERNS):
+        return False
+    
+    # 检查匹配前缀前是否有排除前缀
+    # 例如 "WEBIPZZ-792" 中，WEB 是排除前缀，应该排除
+    if filename:
+        pos = filename.upper().find(full_match.upper())
+        if pos > 0:
+            prefix_part = filename[:pos].upper()
+            # 检查是否以排除前缀结尾
+            for exclude in ['WEB', 'HD', 'BD', '720', '1080', '4K', 'UHD']:
+                if prefix_part.endswith(exclude):
+                    return False
+            # 检查是否以数字+字母组合结尾（如 390JNT 中的 390）
+            mixed_prefix = re.search(r'(\d{2,4})[A-Z]{2,6}$', prefix_part)
+            if mixed_prefix:
+                return False
+    
+    # 前缀必须在已知厂商列表中 OR 不能是混合前缀
+    # 排除明显不合理的字母组合
+    # 如果前缀包含常见排除词的一部分（如 WEB, HD, BD, 720, 1080），则排除
+    for exclude in ['WEB', 'HD', 'BD', '720', '1080', '4K', 'UHD', 'SD', 'HD']:
+        if prefix.startswith(exclude) or prefix.endswith(exclude):
+            # 但如果整个前缀就是排除词本身，可以接受（如 HD 本身）
+            if prefix != exclude:
+                return False
+    
+    # 排除以数字开头的组合（如 123ABC）
+    if re.match(r'^\d', prefix):
+        return False
+    
+    # 排除太短的前缀（除非是有效的单字母前缀）
+    if len(prefix) < 2:
+        return False
+    
+    return True
+
+
+def _extract_code_from_filename(filename: str) -> Optional[str]:
+    """
+    从文件名中提取 AV 番号
+    
+    参数:
+        filename (str): 文件名（不含扩展名）
+    
+    返回:
+        str 或 None: 提取的番号，如 "JNT-114"，无效返回 None
+    
+    逻辑:
+        1. 先检查特殊番号模式（FC2-PPV, HEYDOUGA 等）
+        2. 再在文件名中搜索所有匹配正则的片段
+        3. 逐一验证是否有效
+        4. 返回第一个有效番号，或 None
+    
+    示例:
+        "FC2-PPV-123456.mp4" -> "FC2-PPV-123456"
+        "390JNT-114.mp4" -> "JNT-114"
+        "WEBIPZZ-792.mp4" -> None (因为 WEBIPZZ 是无效前缀)
+        "1080P XYZ-999.mp4" -> "XYZ-999" (有空格分隔，不是混合前缀)
+        "IPZZ-792.mp4" -> "IPZZ-792"
+    """
+    # 1. 先检查特殊番号模式（FC2-PPV, HEYDOUGA 等）
+    for pattern in SPECIAL_CODE_PATTERNS:
+        match = pattern.search(filename.upper())
+        if match:
+            return match.group(1)
+    
+    # 排除前缀列表（用于检测混合前缀）
+    MIXED_PREFIXES = ['WEB', 'HD', 'BD', '720', '1080', '4K', 'UHD', 'SD']
+    
+    # 2. 查找所有可能的番号（使用 finditer 获取位置信息）
+    # 语法: re.finditer(正则, 字符串) - 返回所有匹配的位置迭代器
+    for match in CODE_PATTERN.finditer(filename.upper()):
+        prefix, number = match.groups()
+        full_match = match.group(0)  # 完整匹配，如 "EBIPZZ-792"
+        
+        # 关键检查：如果匹配前面有排除前缀（如 WEB, HD, 1080），则跳过
+        # 找到 full_match 在原始文件名中的位置
+        orig_upper = filename.upper()
+        match_upper = full_match.upper()
+        pos = orig_upper.find(match_upper)
+        
+        if pos > 0:
+            # 获取匹配前的字符
+            before_match = orig_upper[:pos]
+            
+            # 如果前面有分隔符（空格、下划线、点），则不是混合前缀
+            # 例如 "1080P XYZ-999" 中 "1080P " 和 "XYZ" 之间有空格
+            if before_match[-1] in [' ', '_', '.', '-']:
+                # 有分隔符，继续验证
+                pass
+            else:
+                # 没有分隔符，检查是否是混合前缀
+                # 对于 WEBIPZZ-792，before_match = 'W'，prefix = 'EBIPZZ'
+                # combined = 'WEBIPZZ'
+                combined = before_match + prefix
+                skip = False
+                for exclude in MIXED_PREFIXES:
+                    # 检查 combined 是否以排除前缀开头
+                    if combined.startswith(exclude):
+                        skip = True
+                        break
+                if skip:
+                    continue
+        
+        # 验证是否有效（传入完整文件名用于检查前缀）
+        if _is_valid_av_code(prefix, number, full_match, filename):
+            # 标准化输出：去掉数字部分的前导零
+            normalized_number = str(int(number))
+            return f"{prefix}-{normalized_number}"
+    
+    return None
+
 
 # 初始化数据库
 db.init_all_tables()
@@ -207,16 +460,29 @@ class LocalVideoListResponse(BaseModel):
     items: List[dict]
 
 
-# 番号正则：1-6位字母或数字 + 短横线 + 2-5位数字（不区分大小写，统一转为大写）
-_CODE_PATTERN = re.compile(r'^([A-Za-z0-9]{1,6})-(\d{2,5})')
+# 番号解析正则：严格匹配 2-6位字母-2-5位数字
+_PARSE_CODE_PATTERN = re.compile(r'^([A-Za-z]{2,6})-(\d{2,5})$', re.IGNORECASE)
 
 
 def _parse_codes(raw: str) -> list:
-    """解析输入文本，返回有效番号列表（去重，保持顺序）"""
+    """
+    解析输入文本，返回有效番号列表（去重，保持顺序）
+    
+    参数:
+        raw (str): 原始输入文本，可能包含多个番号（逗号/空格/换行/分号分隔）
+    
+    返回:
+        list: 有效番号列表，如 ["IPZZ-792", "GQN-011"]
+    
+    依赖:
+        - re.split(): 按分隔符分割字符串
+        - _parse_code(): 验证番号有效性
+    """
     raw = raw.strip()
     if not raw:
         return []
     # 支持逗号、空格、换行、分号、中英文逗号
+    # 语法: re.split(正则, 字符串) - 按正则分割字符串
     parts = re.split(r'[,，\s\n;；]+', raw)
     seen = set()
     codes = []
@@ -224,19 +490,17 @@ def _parse_codes(raw: str) -> list:
         p = p.strip()
         if not p:
             continue
-        # 尝试匹配番号
-        m = _CODE_PATTERN.search(p.upper())
+        # 尝试直接作为番号使用（严格验证）
+        # 语法: re.match(正则, 字符串) - 从字符串开头匹配
+        m = _PARSE_CODE_PATTERN.match(p.upper())
         if m:
-            code = f"{m.group(1)}-{m.group(2)}"
-            if code not in seen:
-                seen.add(code)
-                codes.append(code)
-        else:
-            # 尝试直接作为番号使用（不区分大小写，统一转大写）
-            p = p.upper()
-            if re.match(r'^[A-Z0-9]{1,6}-\d{2,5}$', p) and p not in seen:
-                seen.add(p)
-                codes.append(p)
+            prefix, number = m.groups()
+            # 使用验证函数检查是否有效
+            if _is_valid_av_code(prefix, number):
+                code = f"{prefix}-{number}"
+                if code not in seen:
+                    seen.add(code)
+                    codes.append(code)
     return codes
 
 
@@ -432,9 +696,24 @@ async def remove_local_source(source_id: int):
 
 @app.post("/local-sources/scan", tags=["本地视频"])
 async def scan_local_sources():
-    """扫描所有已添加的目录，查找视频文件"""
+    """
+    扫描所有已添加的目录，查找视频文件
+    
+    功能:
+        - 遍历每个已添加的视频源目录
+        - 识别有效 AV 番号的视频文件
+        - 排除非 AV 文件（如普通电影、综艺节目等）
+        - 排除网站前缀干扰（如 390JNT-114 -> JNT-114）
+    
+    依赖:
+        - os.scandir(): 遍历目录
+        - os.path.splitext(): 分离文件名和扩展名
+        - _extract_code_from_filename(): 从文件名提取有效番号
+    
+    返回:
+        dict: 扫描结果统计
+    """
     import os
-    import re
     import threading
     import time
 
@@ -444,9 +723,6 @@ async def scan_local_sources():
         '.flv', '.webm', '.m4v', '.mpg', '.mpeg',
         '.ts', '.mts', '.m2ts', '.vob', '.ogv'
     }
-
-    # 编号提取正则：1-6位字母或数字 + 短横线 + 2-5位数字
-    CODE_PATTERN = re.compile(r'^([A-Za-z0-9]{1,6})-(\d{2,5})')
 
     sources = db.get_local_sources()
     if not sources:
@@ -479,15 +755,9 @@ async def scan_local_sources():
                 if ext not in VIDEO_EXTENSIONS:
                     continue
 
-                # 提取编号
-                code = None
+                # 提取编号（使用增强的番号识别函数）
                 name_without_ext = os.path.splitext(filename)[0]
-
-                match = CODE_PATTERN.search(name_without_ext)
-                if match:
-                    # 提取前缀和数字，统一转大写
-                    prefix, number = match.groups()
-                    code = f"{prefix.upper()}-{number}"
+                code = _extract_code_from_filename(name_without_ext)
 
                 try:
                     file_size = entry.stat().st_size
