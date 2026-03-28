@@ -1283,15 +1283,19 @@ createApp({
                 const res = await fetch(`${API}/local-videos/cleanup`, { method: 'POST' });
                 const data = await res.json();
                 if (data.success) {
-                    showToast(`已清理 ${data.deleted_count} 条无效记录`, 'success');
-                    if (data.deleted_codes.length > 0) {
-                        console.log('已删除的番号:', data.deleted_codes);
+                    if (data.deleted_count > 0) {
+                        showToast(`已清理 ${data.deleted_count} 条无效记录`, 'success');
+                        if (data.deleted_codes && data.deleted_codes.length > 0) {
+                            console.log('已删除的文件:', data.deleted_codes);
+                        }
+                    } else {
+                        showToast('没有需要清理的无效记录', 'info');
                     }
                     loadLocalVideos();
                     loadSources();
                     loadVideoStats();
                 }
-            } catch (e) { showToast('清理失败', 'error'); }
+            } catch (e) { showToast('清理失败: ' + e.message, 'error'); }
             cleaning.value = false;
         };
 

@@ -651,7 +651,7 @@ def cleanup_invalid_codes():
     """
     清理数据库中无效番号的本地视频记录
     使用与扫描时相同的验证规则
-    返回: (deleted_count, list_of_deleted_codes)
+    返回: (deleted_count, list_of_deleted_names)
     """
     import re
 
@@ -682,7 +682,6 @@ def cleanup_invalid_codes():
 
     def extract_code_from_filename(filename: str) -> Optional[str]:
         """从文件名提取有效番号"""
-        import re
         name_without_ext = re.sub(r'\.(mp4|mkv|avi|mov|wmv|flv|m4v|webm)$', '', filename, flags=re.IGNORECASE)
 
         # 检查特殊番号
@@ -723,12 +722,16 @@ def cleanup_invalid_codes():
     conn = get_db()
     cursor = conn.cursor()
 
-    # 获取所有有番号的记录
-    cursor.execute("SELECT id, name, code FROM local_videos WHERE code IS NOT NULL AND code != ''")
-    rows = cursor.fetchall()
+    deleted_names = []
 
-    deleted_ids = []
-    deleted_codes = []
+    # 第一步：删除 code 为 NULL 或空字符串的记录
+    cursor.execute("DELETE FROM local_videos WHERE code IS NULL OR code = ''")
+    null_deleted = cursor.rowcount
+    conn.commit()
+
+    # 第二步：获取所有有番号的记录，验证是否仍然有效
+    cursor.execute("SELECT id, name, code FROM local_videos")
+    rows = cursor.fetchall()
 
     for row in rows:
         video_id, name, code = row['id'], row['name'], row['code']
@@ -738,17 +741,16 @@ def cleanup_invalid_codes():
         if valid_code is None:
             # 番号无效，删除记录
             cursor.execute("DELETE FROM local_videos WHERE id = ?", (video_id,))
-            deleted_ids.append(video_id)
-            deleted_codes.append(code)
+            deleted_names.append(name)
         elif valid_code.upper() != code.upper():
             # 番号不匹配（可能是大小写或标准化问题），更新
             cursor.execute("UPDATE local_videos SET code = ? WHERE id = ?", (valid_code, video_id))
 
     conn.commit()
-    deleted_count = len(deleted_ids)
+    deleted_count = null_deleted + len(deleted_names)
     conn.close()
 
-    return deleted_count, deleted_codes
+    return deleted_count, deleted_names
 
 
 def get_local_video_stats() -> dict:
