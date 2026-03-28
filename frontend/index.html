@@ -1,0 +1,1333 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MyMovieDB - 本地影视库</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+        }
+
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+
+        /* Header */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 0;
+            border-bottom: 1px solid #333;
+            margin-bottom: 0;
+        }
+        h1 { font-size: 28px; color: #e94560; }
+        .header-right { display: flex; gap: 10px; align-items: center; }
+        .header-right .badge {
+            background: #e94560;
+            color: #fff;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+        }
+
+        /* 顶部快捷入口 */
+        .quick-bar {
+            display: flex;
+            gap: 12px;
+            padding: 15px 0;
+            border-bottom: 1px solid #2a2a3e;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .quick-bar input {
+            padding: 8px 16px;
+            border: 1px solid #333;
+            border-radius: 20px;
+            background: #16213e;
+            color: #fff;
+            font-size: 14px;
+            width: 220px;
+        }
+        .quick-bar input:focus { outline: none; border-color: #e94560; }
+        .btn {
+            padding: 8px 20px;
+            border: none;
+            border-radius: 20px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-primary { background: #e94560; color: #fff; }
+        .btn-primary:hover { background: #ff6b6b; }
+        .btn-primary:disabled { background: #555; cursor: not-allowed; }
+        .btn-secondary { background: #16213e; color: #ccc; border: 1px solid #333; }
+        .btn-secondary:hover { border-color: #e94560; color: #e94560; }
+        .btn-danger { background: #dc3545; color: #fff; }
+        .btn-danger:hover { background: #c82333; }
+        .btn-success { background: #28a745; color: #fff; }
+        .btn-success:hover { background: #218838; }
+        .btn-sm { padding: 5px 14px; font-size: 12px; }
+
+        /* Tabs */
+        .tabs {
+            display: flex;
+            gap: 0;
+            margin-bottom: 0;
+            border-bottom: 2px solid #2a2a3e;
+        }
+        .tab {
+            padding: 12px 28px;
+            background: transparent;
+            border: none;
+            color: #888;
+            font-size: 15px;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -2px;
+            transition: all 0.2s;
+        }
+        .tab:hover { color: #ccc; }
+        .tab.active { color: #e94560; border-bottom-color: #e94560; }
+        .tab-count {
+            background: #333;
+            color: #888;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+            margin-left: 6px;
+        }
+        .tab.active .tab-count { background: #e94560; color: #fff; }
+
+        /* Tab Panels */
+        .tab-panel { display: none; padding-top: 25px; }
+        .tab-panel.active { display: block; }
+
+        /* 统计卡片 */
+        .stats-row {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .stat-card {
+            background: #16213e;
+            padding: 15px 25px;
+            border-radius: 10px;
+            text-align: center;
+            min-width: 120px;
+        }
+        .stat-card .num {
+            font-size: 28px;
+            font-weight: bold;
+            color: #e94560;
+        }
+        .stat-card .label {
+            font-size: 12px;
+            color: #888;
+            margin-top: 4px;
+        }
+        .stat-card.green .num { color: #28a745; }
+        .stat-card.orange .num { color: #fd7e14; }
+        .stat-card.blue .num { color: #17a2b8; }
+
+        /* Grid */
+        .movie-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+            gap: 20px;
+        }
+        .movie-card {
+            background: #16213e;
+            border-radius: 12px;
+            overflow: hidden;
+            transition: transform 0.3s, box-shadow 0.3s;
+            cursor: pointer;
+        }
+        .movie-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 8px 25px rgba(233,69,96,0.2);
+        }
+        .movie-poster {
+            width: 100%;
+            aspect-ratio: 3/4;
+            object-fit: cover;
+            background: #0f3460;
+            display: block;
+        }
+        .movie-info { padding: 12px; }
+        .movie-code { color: #e94560; font-size: 13px; font-weight: bold; margin-bottom: 4px; }
+        .movie-title {
+            font-size: 13px;
+            color: #bbb;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            margin-bottom: 6px;
+        }
+        .movie-meta {
+            display: flex;
+            gap: 8px;
+            font-size: 11px;
+            color: #777;
+        }
+        .movie-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 8px;
+            font-size: 10px;
+            margin-top: 5px;
+        }
+        .badge-scraped { background: rgba(40,167,69,0.2); color: #28a745; }
+        .badge-unscraped { background: rgba(255,193,7,0.2); color: #ffc107; }
+        .badge-nocode { background: rgba(220,53,69,0.2); color: #dc3545; display: none; }
+
+        /* 分页 */
+        .pagination {
+            display: flex;
+            justify-content: center;
+            gap: 8px;
+            margin-top: 30px;
+        }
+        .pagination button {
+            padding: 7px 14px;
+            border: 1px solid #333;
+            border-radius: 6px;
+            background: transparent;
+            color: #888;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .pagination button.active { background: #e94560; border-color: #e94560; color: #fff; }
+        .pagination button:hover:not(.active) { border-color: #e94560; color: #e94560; }
+        .pagination button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        /* 详情弹窗 */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.88);
+            z-index: 200;
+            overflow-y: auto;
+        }
+        .modal-overlay.show { display: flex; align-items: flex-start; justify-content: center; padding: 40px 20px; }
+        .modal-content {
+            background: #16213e;
+            border-radius: 16px;
+            max-width: 900px;
+            width: 100%;
+            display: flex;
+            overflow: hidden;
+            position: relative;
+        }
+        .modal-close {
+            position: absolute;
+            top: 15px; right: 15px;
+            width: 36px; height: 36px;
+            border: none; border-radius: 50%;
+            background: #e94560;
+            color: #fff;
+            font-size: 20px;
+            cursor: pointer;
+            z-index: 10;
+            line-height: 1;
+        }
+        .modal-poster { width: 300px; object-fit: cover; flex-shrink: 0; }
+        .modal-info { padding: 30px; flex: 1; }
+        .modal-code { color: #e94560; font-size: 26px; font-weight: bold; margin-bottom: 8px; }
+        .modal-title { font-size: 18px; margin-bottom: 20px; color: #ccc; line-height: 1.5; }
+        .modal-row { display: flex; margin-bottom: 14px; color: #aaa; }
+        .modal-label { width: 80px; color: #666; flex-shrink: 0; }
+        .modal-value { flex: 1; }
+        .modal-tags { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+        .tag {
+            padding: 4px 12px;
+            background: #0f3460;
+            border-radius: 15px;
+            font-size: 12px;
+            color: #e94560;
+        }
+        .modal-actions { margin-top: 25px; display: flex; gap: 10px; }
+
+        /* 本地目录页 */
+        .source-list { display: flex; flex-direction: column; gap: 12px; }
+        .source-item {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 18px 20px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        .source-icon { font-size: 28px; }
+        .source-info { flex: 1; }
+        .source-path { font-size: 14px; color: #ccc; margin-bottom: 4px; word-break: break-all; }
+        .source-meta { font-size: 12px; color: #666; }
+        .source-actions { display: flex; gap: 8px; }
+
+        .add-source-form {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+        .add-source-form input {
+            flex: 1;
+            padding: 10px 16px;
+            border: 1px solid #333;
+            border-radius: 8px;
+            background: #1a1a2e;
+            color: #fff;
+            font-size: 14px;
+        }
+        .add-source-form input:focus { outline: none; border-color: #e94560; }
+
+        /* 本地视频库页 */
+        .video-filter-bar {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .video-filter-bar select {
+            padding: 8px 14px;
+            border: 1px solid #333;
+            border-radius: 8px;
+            background: #16213e;
+            color: #fff;
+            font-size: 13px;
+            cursor: pointer;
+        }
+        .video-filter-bar input {
+            padding: 8px 16px;
+            border: 1px solid #333;
+            border-radius: 8px;
+            background: #16213e;
+            color: #fff;
+            font-size: 13px;
+            width: 200px;
+        }
+        .video-list { display: flex; flex-direction: column; gap: 8px; }
+        .video-item {
+            background: #16213e;
+            border-radius: 10px;
+            padding: 14px 18px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            transition: background 0.2s;
+        }
+        .video-item:hover { background: #1e2a4a; }
+        .video-item .file-icon { font-size: 22px; }
+        .video-item .video-info { flex: 1; min-width: 0; }
+        .video-item .video-name {
+            font-size: 14px;
+            color: #ccc;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-bottom: 3px;
+        }
+        .video-item .video-path {
+            font-size: 11px;
+            color: #555;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .video-code {
+            font-size: 13px;
+            font-weight: bold;
+            color: #e94560;
+            min-width: 100px;
+            text-align: center;
+        }
+        .video-actions { display: flex; gap: 6px; }
+
+        /* Toast 通知 */
+        .toast-container {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .toast {
+            background: #16213e;
+            border-left: 4px solid #e94560;
+            padding: 12px 18px;
+            border-radius: 8px;
+            font-size: 14px;
+            color: #ccc;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.4);
+            animation: slideIn 0.3s ease;
+        }
+        .toast.success { border-left-color: #28a745; }
+        .toast.error { border-left-color: #dc3545; }
+        .toast.warning { border-left-color: #ffc107; }
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+
+        .loading { text-align: center; padding: 60px; color: #e94560; font-size: 16px; }
+        .empty-state { text-align: center; padding: 80px 0; color: #555; }
+        .section-title { font-size: 16px; color: #888; margin-bottom: 15px; font-weight: normal; }
+
+        /* Scan progress */
+        .scan-progress {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .progress-bar-wrap {
+            background: #0f3460;
+            border-radius: 8px;
+            height: 24px;
+            overflow: hidden;
+            margin-top: 12px;
+        }
+        .progress-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #e94560, #ff6b6b);
+            border-radius: 8px;
+            transition: width 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            color: #fff;
+            white-space: nowrap;
+        }
+        .progress-stats {
+            display: flex;
+            gap: 20px;
+            margin-top: 10px;
+            font-size: 13px;
+            color: #888;
+        }
+        .progress-stats .success { color: #28a745; }
+        .progress-stats .fail { color: #dc3545; }
+        .progress-stats .skip { color: #ffc107; }
+
+        /* 进度浮层 */
+        .scrape-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.7);
+            z-index: 300;
+            align-items: center;
+            justify-content: center;
+        }
+        .scrape-overlay.active { display: flex; }
+        .scrape-panel {
+            background: #16213e;
+            border-radius: 16px;
+            width: 560px;
+            max-width: 95vw;
+            max-height: 85vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+        }
+        .scrape-panel-header {
+            padding: 16px 20px;
+            background: #1a1a2e;
+            border-bottom: 1px solid #2a2a3e;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-shrink: 0;
+        }
+        .scrape-panel-header h3 {
+            font-size: 15px;
+            color: #e94560;
+            font-weight: bold;
+        }
+        .scrape-panel-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .scrape-panel-body::-webkit-scrollbar { width: 6px; }
+        .scrape-panel-body::-webkit-scrollbar-track { background: transparent; }
+        .scrape-panel-body::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+
+        /* 日志行 */
+        .log-line {
+            font-size: 12px;
+            line-height: 1.7;
+            padding: 3px 8px;
+            border-radius: 5px;
+            color: #aaa;
+            font-family: 'Consolas', 'Courier New', monospace;
+        }
+        .log-line.scraping { background: rgba(233,69,96,0.08); color: #e94560; }
+        .log-line.success { background: rgba(40,167,69,0.08); color: #28a745; }
+        .log-line.fail { background: rgba(220,53,69,0.08); color: #dc3545; }
+        .log-line.error { background: rgba(220,53,69,0.12); color: #ff6b6b; }
+        .log-line.info { background: rgba(23,162,184,0.08); color: #17a2b8; }
+        .log-line .log-code { font-weight: bold; color: inherit; }
+        .log-line .log-local { color: #17a2b8; font-size: 11px; margin-left: 6px; }
+
+        .scrape-panel-footer {
+            padding: 14px 20px;
+            background: #1a1a2e;
+            border-top: 1px solid #2a2a3e;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            flex-shrink: 0;
+        }
+        .scrape-panel-footer .progress-bar-wrap {
+            flex: 1;
+        }
+        .scrape-panel-footer .progress-pct {
+            font-size: 13px;
+            color: #e94560;
+            font-weight: bold;
+            min-width: 42px;
+            text-align: right;
+        }
+
+        @media (max-width: 768px) {
+            .modal-content { flex-direction: column; }
+            .modal-poster { width: 100%; height: 300px; }
+            .movie-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+            .add-source-form { flex-direction: column; }
+            .add-source-form input { width: 100%; }
+        }
+    </style>
+</head>
+<body>
+<div id="app">
+    <div class="container">
+        <!-- Header -->
+        <header>
+            <h1>🎬 MyMovieDB</h1>
+            <div class="header-right">
+                <span class="badge">后端: {{ backendStatus }}</span>
+            </div>
+        </header>
+
+        <!-- Tabs -->
+        <div class="tabs">
+            <button class="tab" :class="{active: currentTab === 'movies'}" @click="switchTab('movies')">
+                影片库<span class="tab-count">{{ total }}</span>
+            </button>
+            <button class="tab" :class="{active: currentTab === 'sources'}" @click="switchTab('sources')">
+                本地目录<span class="tab-count">{{ localStats.total || 0 }}</span>
+            </button>
+            <button class="tab" :class="{active: currentTab === 'videos'}" @click="switchTab('videos')">
+                本地视频库<span class="tab-count">{{ videoStats.total || 0 }}</span>
+            </button>
+        </div>
+
+        <!-- ========== 影片库 Tab ========== -->
+        <div class="tab-panel" :class="{active: currentTab === 'movies'}">
+            <!-- 快捷刮削 -->
+            <div class="add-source-form" style="margin-bottom:20px;">
+                <input v-model="scrapeKeyword" placeholder="输入影片编号，多个用逗号/空格/换行分隔，如 ABC-123, XYZ-456" @keyup.enter="scrapeBatch">
+                <button class="btn btn-primary" @click="scrapeBatch" :disabled="scrapeRunning">
+                    🔍 {{ scrapeRunning ? '刮削中...' : '批量刮削' }}
+                </button>
+                <button v-if="scrapeRunning" class="btn btn-danger" @click="stopScrape" title="停止刮削">⏹ 停止</button>
+            </div>
+
+            <div class="quick-bar">
+                <input v-model="searchKeyword" placeholder="搜索影片标题或编号..." @keyup.enter="searchMovies">
+                <button class="btn btn-secondary" @click="searchMovies">搜索</button>
+                <button class="btn btn-secondary" @click="loadMovies">刷新</button>
+            </div>
+
+            <div v-if="loading" class="loading">加载中...</div>
+            <div v-else-if="movies.length === 0" class="empty-state">
+                <p>还没有影片，试试输入编号刮削一个吧！</p>
+            </div>
+            <div v-else class="movie-grid">
+                <div v-for="m in movies" :key="m.id" class="movie-card" @click="showDetail(m)">
+                    <img :src="getCoverUrl(m)" class="movie-poster" @error="handleImgError">
+                    <div class="movie-info">
+                        <div class="movie-code">{{ m.code }}</div>
+                        <div class="movie-title" :title="m.title">{{ m.title }}</div>
+                        <div class="movie-meta">
+                            <span v-if="m.release_date">{{ m.release_date }}</span>
+                            <span v-if="m.duration">{{ m.duration }}分钟</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="pagination" v-if="totalPages > 1">
+                <button @click="prevPage" :disabled="currentPage === 1">上一页</button>
+                <button v-for="p in visiblePages" :key="p" :class="{active: p === currentPage}" @click="goToPage(p)">{{ p }}</button>
+                <button @click="nextPage" :disabled="currentPage === totalPages">下一页</button>
+            </div>
+        </div>
+
+        <!-- ========== 本地目录 Tab ========== -->
+        <div class="tab-panel" :class="{active: currentTab === 'sources'}">
+            <!-- 添加目录 -->
+            <div class="add-source-form">
+                <input v-model="newSourcePath" placeholder="输入视频目录路径，如 D:\Movies" @keyup.enter="addSource">
+                <button class="btn btn-primary" @click="addSource" :disabled="addingSource">添加目录</button>
+            </div>
+
+            <!-- 扫描结果 -->
+            <div v-if="scanResult" class="scan-progress">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <div>
+                        <strong>扫描完成</strong>
+                        <span style="color:#888;margin-left:12px;font-size:13px;">共发现 {{ scanResult.total_found }} 个视频文件</span>
+                    </div>
+                    <button class="btn btn-sm btn-secondary" @click="scanResult = null">收起</button>
+                </div>
+                <div v-for="r in scanResult.results" :key="r.source_id" style="font-size:13px;color:#888;margin-top:6px;">
+                    {{ r.path }} → {{ r.status }} ({{ r.count }} 个)
+                </div>
+            </div>
+
+            <!-- 刮削进度 -->
+            <div v-if="scrapeProgress" class="scan-progress">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <strong>{{ scrapeProgress.phase === 'scraping' ? '批量刮削中...' : '刮削完成' }}</strong>
+                    <button class="btn btn-sm btn-secondary" @click="scrapeProgress = null">收起</button>
+                </div>
+                <div class="progress-bar-wrap" v-if="scrapeProgress.phase === 'scraping'">
+                    <div class="progress-bar-fill" :style="{width: scrapeProgress.pct + '%'}">
+                        {{ Math.round(scrapeProgress.pct) }}%
+                    </div>
+                </div>
+                <div class="progress-stats">
+                    <span>处理: {{ scrapeProgress.processed }}</span>
+                    <span class="success">成功: {{ scrapeProgress.success_count }}</span>
+                    <span class="fail">失败: {{ scrapeProgress.fail_count }}</span>
+                    <span class="skip">跳过: {{ scrapeProgress.skip_count }}</span>
+                </div>
+            </div>
+
+            <!-- 操作按钮 -->
+            <div style="display:flex;gap:10px;margin-bottom:15px;">
+                <button class="btn btn-secondary" @click="scanSources" :disabled="scanning">
+                    📂 {{ scanning ? '扫描中...' : '扫描目录' }}
+                </button>
+                <button class="btn btn-success" @click="scrapeAll" :disabled="scrapeRunning">
+                    🌐 {{ scrapeRunning ? '刮削中...' : '批量刮削所有视频' }}
+                </button>
+                <button v-if="scrapeRunning" class="btn btn-danger" @click="stopScrape" title="停止刮削">⏹ 停止</button>
+            </div>
+
+            <!-- 统计 -->
+            <div class="stats-row">
+                <div class="stat-card blue">
+                    <div class="num">{{ localStats.total || 0 }}</div>
+                    <div class="label">总视频</div>
+                </div>
+                <div class="stat-card green">
+                    <div class="num">{{ localStats.scraped || 0 }}</div>
+                    <div class="label">已刮削</div>
+                </div>
+                <div class="stat-card orange">
+                    <div class="num">{{ localStats.unscraped || 0 }}</div>
+                    <div class="label">待刮削</div>
+                </div>
+            </div>
+
+            <!-- 目录列表 -->
+            <div v-if="localSources.length === 0" class="empty-state">
+                <p>还没有添加目录，添加一个开始扫描吧！</p>
+            </div>
+            <div class="source-list">
+                <div v-for="s in localSources" :key="s.id" class="source-item">
+                    <div class="source-icon">📁</div>
+                    <div class="source-info">
+                        <div class="source-path">{{ s.path }}</div>
+                        <div class="source-meta">
+                            {{ s.video_count || 0 }} 个视频
+                            <span v-if="s.last_scan_at"> · 最后扫描: {{ s.last_scan_at }}</span>
+                        </div>
+                    </div>
+                    <div class="source-actions">
+                        <button class="btn btn-sm btn-danger" @click="removeSource(s.id)">删除</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ========== 本地视频库 Tab ========== -->
+        <div class="tab-panel" :class="{active: currentTab === 'videos'}">
+            <!-- 统计 -->
+            <div class="stats-row">
+                <div class="stat-card blue">
+                    <div class="num">{{ videoStats.total || 0 }}</div>
+                    <div class="label">总视频</div>
+                </div>
+                <div class="stat-card green">
+                    <div class="num">{{ videoStats.scraped || 0 }}</div>
+                    <div class="label">已刮削</div>
+                </div>
+                <div class="stat-card orange">
+                    <div class="num">{{ videoStats.unscraped || 0 }}</div>
+                    <div class="label">待刮削</div>
+                </div>
+            </div>
+
+            <!-- 筛选 -->
+            <div class="video-filter-bar">
+                <select v-model="videoFilter.scraped" @change="loadLocalVideos">
+                    <option :value="null">全部</option>
+                    <option :value="1">已刮削</option>
+                    <option :value="0">未刮削</option>
+                </select>
+                <select v-model="videoFilter.source_id" @change="loadLocalVideos">
+                    <option :value="null">全部目录</option>
+                    <option v-for="s in localSources" :key="s.id" :value="s.id">{{ s.path }}</option>
+                </select>
+                <input v-model="videoFilter.keyword" placeholder="搜索文件名或编号..." @keyup.enter="loadLocalVideos">
+                <button class="btn btn-secondary btn-sm" @click="loadLocalVideos">筛选</button>
+                <button class="btn btn-secondary btn-sm" @click="videoFilter = {scraped:null, source_id:null, keyword:''}; loadLocalVideos()">重置</button>
+                <button class="btn btn-sm btn-secondary" @click="loadVideoStats">🔄 刷新统计</button>
+            </div>
+
+            <div v-if="localVideosLoading" class="loading">加载中...</div>
+            <div v-else-if="localVideos.length === 0" class="empty-state">
+                <p>还没有本地视频，先去「本地目录」扫描吧！</p>
+            </div>
+            <div v-else class="video-list">
+                <div v-for="v in localVideos" :key="v.id" class="video-item">
+                    <div class="file-icon">🎬</div>
+                    <div class="video-info">
+                        <div class="video-name" :title="v.name">{{ v.name }}</div>
+                        <div class="video-path" :title="v.path">{{ v.path }}</div>
+                    </div>
+                    <div class="video-code">{{ v.code || '—' }}</div>
+                    <div>
+                        <span v-if="v.scraped" class="movie-badge badge-scraped">已刮削</span>
+                        <span v-else class="movie-badge badge-unscraped">待刮削</span>
+                    </div>
+                    <div style="font-size:12px;color:#666;min-width:70px;text-align:right;">
+                        {{ formatSize(v.file_size) }}
+                    </div>
+                    <div class="video-actions">
+                        <button v-if="v.code && !v.scraped" class="btn btn-sm btn-success" @click="scrapeOneLocal(v)" :disabled="scrapeRunning">刮削</button>
+                        <button v-if="v.scraped" class="btn btn-sm btn-secondary" @click="showMovieDetail(v.movie_id)">详情</button>
+                        <button class="btn btn-sm btn-danger" @click="deleteLocalVideo(v.id)">删除</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="pagination" v-if="videoTotalPages > 1">
+                <button @click="videoPrevPage" :disabled="videoPage === 1">上一页</button>
+                <button v-for="p in videoVisiblePages" :key="p" :class="{active: p === videoPage}" @click="videoGoToPage(p)">{{ p }}</button>
+                <button @click="videoNextPage" :disabled="videoPage === videoTotalPages">下一页</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 刮削进度浮层 -->
+    <div class="scrape-overlay" :class="{active: scrapePanel.show}">
+        <div class="scrape-panel">
+            <div class="scrape-panel-header">
+                <h3>🔄 刮削进度 <span style="color:#666;font-weight:normal;font-size:12px;margin-left:8px;">{{ scrapePanel.title }}</span></h3>
+                <button class="btn btn-sm btn-danger" @click="stopScrape">⏹ 停止</button>
+            </div>
+            <div class="scrape-panel-body" ref="scrapeLogEl">
+                <div v-for="(log, idx) in scrapePanel.logs" :key="idx" class="log-line" :class="log.type">
+                    {{ log.text }}
+                </div>
+                <div v-if="scrapePanel.logs.length === 0" class="log-line info">正在连接服务器...</div>
+            </div>
+            <div class="scrape-panel-footer">
+                <div class="progress-bar-wrap">
+                    <div class="progress-bar-fill" :style="{width: (scrapePanel.pct || 0) + '%'}">
+                        {{ scrapePanel.pct || 0 }}%
+                    </div>
+                </div>
+                <div class="progress-pct">{{ scrapePanel.pct || 0 }}%</div>
+                <div style="font-size:12px;color:#666;">
+                    <span class="success">{{ scrapePanel.stats.success }}</span> 成功 ·
+                    <span class="fail">{{ scrapePanel.stats.fail }}</span> 失败 ·
+                    <span class="info">{{ scrapePanel.stats.linked }}</span> 关联
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 详情弹窗 -->
+    <div class="modal-overlay" :class="{show: selectedMovie}" @click.self="closeDetail">
+        <div class="modal-content" v-if="selectedMovie">
+            <button class="modal-close" @click="closeDetail">×</button>
+            <img :src="getCoverUrl(selectedMovie)" class="modal-poster" @error="handleImgError">
+            <div class="modal-info">
+                <div class="modal-code">{{ selectedMovie.code }}</div>
+                <div class="modal-title">{{ selectedMovie.title }}</div>
+                <div class="modal-row"><span class="modal-label">发布日期</span><span class="modal-value">{{ selectedMovie.release_date || '-' }}</span></div>
+                <div class="modal-row"><span class="modal-label">时长</span><span class="modal-value">{{ selectedMovie.duration ? selectedMovie.duration + '分钟' : '-' }}</span></div>
+                <div class="modal-row"><span class="modal-label">制作商</span><span class="modal-value">{{ selectedMovie.studio || '-' }}</span></div>
+                <div class="modal-row"><span class="modal-label">片商</span><span class="modal-value">{{ selectedMovie.maker || '-' }}</span></div>
+                <div class="modal-row"><span class="modal-label">导演</span><span class="modal-value">{{ selectedMovie.director || '-' }}</span></div>
+                <div class="modal-row"><span class="modal-label">演员</span>
+                    <span class="modal-value">{{ selectedMovie.actors?.join(', ') || '-' }}</span>
+                </div>
+                <div v-if="selectedMovie.local_video_id || selectedMovie.local_path" class="modal-row">
+                    <span class="modal-label" style="color:#17a2b8;">本地视频</span>
+                    <span class="modal-value" style="color:#17a2b8;font-size:12px;">{{ selectedMovie.local_path || '已关联' }}</span>
+                </div>
+                <div class="modal-tags">
+                    <span v-for="g in (selectedMovie.genres||[])" :key="g" class="tag">{{ g }}</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast-container">
+        <div v-for="t in toasts" :key="t.id" class="toast" :class="t.type">{{ t.msg }}</div>
+    </div>
+</div>
+
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script>
+const { createApp, ref, computed, onMounted, nextTick } = Vue;
+
+createApp({
+    setup() {
+        const API = 'http://localhost:8000';
+        const currentTab = ref('movies');
+        const backendStatus = ref('检查中...');
+
+        // Movies
+        const movies = ref([]);
+        const total = ref(0);
+        const currentPage = ref(1);
+        const pageSize = ref(20);
+        const loading = ref(false);
+        const searchKeyword = ref('');
+        const scrapeKeyword = ref('');
+        const scraping = ref(false);  // 标记是否有刮削在进行
+        const selectedMovie = ref(null);
+
+        // 刮削进度浮层
+        const scrapePanel = ref({
+            show: false,
+            title: '',
+            logs: [],
+            pct: 0,
+            jobId: null,
+            stats: { success: 0, fail: 0, linked: 0 }
+        });
+        const scrapeLogEl = ref(null);
+
+        const totalPages = computed(() => Math.ceil(total.value / pageSize.value));
+        const visiblePages = computed(() => {
+            const pages = [];
+            const start = Math.max(1, currentPage.value - 2);
+            const end = Math.min(totalPages.value, start + 4);
+            for (let i = start; i <= end; i++) pages.push(i);
+            return pages;
+        });
+
+        // Local Sources
+        const localSources = ref([]);
+        const localStats = ref({});
+        const newSourcePath = ref('');
+        const addingSource = ref(false);
+        const scanning = ref(false);
+        const scanResult = ref(null);
+        const scrapeProgress = ref(null);
+        const scrapeRunning = computed(() => scraping.value);
+
+        // Local Videos
+        const localVideos = ref([]);
+        const videoStats = ref({});
+        const localVideosLoading = ref(false);
+        const videoPage = ref(1);
+        const videoPageSize = ref(30);
+        const videoFilter = ref({ scraped: null, source_id: null, keyword: '' });
+
+        const videoTotalPages = computed(() => Math.ceil((videoStats.value.total || 0) / videoPageSize.value));
+        const videoVisiblePages = computed(() => {
+            const pages = [];
+            const start = Math.max(1, videoPage.value - 2);
+            const end = Math.min(videoTotalPages.value, start + 4);
+            for (let i = start; i <= end; i++) pages.push(i);
+            return pages;
+        });
+
+        // Toasts
+        const toasts = ref([]);
+        let toastId = 0;
+        const showToast = (msg, type = '') => {
+            const id = ++toastId;
+            toasts.value.push({ id, msg, type });
+            setTimeout(() => { toasts.value = toasts.value.filter(t => t.id !== id); }, 3500);
+        };
+
+        // ========== 影片库 ==========
+        const fetchMovies = async () => {
+            loading.value = true;
+            try {
+                const url = searchKeyword.value
+                    ? `${API}/search?q=${encodeURIComponent(searchKeyword.value)}&page=${currentPage.value}&page_size=${pageSize.value}`
+                    : `${API}/movies?page=${currentPage.value}&page_size=${pageSize.value}`;
+                const res = await fetch(url);
+                const data = await res.json();
+                movies.value = data.items || [];
+                total.value = data.total || 0;
+            } catch (e) {
+                showToast('获取影片失败', 'error');
+                movies.value = [];
+            }
+            loading.value = false;
+        };
+
+        const searchMovies = () => { currentPage.value = 1; fetchMovies(); };
+        const loadMovies = () => fetchMovies();
+        const prevPage = () => { if (currentPage.value > 1) { currentPage.value--; fetchMovies(); }};
+        const nextPage = () => { if (currentPage.value < totalPages.value) { currentPage.value++; fetchMovies(); }};
+        const goToPage = (p) => { currentPage.value = p; fetchMovies(); };
+
+        const scrapeMovie = async () => {
+            if (!scrapeKeyword.value.trim() || scraping.value) return;
+            scraping.value = true;
+            try {
+                const res = await fetch(`${API}/scrape`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ keyword: scrapeKeyword.value.trim(), save_cover: true })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(`刮削成功: ${data.movie.title}`, 'success');
+                    scrapeKeyword.value = '';
+                    fetchMovies();
+                    if (currentTab.value === 'sources') loadSources();
+                } else {
+                    showToast(`刮削失败: ${data.message}`, 'error');
+                }
+            } catch (e) {
+                showToast('请求失败，请确保后端已启动', 'error');
+            }
+            scraping.value = false;
+        };
+
+        // 批量刮削（使用 SSE 实时进度）
+        const scrapeBatch = async () => {
+            if (!scrapeKeyword.value.trim() || scraping.value) return;
+            scraping.value = true;
+            scrapePanel.value.show = true;
+            scrapePanel.value.title = '';
+            scrapePanel.value.logs = [];
+            scrapePanel.value.pct = 0;
+            scrapePanel.value.jobId = null;
+            scrapePanel.value.stats = { success: 0, fail: 0, linked: 0 };
+
+            try {
+                const res = await fetch(`${API}/scrape/batch`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ keyword: scrapeKeyword.value.trim(), save_cover: true })
+                });
+
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    // 处理多行 SSE 数据
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        try {
+                            const evt = JSON.parse(line.slice(6));
+                            handleScrapeEvent(evt, 'home');
+                        } catch (e) { /* ignore parse error */ }
+                    }
+                }
+                // 处理剩余 buffer
+                if (buffer.startsWith('data: ')) {
+                    try {
+                        const evt = JSON.parse(buffer.slice(6));
+                        handleScrapeEvent(evt, 'home');
+                    } catch (e) { /* ignore */ }
+                }
+            } catch (e) {
+                addScrapeLog('error', `连接失败: ${e.message}`);
+                setTimeout(() => { scrapePanel.value.show = false; }, 2000);
+            }
+            scraping.value = false;
+        };
+
+        // SSE 事件处理（通用）
+        const handleScrapeEvent = (evt, source) => {
+            if (evt.job_id) scrapePanel.value.jobId = evt.job_id;
+            if (evt.title) scrapePanel.value.title = evt.title;
+
+            switch (evt.type) {
+                case 'scraping':
+                    scrapePanel.value.pct = evt.pct;
+                    addScrapeLog('scraping', `→ 正在刮削 ${evt.code} (${evt.index}/${evt.total})`);
+                    break;
+                case 'success': {
+                    scrapePanel.value.pct = evt.pct;
+                    scrapePanel.value.stats.success++;
+                    let msg = `✅ ${evt.code} → ${evt.title || '成功'}`;
+                    if (evt.local_path) {
+                        scrapePanel.value.stats.linked++;
+                        msg += ` 🔗 已关联本地: ${evt.local_path.split(/[/\\]/).pop()}`;
+                    }
+                    addScrapeLog('success', msg);
+                    break;
+                }
+                case 'fail':
+                    scrapePanel.value.pct = evt.pct;
+                    scrapePanel.value.stats.fail++;
+                    addScrapeLog('fail', `❌ ${evt.code} → ${evt.message || '未找到'}`);
+                    break;
+                case 'error':
+                    scrapePanel.value.pct = evt.pct;
+                    scrapePanel.value.stats.fail++;
+                    addScrapeLog('error', `⚠ ${evt.code} → ${evt.message}`);
+                    break;
+                case 'stopped':
+                    addScrapeLog('info', `⏹ 已停止刮削`);
+                    break;
+                case 'done':
+                    scrapePanel.value.pct = 100;
+                    addScrapeLog('info',
+                        `🎉 完成！成功 ${evt.success_count}，失败 ${evt.fail_count}，关联 ${evt.local_link_count || 0}`
+                    );
+                    // 3秒后关闭浮层
+                    setTimeout(() => {
+                        scrapePanel.value.show = false;
+                        fetchMovies();
+                        loadSources();
+                        loadVideoStats();
+                        loadLocalVideos();
+                        scrapeKeyword.value = '';
+                    }, 3000);
+                    break;
+            }
+
+            // 自动滚动到底部
+            nextTick(() => {
+                if (scrapeLogEl.value) {
+                    scrapeLogEl.value.scrollTop = scrapeLogEl.value.scrollHeight;
+                }
+            });
+        };
+
+        const addScrapeLog = (type, text) => {
+            scrapePanel.value.logs.push({ type, text });
+            // 最多保留 200 条
+            if (scrapePanel.value.logs.length > 200) {
+                scrapePanel.value.logs.splice(0, scrapePanel.value.logs.length - 200);
+            }
+        };
+
+        // 停止刮削
+        const stopScrape = async () => {
+            try {
+                const body = scrapePanel.value.jobId
+                    ? JSON.stringify({ job_id: scrapePanel.value.jobId })
+                    : '{}';
+                await fetch(`${API}/scrape/stop`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body
+                });
+            } catch (e) { /* ignore */ }
+        };
+
+        const showDetail = (m) => {
+            selectedMovie.value = m;
+            document.body.style.overflow = 'hidden';
+        };
+        const closeDetail = () => {
+            selectedMovie.value = null;
+            document.body.style.overflow = '';
+        };
+        const showMovieDetail = async (movieId) => {
+            try {
+                const res = await fetch(`${API}/movies/${movieId}`);
+                const m = await res.json();
+                showDetail(m);
+            } catch (e) { showToast('获取详情失败', 'error'); }
+        };
+        const getCoverUrl = (m) => {
+            if (m.local_cover_path || m.cover_url) return `${API}/covers/${m.code}.jpg`;
+            return 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect fill="%230f3460" width="100" height="100"/><text x="50" y="55" text-anchor="middle" fill="%23666" font-size="12">No Cover</text></svg>';
+        };
+        const handleImgError = (e) => {
+            e.target.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect fill="%230f3460" width="100" height="100"/><text x="50" y="55" text-anchor="middle" fill="%23666" font-size="12">No Cover</text></svg>';
+        };
+
+        // ========== 本地目录 ==========
+        const loadSources = async () => {
+            try {
+                const res = await fetch(`${API}/local-sources`);
+                const data = await res.json();
+                localSources.value = data.sources || [];
+                localStats.value = data.stats || {};
+            } catch (e) { console.error(e); }
+        };
+
+        const addSource = async () => {
+            if (!newSourcePath.value.trim() || addingSource.value) return;
+            addingSource.value = true;
+            try {
+                const res = await fetch(`${API}/local-sources`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: newSourcePath.value.trim() })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast('目录添加成功', 'success');
+                    newSourcePath.value = '';
+                    loadSources();
+                } else {
+                    showToast(data.detail || '添加失败', 'error');
+                }
+            } catch (e) { showToast('添加失败', 'error'); }
+            addingSource.value = false;
+        };
+
+        const removeSource = async (id) => {
+            if (!confirm('确定删除此目录？会同时删除该目录下的所有视频记录。')) return;
+            try {
+                await fetch(`${API}/local-sources/${id}`, { method: 'DELETE' });
+                showToast('已删除', 'success');
+                loadSources();
+                loadLocalVideos();
+            } catch (e) { showToast('删除失败', 'error'); }
+        };
+
+        const scanSources = async () => {
+            if (scanning.value) return;
+            scanning.value = true;
+            scanResult.value = null;
+            try {
+                const res = await fetch(`${API}/local-sources/scan`, { method: 'POST' });
+                const data = await res.json();
+                scanResult.value = data;
+                showToast(`扫描完成，共发现 ${data.total_found} 个视频`, data.total_found > 0 ? 'success' : 'warning');
+                loadSources();
+                loadVideoStats();
+                if (currentTab.value === 'videos') loadLocalVideos();
+            } catch (e) { showToast('扫描失败', 'error'); }
+            scanning.value = false;
+        };
+
+        const scrapeAll = async () => {
+            if (scrapeRunning.value) return;
+            scraping.value = true;
+            // 重置本地视频库刮削进度状态
+            scrapeProgress.value = { phase: 'scraping', pct: 0, processed: 0, success_count: 0, fail_count: 0, skip_count: 0 };
+
+            // 先获取未刮削数量
+            try {
+                const statsRes = await fetch(`${API}/local-videos/stats`);
+                const stats = await statsRes.json();
+                const totalToScrape = (stats.unscraped || 0);
+                if (totalToScrape === 0) {
+                    showToast('没有需要刮削的视频', 'warning');
+                    scraping.value = false;
+                    scrapeProgress.value = null;
+                    return;
+                }
+            } catch (e) {
+                showToast('获取统计失败', 'error');
+                scraping.value = false;
+                return;
+            }
+
+            // 用 SSE 接口刮削本地视频
+            scrapePanel.value.show = true;
+            scrapePanel.value.title = '本地视频库刮削';
+            scrapePanel.value.logs = [];
+            scrapePanel.value.pct = 0;
+            scrapePanel.value.jobId = null;
+            scrapePanel.value.stats = { success: 0, fail: 0, linked: 0 };
+
+            try {
+                const res = await fetch(`${API}/local-sources/scrape`, { method: 'POST' });
+                const data = await res.json();
+
+                // 老接口返回后直接更新（本地目录刮削走旧接口，无需 SSE）
+                scrapeProgress.value = {
+                    phase: 'done',
+                    processed: data.processed || 0,
+                    success_count: data.success_count || 0,
+                    fail_count: data.fail_count || 0,
+                    skip_count: data.skip_count || 0
+                };
+                scrapePanel.value.pct = 100;
+                addScrapeLog('success', `🎉 本地刮削完成！成功 ${data.success_count || 0}，失败 ${data.fail_count || 0}，跳过 ${data.skip_count || 0}`);
+                scrapePanel.value.stats.success = data.success_count || 0;
+                scrapePanel.value.stats.fail = data.fail_count || 0;
+
+                showToast(`刮削完成：成功 ${data.success_count || 0}，失败 ${data.fail_count || 0}，跳过 ${data.skip_count || 0}`,
+                    (data.success_count || 0) > 0 ? 'success' : 'warning');
+
+                loadSources();
+                loadVideoStats();
+                if (currentTab.value === 'videos') loadLocalVideos();
+
+                setTimeout(() => {
+                    scrapePanel.value.show = false;
+                    scrapeProgress.value = null;
+                }, 3000);
+            } catch (e) {
+                showToast('刮削失败: ' + e.message, 'error');
+                scrapePanel.value.show = false;
+                scrapeProgress.value = null;
+            }
+            scraping.value = false;
+        };
+
+        // ========== 本地视频库 ==========
+        const loadVideoStats = async () => {
+            try {
+                const res = await fetch(`${API}/local-videos/stats`);
+                videoStats.value = await res.json();
+            } catch (e) { console.error(e); }
+        };
+
+        const loadLocalVideos = async () => {
+            localVideosLoading.value = true;
+            try {
+                const params = new URLSearchParams({
+                    page: videoPage.value,
+                    page_size: videoPageSize.value
+                });
+                if (videoFilter.value.scraped !== null) params.set('scraped', videoFilter.value.scraped);
+                if (videoFilter.value.source_id) params.set('source_id', videoFilter.value.source_id);
+                if (videoFilter.value.keyword) params.set('keyword', videoFilter.value.keyword);
+
+                const res = await fetch(`${API}/local-videos?${params}`);
+                const data = await res.json();
+                localVideos.value = data.items || [];
+                videoStats.value = { ...videoStats.value, total: data.total };
+            } catch (e) { console.error(e); }
+            localVideosLoading.value = false;
+        };
+
+        const videoPrevPage = () => { if (videoPage.value > 1) { videoPage.value--; loadLocalVideos(); }};
+        const videoNextPage = () => { videoPage.value++; loadLocalVideos(); };
+        const videoGoToPage = (p) => { videoPage.value = p; loadLocalVideos(); };
+
+        const scrapeOneLocal = async (v) => {
+            if (!v.code || scraping.value) return;
+            scraping.value = true;
+            try {
+                const res = await fetch(`${API}/scrape`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ keyword: v.code, save_cover: true })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(`刮削成功: ${data.movie.title}`, 'success');
+                    loadLocalVideos();
+                    loadSources();
+                } else {
+                    showToast(`刮削失败: ${data.message}`, 'error');
+                }
+            } catch (e) { showToast('请求失败', 'error'); }
+            scraping.value = false;
+        };
+
+        const deleteLocalVideo = async (id) => {
+            if (!confirm('确定删除此记录？文件不会被删除。')) return;
+            try {
+                await fetch(`${API}/local-videos/${id}`, { method: 'DELETE' });
+                showToast('已删除', 'success');
+                loadLocalVideos();
+                loadSources();
+            } catch (e) { showToast('删除失败', 'error'); }
+        };
+
+        const formatSize = (bytes) => {
+            if (!bytes) return '—';
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+            return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+        };
+
+        // ========== Tab Switch ==========
+        const switchTab = (tab) => {
+            currentTab.value = tab;
+            if (tab === 'movies') loadMovies();
+            if (tab === 'sources') loadSources();
+            if (tab === 'videos') { loadSources(); loadVideoStats(); loadLocalVideos(); }
+        };
+
+        // ========== Init ==========
+        onMounted(async () => {
+            // 检查后端状态
+            try {
+                const res = await fetch(`${API}/health`);
+                if (res.ok) {
+                    backendStatus.value = '在线';
+                } else {
+                    backendStatus.value = '异常';
+                }
+            } catch (e) {
+                backendStatus.value = '离线';
+            }
+
+            loadMovies();
+
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') closeDetail();
+            });
+        });
+
+        return {
+            currentTab, backendStatus,
+            // Movies
+            movies, total, currentPage, pageSize, loading, searchKeyword, scrapeKeyword, scraping, selectedMovie,
+            totalPages, visiblePages,
+            fetchMovies, searchMovies, loadMovies, prevPage, nextPage, goToPage,
+            scrapeMovie, scrapeBatch, stopScrape, showDetail, closeDetail, showMovieDetail, getCoverUrl, handleImgError,
+            // Local Sources
+            localSources, localStats, newSourcePath, addingSource, scanning, scanResult, scrapeProgress, scrapeRunning,
+            addSource, removeSource, scanSources, scrapeAll,
+            // Local Videos
+            localVideos, videoStats, localVideosLoading, videoPage, videoPageSize, videoFilter,
+            videoTotalPages, videoVisiblePages,
+            loadVideoStats, loadLocalVideos, videoPrevPage, videoNextPage, videoGoToPage,
+            scrapeOneLocal, deleteLocalVideo, formatSize,
+            // Scrape Panel
+            scrapePanel, scrapeLogEl,
+            // Misc
+            switchTab, toasts
+        };
+    }
+}).mount('#app');
+</script>
+</body>
+</html>

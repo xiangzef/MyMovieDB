@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data (不跟踪数据库和封面图)
+data/*.db
+data/*.db-journal
+data/covers/*
+!data/covers/.gitkeep
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env.local
+.env.*.local
+
+# Build
+*.egg-info/
+dist/
+build/
