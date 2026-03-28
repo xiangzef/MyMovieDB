@@ -921,21 +921,21 @@
             <!-- 右侧信息区 -->
             <div class="modal-info">
                 <div class="modal-code">{{ selectedMovie.code }}</div>
-                <div class="modal-title">{{ selectedMovie.title }}</div>
+                <div class="modal-title" style="white-space:pre-wrap;">{{ selectedMovie.title }}</div>
                 <div class="modal-row"><span class="modal-label">发布日期</span><span class="modal-value">{{ selectedMovie.release_date || '-' }}</span></div>
                 <div class="modal-row"><span class="modal-label">时长</span><span class="modal-value">{{ selectedMovie.duration ? selectedMovie.duration + '分钟' : '-' }}</span></div>
                 <div class="modal-row"><span class="modal-label">制作商</span><span class="modal-value">{{ selectedMovie.studio || '-' }}</span></div>
                 <div class="modal-row"><span class="modal-label">片商</span><span class="modal-value">{{ selectedMovie.maker || '-' }}</span></div>
                 <div class="modal-row"><span class="modal-label">导演</span><span class="modal-value">{{ selectedMovie.director || '-' }}</span></div>
                 <div class="modal-row"><span class="modal-label">演员</span>
-                    <span class="modal-value">{{ selectedMovie.actors?.join(', ') || '-' }}</span>
+                    <span class="modal-value">{{ formatArray(selectedMovie.actors) }}</span>
                 </div>
                 <div v-if="selectedMovie.local_video_id" class="modal-row">
                     <span class="modal-label" style="color:#17a2b8;">本地视频</span>
                     <span class="modal-value" style="color:#17a2b8;font-size:12px;">已关联</span>
                 </div>
                 <div class="modal-tags">
-                    <span v-for="g in (selectedMovie.genres||[])" :key="g" class="tag">{{ g }}</span>
+                    <span v-for="g in ensureArray(selectedMovie.genres)" :key="g" class="tag">{{ g }}</span>
                 </div>
             </div>
         </div>
@@ -1214,6 +1214,22 @@ createApp({
                     body
                 });
             } catch (e) { /* ignore */ }
+        };
+
+        // ========== 详情弹窗辅助函数 ==========
+        const formatArray = (arr) => {
+            if (!arr) return '-';
+            if (Array.isArray(arr)) return arr.length > 0 ? arr.join(', ') : '-';
+            if (typeof arr === 'string') return arr.trim() || '-';
+            return '-';
+        };
+        const ensureArray = (val) => {
+            if (!val) return [];
+            if (Array.isArray(val)) return val;
+            if (typeof val === 'string') {
+                try { return JSON.parse(val); } catch { return []; }
+            }
+            return [];
         };
 
         const showDetail = (m) => {
