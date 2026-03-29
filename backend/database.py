@@ -92,7 +92,7 @@ def create_movie(movie_data: dict) -> int:
             studio, maker, director, cover_url, preview_url,
             detail_url, genres, actors, actors_male, local_cover_path, local_video_id,
             scrape_status, scrape_source, fanart_path, poster_path, thumb_path
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         movie_data.get("code"),
         movie_data.get("title"),
@@ -404,10 +404,12 @@ def row_to_movie_response(row: dict) -> dict:
 def calculate_scrape_status(movie_data: dict) -> str:
     """
     计算削刮完整度状态
-    complete: 有标题 + 有发布日期 + 有制作商 + 有女演员
+    complete: 有标题 + 有发布日期 + 有制作商 + 有女演员 + 有封面文件
     partial: 部分字段有值
     empty: 仅番号，无其他信息
     """
+    from pathlib import Path
+    
     # 必填字段：title, release_date, maker, actors
     has_title = bool(movie_data.get("title"))
     has_release_date = bool(movie_data.get("release_date"))
@@ -426,10 +428,19 @@ def calculate_scrape_status(movie_data: dict) -> str:
             except:
                 pass
     
-    # 判断完整度：必须同时满足4个条件
-    if has_title and has_release_date and has_maker and has_actors:
+    # 检查封面文件是否存在
+    has_cover = False
+    poster_path = movie_data.get("poster_path")
+    if poster_path:
+        try:
+            has_cover = Path(poster_path).exists()
+        except:
+            pass
+    
+    # 判断完整度：必须同时满足5个条件（增加封面检查）
+    if has_title and has_release_date and has_maker and has_actors and has_cover:
         return "complete"
-    elif has_title or has_release_date or has_maker or has_actors:
+    elif has_title or has_release_date or has_maker or has_actors or has_cover:
         return "partial"
     else:
         return "empty"
@@ -749,15 +760,24 @@ def delete_local_video(video_id: int) -> bool:
 
 
 def get_unscraped_local_videos() -> list:
-    """获取所有未刮削的本地视频"""
+    """
+    获取所有需要刮削的本地视频
+    
+    业务逻辑：
+    - 未刮削的视频（scraped = 0）
+    - 部分刮削的视频（scrape_status = 'partial' 或 'empty'）
+    - 已完整刮削的跳过（scrape_status = 'complete'）
+    """
     conn = get_db()
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT v.*, s.path as source_path
+        SELECT v.*, s.path as source_path, m.scrape_status
         FROM local_videos v
         LEFT JOIN local_sources s ON v.source_id = s.id
-        WHERE v.scraped = 0 AND v.code IS NOT NULL AND v.code != ''
+        LEFT JOIN movies m ON v.movie_id = m.id
+        WHERE v.code IS NOT NULL AND v.code != ''
+          AND (v.scraped = 0 OR m.scrape_status IS NULL OR m.scrape_status IN ('partial', 'empty'))
         ORDER BY v.id
     """)
 

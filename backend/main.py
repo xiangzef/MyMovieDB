@@ -1002,6 +1002,26 @@ async def scrape_local_videos():
                 })
                 continue
 
+            # 检查是否已有完整刮削记录
+            existing = db.get_movie_by_code(code)
+            if existing and existing.get("scrape_status") == "complete":
+                # 已完整刮削，跳过
+                if video_id and not existing.get("local_video_id"):
+                    db.mark_video_scraped(video_id, existing["id"])
+                    db.link_movie_to_local_video(existing["id"], video_id)
+                skip_count += 1
+                yield _send_sse({
+                    "type": "skipped",
+                    "job_id": job_id,
+                    "code": code,
+                    "title": existing.get("title", ""),
+                    "message": "已有完整刮削记录，跳过",
+                    "index": i + 1,
+                    "total": total,
+                    "pct": int(((i + 1) / total) * 100)
+                })
+                continue
+
             # 发送当前处理信息
             yield _send_sse({
                 "type": "scraping",
@@ -1027,6 +1047,22 @@ async def scrape_local_videos():
                         "pct": int(((i + 1) / total) * 100)
                     })
                     continue
+
+                # 下载并裁切封面
+                if movie_data.get("cover_url"):
+                    from scraper import download_and_crop_cover, generate_nfo
+                    from pathlib import Path
+                    covers_dir = Path(cfg.COVERS_DIR)
+                    covers_dir.mkdir(parents=True, exist_ok=True)
+                    crop_paths = download_and_crop_cover(
+                        movie_data["cover_url"], code, covers_dir
+                    )
+                    if crop_paths:
+                        movie_data.update(crop_paths)
+                        # 生成 NFO 文件
+                        safe_code = re.sub(r'[<>:"/\\|?*]', '_', code)
+                        nfo_path = Path(crop_paths.get("folder", covers_dir / safe_code)) / f"{safe_code}.nfo"
+                        generate_nfo(movie_data, nfo_path, video.get("path"))
 
                 # upsert 影片
                 movie_id, is_new = db.upsert_movie(movie_data)

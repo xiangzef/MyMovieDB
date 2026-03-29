@@ -251,6 +251,7 @@ def _crop_poster_from_right(fanart: Image, target_width: int, target_height: int
         - poster 需要竖向比例（如 1000x1500, 比例 2:3）
         - 取 fanart 右半部分（x: width/2 ~ width），纵向居中裁切
         - 这样截取的区域包含封面图右侧的女演员全身照
+        - 最后缩放到目标尺寸
     """
     width, height = fanart.size
     target_ratio = target_width / target_height  # 2:3 ≈ 0.667
@@ -269,12 +270,16 @@ def _crop_poster_from_right(fanart: Image, target_width: int, target_height: int
         # 在右半边内水平居中（稍微偏右，因为人物可能更靠右边缘）
         offset_x = (available_width - new_width) // 2
         crop_left = left + offset_x
-        return fanart.crop((crop_left, 0, crop_left + new_width, height))
+        poster = fanart.crop((crop_left, 0, crop_left + new_width, height))
     else:
         # 右半边更高（窄），按宽度填满，纵向居中裁切
         new_height = int(available_width / target_ratio)
         top = (height - new_height) // 2
-        return fanart.crop((left, top, width, top + new_height))
+        poster = fanart.crop((left, top, width, top + new_height))
+    
+    # 缩放到目标尺寸
+    poster = poster.resize((target_width, target_height), Image.Resampling.LANCZOS)
+    return poster
 
 
 def generate_nfo(movie_data: dict, nfo_path: Path, local_video_path: str = None) -> bool:
