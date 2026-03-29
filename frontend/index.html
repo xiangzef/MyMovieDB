@@ -815,6 +815,12 @@
                     <div class="label">待刮削</div>
                 </div>
                 <div style="flex:1;"></div>
+                <button class="btn btn-sm btn-secondary" @click="checkAllScrape" :disabled="checking">
+                    🔍 {{ checking ? '检查中...' : '检查刮削' }}
+                </button>
+                <button class="btn btn-sm btn-warning" @click="fixAllScrape" :disabled="fixing" v-if="scrapeCheckResult && scrapeCheckResult.incomplete > 0">
+                    🔧 {{ fixing ? '修复中...' : '修复刮削' }}
+                </button>
                 <button class="btn btn-sm btn-danger" @click="cleanupInvalidCodes" :disabled="cleaning">
                     🗑️ {{ cleaning ? '清理中...' : '清理无效番号' }}
                 </button>
@@ -867,12 +873,6 @@
                 <button class="btn btn-secondary btn-sm" @click="loadLocalVideos">筛选</button>
                 <button class="btn btn-secondary btn-sm" @click="videoFilter = {scraped:null, source_id:null, keyword:''}; loadLocalVideos()">重置</button>
                 <button class="btn btn-sm btn-secondary" @click="loadVideoStats">🔄 刷新统计</button>
-                <button class="btn btn-sm btn-secondary" @click="checkAllScrape" :disabled="checking">
-                    🔍 {{ checking ? '检查中...' : '检查刮削' }}
-                </button>
-                <button class="btn btn-sm btn-warning" @click="fixAllScrape" :disabled="fixing" v-if="scrapeCheckResult && scrapeCheckResult.incomplete > 0">
-                    🔧 {{ fixing ? '修复中...' : '修复刮削' }}
-                </button>
             </div>
 
             <div v-if="localVideosLoading" class="loading">加载中...</div>

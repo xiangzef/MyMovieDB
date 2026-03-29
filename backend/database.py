@@ -729,10 +729,17 @@ def get_local_videos(
     total = cursor.fetchone()[0]
 
     offset = (page - 1) * page_size
+    # 注意：local_videos 和 movies 都有 poster_path/thumb_path 字段
+    # 优先使用 movies 表的封面（刮削后的），若为 NULL 则用 local_videos 的
     cursor.execute(f"""
-        SELECT v.*,
+        SELECT v.id, v.source_id, v.name, v.path, v.code, v.extension, v.file_size,
+               v.scraped, v.movie_id, v.created_at, v.updated_at,
+               v.fanart_path AS local_fanart, v.poster_path AS local_poster, v.thumb_path AS local_thumb,
                m.title, m.cover_url, m.local_cover_path, m.release_date, m.actors,
-               m.maker, m.scrape_status, m.poster_path, m.thumb_path
+               m.maker, m.scrape_status,
+               COALESCE(m.poster_path, v.poster_path) AS poster_path,
+               COALESCE(m.thumb_path, v.thumb_path) AS thumb_path,
+               COALESCE(m.fanart_path, v.fanart_path) AS fanart_path
         FROM local_videos v
         LEFT JOIN movies m ON v.movie_id = m.id
         WHERE {where_sql}
