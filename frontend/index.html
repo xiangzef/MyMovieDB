@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
@@ -688,10 +688,10 @@
             <!-- 快捷刮削 -->
             <div class="add-source-form" style="margin-bottom:20px;">
                 <input v-model="scrapeKeyword" placeholder="输入影片编号，多个用逗号/空格/换行分隔，如 ABC-123, XYZ-456" @keyup.enter="scrapeBatch">
-                <button class="btn btn-primary" @click="scrapeBatch" :disabled="scrapeRunning">
-                    🔍 {{ scrapeRunning ? '刮削中...' : '批量刮削' }}
+                <button class="btn btn-primary" @click="scrapeBatch" :disabled="scraping">
+                    🔍 {{ scraping ? '刮削中...' : '批量刮削' }}
                 </button>
-                <button v-if="scrapeRunning" class="btn btn-danger" @click="stopScrape" title="停止刮削">⏹ 停止</button>
+                <button v-if="scraping" class="btn btn-danger" @click="stopScrape" title="停止刮削">⏹ 停止</button>
             </div>
 
             <div class="quick-bar">
@@ -771,10 +771,10 @@
                 <button class="btn btn-secondary" @click="scanSources" :disabled="scanning">
                     📂 {{ scanning ? '扫描中...' : '扫描目录' }}
                 </button>
-                <button class="btn btn-success" @click="scrapeAll" :disabled="scrapeRunning">
-                    🌐 {{ scrapeRunning ? '刮削中...' : '批量刮削所有视频' }}
+                <button class="btn btn-success" @click="scrapeAll" :disabled="scraping">
+                    🌐 {{ scraping ? '刮削中...' : '批量刮削所有视频' }}
                 </button>
-                <button v-if="scrapeRunning" class="btn btn-danger" @click="stopScrape" title="停止刮削">⏹ 停止</button>
+                <button v-if="scraping" class="btn btn-danger" @click="stopScrape" title="停止刮削">⏹ 停止</button>
             </div>
 
             <!-- 统计 -->
@@ -902,7 +902,7 @@
                     <!-- 操作 -->
                     <div class="video-actions">
                         <button v-if="v.movie_id" class="btn btn-sm btn-secondary" @click="showMovieDetail(v.movie_id)">详情</button>
-                        <button v-if="v.code && !v.scraped" class="btn btn-sm btn-success" @click="scrapeOneLocal(v)" :disabled="scrapeRunning">刮削</button>
+                        <button v-if="v.code && !v.scraped" class="btn btn-sm btn-success" @click="scrapeOneLocal(v)" :disabled="scraping">刮削</button>
                         <button class="btn btn-sm btn-danger" @click="deleteLocalVideo(v.id)">删除</button>
                     </div>
                 </div>
@@ -1026,9 +1026,30 @@
 <script>
 const { createApp, ref, computed, onMounted, nextTick } = Vue;
 
+// ========== 全局常量 ==========
+const SAMPLE_IMG = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect fill="%230f3460" width="100" height="100"/><text x="50" y="55" text-anchor="middle" fill="%23666" font-size="12">No Cover</text></svg>';
+
+// 通用分页页码计算
+const calcVisiblePages = (current, total) => {
+    const pages = [];
+    const start = Math.max(1, current - 2);
+    const end = Math.min(total, start + 4);
+    for (let i = start; i <= end; i++) pages.push(i);
+    return pages;
+};
+
 createApp({
     setup() {
         const API = 'http://localhost:8000';
+
+        // 路径转换：本地封面路径 → API 可访问 URL
+        const localToApi = (localPath) => {
+            if (!localPath) return null;
+            const match = localPath.match(/[\/\\]covers[\/\\]([^\/\\]+[\/\\][^\/\\]+)$/);
+            if (match) return `${API}/covers/${match[1].replace(/\\/g, '/')}`;
+            return null;
+        };
+
         const currentTab = ref('movies');
         const backendStatus = ref('检查中...');
 
@@ -1059,13 +1080,7 @@ createApp({
         const scrapeLogEl = ref(null);
 
         const totalPages = computed(() => Math.ceil(total.value / pageSize.value));
-        const visiblePages = computed(() => {
-            const pages = [];
-            const start = Math.max(1, currentPage.value - 2);
-            const end = Math.min(totalPages.value, start + 4);
-            for (let i = start; i <= end; i++) pages.push(i);
-            return pages;
-        });
+        const visiblePages = computed(() => calcVisiblePages(currentPage.value, totalPages.value));
 
         // Local Sources
         const localSources = ref([]);
@@ -1075,7 +1090,6 @@ createApp({
         const scanning = ref(false);
         const scanResult = ref(null);
         const scrapeProgress = ref(null);
-        const scrapeRunning = computed(() => scraping.value);
 
         // Local Videos
         const localVideos = ref([]);
@@ -1086,13 +1100,7 @@ createApp({
         const videoFilter = ref({ scraped: null, source_id: null, keyword: '' });
 
         const videoTotalPages = computed(() => Math.ceil((videoStats.value.total || 0) / videoPageSize.value));
-        const videoVisiblePages = computed(() => {
-            const pages = [];
-            const start = Math.max(1, videoPage.value - 2);
-            const end = Math.min(videoTotalPages.value, start + 4);
-            for (let i = start; i <= end; i++) pages.push(i);
-            return pages;
-        });
+        const videoVisiblePages = computed(() => calcVisiblePages(videoPage.value, videoTotalPages.value));
 
         // Toasts
         const toasts = ref([]);
@@ -1135,26 +1143,31 @@ createApp({
         const nextPage = () => { if (currentPage.value < totalPages.value) { currentPage.value++; fetchMovies(); }};
         const goToPage = (p) => { currentPage.value = p; fetchMovies(); };
 
-        const scrapeMovie = async () => {
-            if (!scrapeKeyword.value.trim() || scraping.value) return;
+        // ========== 单条刮削（统一入口） ==========
+        const scrapeByCode = async (code, opts = {}) => {
+            const { label = '刮削', onSuccess } = opts;
+            if (!code || scraping.value) return;
             scraping.value = true;
             try {
                 const res = await fetch(`${API}/scrape`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ keyword: scrapeKeyword.value.trim(), save_cover: true })
+                    body: JSON.stringify({ keyword: code, save_cover: true })
                 });
                 const data = await res.json();
                 if (data.success) {
-                    showToast(`刮削成功: ${data.movie.title}`, 'success');
-                    scrapeKeyword.value = '';
+                    showToast(`${label}成功: ${data.movie.title}`, 'success');
+                    // 刷新所有数据，保证一致
                     fetchMovies();
-                    if (currentTab.value === 'sources') loadSources();
+                    loadSources();
+                    loadVideoStats();
+                    loadLocalVideos();
+                    if (onSuccess) onSuccess(data);
                 } else {
-                    showToast(`刮削失败: ${data.message}`, 'error');
+                    showToast(`${label}失败: ${data.message}`, 'error');
                 }
             } catch (e) {
-                showToast('请求失败，请确保后端已启动', 'error');
+                showToast(`${label}请求失败，请确保后端已启动`, 'error');
             }
             scraping.value = false;
         };
@@ -1321,31 +1334,22 @@ createApp({
         const showDetail = (m) => {
             try {
                 selectedMovie.value = m;
-                // 构建详情页多图列表
                 const thumbs = [];
-                // 辅助函数：将本地路径转换为 API 路径
-                const localToApi = (localPath) => {
-                    if (!localPath) return null;
-                    const match = localPath.match(/[\/\\]covers[\/\\]([^\/\\]+[\/\\][^\/\\]+)$/);
-                    if (match) {
-                        return `${API}/covers/${match[1].replace(/\\/g, '/')}`;
-                    }
-                    return null;
-                };
                 if (m.poster_path) thumbs.push(localToApi(m.poster_path));
                 if (m.thumb_path) thumbs.push(localToApi(m.thumb_path));
                 if (m.fanart_path) thumbs.push(localToApi(m.fanart_path));
-                // 如果没有本地多图但有网络封面，也加入
                 if (thumbs.length === 0 && (m.local_cover_path || m.cover_url)) {
                     thumbs.push(`${API}/covers/${m.code}.jpg`);
                 }
                 detailThumbs.value = thumbs;
-                // 默认主图用 poster
                 detailMainSrc.value = thumbs[0] || getCoverUrl(m, 'detail');
                 detailActiveThumb.value = 0;
                 document.body.style.overflow = 'hidden';
-                console.log('[showDetail] 弹窗已打开, code:', m?.code);
             } catch (e) {
+                console.error('[showDetail] 错误:', e);
+                showToast('打开详情失败: ' + e.message, 'error');
+            }
+        };
                 console.error('[showDetail] 错误:', e);
                 showToast('打开详情失败: ' + e.message, 'error');
             }
@@ -1379,65 +1383,20 @@ createApp({
             }
         };
         const getCoverUrl = (m, type = 'poster') => {
-            // 防御性检查
             if (!m || !m.code) return SAMPLE_IMG;
-
-            // 优先级：poster_path / thumb_path / fanart_path > local_cover_path > cover_url
-            // type: 'poster'=缩略图(grid), 'detail'=完整大图, 'thumb'=小预览, 'fanart'=背景
-            const SAMPLE_IMG = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect fill="%230f3460" width="100" height="100"/><text x="50" y="55" text-anchor="middle" fill="%23666" font-size="12">No Cover</text></svg>';
-
-            // 辅助函数：将本地路径转换为 API 路径
-            const localToApi = (localPath) => {
-                if (!localPath) return null;
-                // 从路径中提取番号和文件名
-                // 例如：F:\...\covers\SSIS-254\SSIS-254-poster.jpg → /covers/SSIS-254/SSIS-254-poster.jpg
-                const match = localPath.match(/[\/\\]covers[\/\\]([^\/\\]+[\/\\][^\/\\]+)$/);
-                if (match) {
-                    return `${API}/covers/${match[1].replace(/\\/g, '/')}`;
-                }
-                return null;
-            };
-
-            if (type === 'fanart') {
-                return localToApi(m.fanart_path) || SAMPLE_IMG;
-            }
-            if (type === 'thumb') {
-                return localToApi(m.thumb_path) || (m.local_cover_path ? `${API}/covers/${m.code}.jpg` : SAMPLE_IMG);
-            }
-            // poster / detail：优先用本地 poster_path
+            if (type === 'fanart') return localToApi(m.fanart_path) || SAMPLE_IMG;
+            if (type === 'thumb') return localToApi(m.thumb_path) || (m.local_cover_path ? `${API}/covers/${m.code}.jpg` : SAMPLE_IMG);
             if (m.poster_path) return localToApi(m.poster_path) || SAMPLE_IMG;
             if (m.local_cover_path || m.cover_url) return `${API}/covers/${m.code}.jpg`;
             return SAMPLE_IMG;
         };
-        const handleImgError = (e) => {
-            e.target.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect fill="%230f3460" width="100" height="100"/><text x="50" y="55" text-anchor="middle" fill="%23666" font-size="12">No Cover</text></svg>';
-        };
+        const handleImgError = (e) => { e.target.src = SAMPLE_IMG; };
 
-        // ========== 二次刮削 ==========
-        const rescrapeMovie = async (m) => {
-            if (!m || !m.code || scraping.value) return;
-            scraping.value = true;
-            try {
-                const res = await fetch(`${API}/scrape`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ keyword: m.code, save_cover: true })
-                });
-                const data = await res.json();
-                if (data.success) {
-                    showToast(`重新刮削成功: ${data.movie.title}`, 'success');
-                    closeDetail();
-                    fetchMovies();
-                    loadSources();
-                    loadVideoStats();
-                } else {
-                    showToast(`刮削失败: ${data.message}`, 'error');
-                }
-            } catch (e) {
-                showToast('请求失败，请确保后端已启动', 'error');
-            }
-            scraping.value = false;
-        };
+        // ========== 二次刮削（复用 scrapeByCode） ==========
+        const rescrapeMovie = (m) => scrapeByCode(m.code, {
+            label: '重新刮削',
+            onSuccess: () => closeDetail()
+        });
 
 
         // ========== 打开本地视频文件夹 ==========
@@ -1534,7 +1493,7 @@ createApp({
         };
 
         const scrapeAll = async () => {
-            if (scrapeRunning.value) return;
+            if (scraping.value) return;
             scraping.value = true;
             // 重置本地视频库刮削进度状态
             scrapeProgress.value = { phase: 'scraping', pct: 0, processed: 0, success_count: 0, fail_count: 0, skip_count: 0 };
@@ -1631,28 +1590,8 @@ createApp({
         const videoNextPage = () => { videoPage.value++; loadLocalVideos(); };
         const videoGoToPage = (p) => { videoPage.value = p; loadLocalVideos(); };
 
-        const scrapeOneLocal = async (v) => {
-            if (!v.code || scraping.value) return;
-            scraping.value = true;
-            try {
-                const res = await fetch(`${API}/scrape`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ keyword: v.code, save_cover: true })
-                });
-                const data = await res.json();
-                if (data.success) {
-                    showToast(`刮削成功: ${data.movie.title}`, 'success');
-                    // 同时刷新本地视频库和影片库，保证两侧数据同步
-                    loadLocalVideos();
-                    loadSources();
-                    loadMovies();
-                } else {
-                    showToast(`刮削失败: ${data.message}`, 'error');
-                }
-            } catch (e) { showToast('请求失败', 'error'); }
-            scraping.value = false;
-        };
+        // ========== 本地视频单条刮削（复用 scrapeByCode） ==========
+        const scrapeOneLocal = (v) => scrapeByCode(v.code, { label: '刮削' });
 
         const deleteLocalVideo = async (id) => {
             if (!confirm('确定删除此记录？文件不会被删除。')) return;
@@ -1701,19 +1640,12 @@ createApp({
         // ========== 本地视频封面 URL ==========
         const getVideoCoverUrl = (v) => {
             if (!v) return null;
-            // 优先用后端提供的 cover_url_display
             if (v.cover_url_display) {
-                // 如果是本地路径格式（含 covers），转为 API 路径
-                if (v.cover_url_display.includes('covers') && (v.cover_url_display.includes('\\') || v.cover_url_display.includes('/'))) {
-                    const match = v.cover_url_display.match(/[\/\\]covers[\/\\]([^\/\\]+[\/\\][^\/\\]+)$/);
-                    if (match) return `${API}/covers/${match[1].replace(/\\/g, '/')}`;
-                }
-                // 如果是外部 URL 直接用
+                const apiUrl = localToApi(v.cover_url_display);
+                if (apiUrl) return apiUrl;
                 if (v.cover_url_display.startsWith('http')) return v.cover_url_display;
-                // 其他情况作为 API 路径
                 return `${API}${v.cover_url_display.startsWith('/') ? '' : '/'}${v.cover_url_display}`;
             }
-            // 尝试用 code 查找已有封面
             if (v.code) return `${API}/covers/${v.code}.jpg`;
             return null;
         };
@@ -1756,13 +1688,13 @@ createApp({
             movies, total, currentPage, pageSize, loading, searchKeyword, scrapeKeyword, scraping, selectedMovie,
             totalPages, visiblePages,
             fetchMovies, searchMovies, loadMovies, prevPage, nextPage, goToPage,
-            scrapeMovie, scrapeBatch, stopScrape, showDetail, closeDetail, showMovieDetail, getCoverUrl, handleImgError,
+            scrapeByCode, scrapeBatch, stopScrape, closeDetail, showMovieDetail, getCoverUrl, handleImgError,
             // Detail Modal
             detailMainSrc, detailThumbs, detailActiveThumb, cycleDetailMain,
             // Helper functions
             formatArray, ensureArray,
             // Local Sources
-            localSources, localStats, newSourcePath, addingSource, scanning, scanResult, scrapeProgress, scrapeRunning,
+            localSources, localStats, newSourcePath, addingSource, scanning, scanResult, scrapeProgress,
             addSource, removeSource, scanSources, scrapeAll,
             // Local Videos
             localVideos, videoStats, localVideosLoading, videoPage, videoPageSize, videoFilter,
