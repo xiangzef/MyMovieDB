@@ -462,7 +462,7 @@ async def search_movies(
 @app.post("/scrape", response_model=ScrapeResponse)
 async def scrape_movie_endpoint(request: ScrapeRequest):
     """刮削影片信息（智能合并）"""
-    from scraper import scrape_movie
+    from scraper import scrape_movie, save_movie_assets
 
     try:
         # 调用爬虫
@@ -476,6 +476,14 @@ async def scrape_movie_endpoint(request: ScrapeRequest):
 
         # 检查本地库是否有该番号的视频
         local_video = db.get_local_video_by_code(request.keyword.strip())
+        local_video_path = local_video["path"] if local_video else None
+
+        # 统一后处理：下载封面 + 生成 NFO
+        if request.save_cover:
+            covers_dir = Path(cfg.COVERS_DIR)
+            covers_dir.mkdir(parents=True, exist_ok=True)
+            movie_data = save_movie_assets(movie_data, covers_dir, local_video_path)
+
         if local_video:
             movie_data["local_video_id"] = local_video["id"]
 
@@ -686,23 +694,14 @@ async def scrape_batch(req: ScrapeRequest):
                     # 注入本地视频关联
                     if local_video_id:
                         movie_data["local_video_id"] = local_video_id
-                    
-                    # 下载并裁切封面（如果启用）
-                    if req.save_cover and movie_data.get("cover_url"):
-                        from scraper import download_and_crop_cover, generate_nfo
-                        from pathlib import Path
+
+                    # 统一后处理：下载封面 + 生成 NFO
+                    if req.save_cover:
+                        from scraper import save_movie_assets
                         covers_dir = Path(cfg.COVERS_DIR)
                         covers_dir.mkdir(parents=True, exist_ok=True)
-                        crop_paths = download_and_crop_cover(
-                            movie_data["cover_url"], code, covers_dir
-                        )
-                        if crop_paths:
-                            movie_data.update(crop_paths)
-                            # 生成 NFO 文件
-                            safe_code = re.sub(r'[<>:"/\\|?*]', '_', code)
-                            nfo_path = Path(crop_paths.get("folder", covers_dir / safe_code)) / f"{safe_code}.nfo"
-                            generate_nfo(movie_data, nfo_path, local_path)
-                    
+                        movie_data = save_movie_assets(movie_data, covers_dir, local_path)
+
                     movie_id, is_new = db.upsert_movie(movie_data)
                     # 标记本地视频已刮削
                     if local_video_id:
@@ -1048,21 +1047,11 @@ async def scrape_local_videos():
                     })
                     continue
 
-                # 下载并裁切封面
-                if movie_data.get("cover_url"):
-                    from scraper import download_and_crop_cover, generate_nfo
-                    from pathlib import Path
-                    covers_dir = Path(cfg.COVERS_DIR)
-                    covers_dir.mkdir(parents=True, exist_ok=True)
-                    crop_paths = download_and_crop_cover(
-                        movie_data["cover_url"], code, covers_dir
-                    )
-                    if crop_paths:
-                        movie_data.update(crop_paths)
-                        # 生成 NFO 文件
-                        safe_code = re.sub(r'[<>:"/\\|?*]', '_', code)
-                        nfo_path = Path(crop_paths.get("folder", covers_dir / safe_code)) / f"{safe_code}.nfo"
-                        generate_nfo(movie_data, nfo_path, video.get("path"))
+                # 统一后处理：下载封面 + 生成 NFO
+                from scraper import save_movie_assets
+                covers_dir = Path(cfg.COVERS_DIR)
+                covers_dir.mkdir(parents=True, exist_ok=True)
+                movie_data = save_movie_assets(movie_data, covers_dir, video.get("path"))
 
                 # upsert 影片
                 movie_id, is_new = db.upsert_movie(movie_data)
@@ -1394,8 +1383,7 @@ async def fix_scrape_results(request: FixScrapeRequest = None):
     2. 重新生成 NFO 文件
     3. 更新数据库中的封面路径
     """
-    from pathlib import Path
-    from scraper import download_and_crop_cover, generate_nfo
+    from scraper import save_movie_assets
 
     covers_dir = Path(cfg.COVERS_DIR)
     covers_dir.mkdir(parents=True, exist_ok=True)
@@ -1418,34 +1406,40 @@ async def fix_scrape_results(request: FixScrapeRequest = None):
         message = ""
 
         try:
+            # 获取本地视频路径
+            local_video_path = None
+            if m.get("local_video_id"):
+                lv = db.get_local_video_by_id(m.get("local_video_id"))
+                if lv:
+                    local_video_path = lv.get("path")
+
+            # 检查是否需要下载封面
+            need_cover = m.get("cover_url") and (
+                not m.get("poster_path") or not Path(m.get("poster_path", "")).exists()
+            )
+            # 检查是否需要生成 NFO
             safe_code = re.sub(r'[<>:"/\\|?*]', '_', code)
             code_dir = covers_dir / safe_code
-            code_dir.mkdir(parents=True, exist_ok=True)
+            nfo_path = code_dir / f"{safe_code}.nfo"
+            need_nfo = not nfo_path.exists()
 
-            # 检查并下载封面
-            cover_url = m.get("cover_url")
-            if cover_url and (not m.get("poster_path") or not Path(m.get("poster_path", "")).exists()):
-                crop_paths = download_and_crop_cover(cover_url, code, covers_dir)
-                if crop_paths:
-                    # 更新数据库
-                    db.update_movie(movie_id, crop_paths)
+            if need_cover or need_nfo:
+                # 统一后处理
+                updated = save_movie_assets(m, covers_dir, local_video_path)
+
+                # 更新数据库（封面路径）
+                if need_cover and updated.get("poster_path"):
+                    db.update_movie(movie_id, {
+                        "fanart_path": updated.get("fanart_path"),
+                        "poster_path": updated.get("poster_path"),
+                        "thumb_path": updated.get("thumb_path")
+                    })
                     fixed = True
                     message += "已下载封面; "
 
-            # 生成 NFO
-            nfo_path = code_dir / f"{safe_code}.nfo"
-            if not nfo_path.exists():
-                # 获取本地视频路径（如果有）
-                local_video_path = None
-                if m.get("local_video_id"):
-                    # 从 local_videos 表获取路径
-                    lv = db.get_local_video_by_id(m.get("local_video_id"))
-                    if lv:
-                        local_video_path = lv.get("path")
-
-                generate_nfo(m, nfo_path, local_video_path)
-                fixed = True
-                message += "已生成 NFO; "
+                if need_nfo and nfo_path.exists():
+                    fixed = True
+                    message += "已生成 NFO; "
 
             if fixed:
                 result.fixed += 1
@@ -1549,42 +1543,50 @@ async def fix_movie_scrape(movie_id: int):
     if not m:
         raise HTTPException(status_code=404, detail="影片不存在")
 
-    from pathlib import Path
-    from scraper import download_and_crop_cover, generate_nfo
+    from scraper import save_movie_assets
 
     covers_dir = Path(cfg.COVERS_DIR)
     code = m.get("code", "")
     safe_code = re.sub(r'[<>:"/\\|?*]', '_', code)
     code_dir = covers_dir / safe_code
-    code_dir.mkdir(parents=True, exist_ok=True)
 
     fixed = []
     errors = []
 
-    # 检查并下载封面
-    cover_url = m.get("cover_url")
-    if cover_url and (not m.get("poster_path") or not Path(m.get("poster_path", "")).exists()):
-        try:
-            crop_paths = download_and_crop_cover(cover_url, code, covers_dir)
-            if crop_paths:
-                db.update_movie(movie_id, crop_paths)
-                fixed.append("已下载封面")
-        except Exception as e:
-            errors.append(f"下载封面失败: {e}")
+    # 获取本地视频路径
+    local_video_path = None
+    if m.get("local_video_id"):
+        lv = db.get_local_video_by_id(m.get("local_video_id"))
+        if lv:
+            local_video_path = lv.get("path")
 
-    # 生成 NFO
+    # 检查是否需要下载封面
+    need_cover = m.get("cover_url") and (
+        not m.get("poster_path") or not Path(m.get("poster_path", "")).exists()
+    )
+    # 检查是否需要生成 NFO
     nfo_path = code_dir / f"{safe_code}.nfo"
-    if not nfo_path.exists():
+    need_nfo = not nfo_path.exists()
+
+    if need_cover or need_nfo:
         try:
-            local_video_path = None
-            if m.get("local_video_id"):
-                lv = db.get_local_video_by_id(m.get("local_video_id"))
-                if lv:
-                    local_video_path = lv.get("path")
-            generate_nfo(m, nfo_path, local_video_path)
-            fixed.append("已生成 NFO")
+            # 统一后处理
+            updated = save_movie_assets(m, covers_dir, local_video_path)
+
+            # 更新数据库（封面路径）
+            if need_cover and updated.get("poster_path"):
+                db.update_movie(movie_id, {
+                    "fanart_path": updated.get("fanart_path"),
+                    "poster_path": updated.get("poster_path"),
+                    "thumb_path": updated.get("thumb_path")
+                })
+                fixed.append("已下载封面")
+
+            if need_nfo and nfo_path.exists():
+                fixed.append("已生成 NFO")
+
         except Exception as e:
-            errors.append(f"生成 NFO 失败: {e}")
+            errors.append(f"修复失败: {e}")
 
     return {
         "movie_id": movie_id,

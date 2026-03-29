@@ -243,6 +243,56 @@ def regenerate_poster_from_fanart(fanart_path: str, poster_path: str, thumb_path
         return False
 
 
+# ===============================================================================
+# 统一的刮削后处理函数（核心重构）
+# ===============================================================================
+
+def save_movie_assets(movie_data: dict, covers_dir: Path, local_video_path: str = None) -> dict:
+    """
+    功能: 统一的刮削后处理函数（下载封面 + 生成 NFO）
+    文件: scraper.py
+    参数:
+        movie_data: 影片数据字典（必须包含 code 和 cover_url）
+        covers_dir: 封面保存根目录
+        local_video_path: 本地视频文件路径（可选）
+    返回: 更新后的 movie_data（增加 fanart_path, poster_path, thumb_path）
+    说明:
+        - 这是唯一的刮削后处理入口
+        - 所有刮削流程（手动/批量/修复）都应该调用此函数
+        - 避免重复代码，确保一致性
+    """
+    code = movie_data.get("code", "")
+    cover_url = movie_data.get("cover_url", "")
+
+    if not code:
+        return movie_data
+
+    # 安全文件名
+    safe_code = re.sub(r'[<>:"/\\|?*]', '_', code)
+    code_dir = covers_dir / safe_code
+    code_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. 下载并裁切封面
+    if cover_url and PIL_AVAILABLE:
+        crop_paths = download_and_crop_cover(cover_url, code, covers_dir)
+        if crop_paths:
+            movie_data["fanart_path"] = crop_paths.get("fanart")
+            movie_data["poster_path"] = crop_paths.get("poster")
+            movie_data["thumb_path"] = crop_paths.get("thumb")
+            logger.info(f"封面下载成功: {code}")
+
+    # 2. 生成 NFO 文件
+    nfo_path = code_dir / f"{safe_code}.nfo"
+    if not nfo_path.exists():
+        try:
+            generate_nfo(movie_data, nfo_path, local_video_path)
+            logger.info(f"NFO 生成成功: {code}")
+        except Exception as e:
+            logger.warning(f"NFO 生成失败 {code}: {e}")
+
+    return movie_data
+
+
 def _crop_poster_from_right(fanart: Image, target_width: int, target_height: int) -> Image:
     """
     功能: 从 fanart 图片的右半边中间截取竖向 poster
