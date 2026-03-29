@@ -1415,6 +1415,8 @@ createApp({
                         loadVideoStats();
                         loadLocalVideos();
                         scrapeKeyword.value = '';
+                        // 如果是修复操作，重新检查刮削状态
+                        checkAllScrape().catch(() => {});
                     }, 3000);
                     break;
             }
@@ -1817,30 +1819,57 @@ createApp({
         // 修复所有刮削结果
         const fixAllScrape = async () => {
             if (!confirm('确定修复不完整的刮削结果？将重新下载缺失的封面和生成NFO文件。')) return;
+            if (fixing.value) return;
             fixing.value = true;
+
+            // 初始化进度浮层
+            scrapePanel.value.show = true;
+            scrapePanel.value.title = '修复刮削结果';
+            scrapePanel.value.logs = [];
+            scrapePanel.value.pct = 0;
+            scrapePanel.value.jobId = null;
+            scrapePanel.value.stats = { success: 0, fail: 0, linked: 0 };
+            addScrapeLog('info', '🔄 开始修复刮削结果...');
+
+            // SSE 接口
             try {
                 const res = await fetch(`${API}/scrape/fix`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({})
                 });
-                const data = await res.json();
-                if (data.fixed > 0) {
-                    showToast(`成功修复 ${data.fixed} 部影片`, 'success');
-                    // 重新检查
-                    await checkAllScrape();
-                    // 刷新数据
-                    fetchMovies();
-                    loadSources();
-                    loadVideoStats();
-                    loadLocalVideos();
-                } else {
-                    showToast('没有需要修复的内容', 'info');
+                if (!res.ok) {
+                    throw new Error(`HTTP ${res.status}`);
+                }
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        try {
+                            const evt = JSON.parse(line.slice(6));
+                            handleScrapeEvent(evt, 'fix');
+                        } catch (e) { /* ignore */ }
+                    }
+                }
+                if (buffer.startsWith('data: ')) {
+                    try {
+                        const evt = JSON.parse(buffer.slice(6));
+                        handleScrapeEvent(evt, 'fix');
+                    } catch (e) { /* ignore */ }
                 }
             } catch (e) {
-                showToast('修复失败: ' + e.message, 'error');
+                addScrapeLog('error', `连接失败: ${e.message}`);
+            } finally {
+                fixing.value = false;
             }
-            fixing.value = false;
         };
 
         // 检查单个影片

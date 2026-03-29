@@ -1624,10 +1624,10 @@ class FixScrapeResponse(BaseModel):
     results: List[FixScrapeResult]
 
 
-@app.post("/scrape/fix", tags=["刮削"], response_model=FixScrapeResponse)
+@app.post("/scrape/fix", tags=["刮削"])
 async def fix_scrape_results(request: FixScrapeRequest = None):
     """
-    修复不完整的刮削结果
+    修复不完整的刮削结果（SSE 实时进度）
 
     修复操作：
     1. 重新下载缺失的封面图片
@@ -1635,6 +1635,9 @@ async def fix_scrape_results(request: FixScrapeRequest = None):
     3. 更新数据库中的封面路径
     """
     from scraper import save_movie_assets
+    import uuid
+
+    job_id = str(uuid.uuid4())[:8]
 
     covers_dir = Path(cfg.COVERS_DIR)
     covers_dir.mkdir(parents=True, exist_ok=True)
@@ -1648,69 +1651,110 @@ async def fix_scrape_results(request: FixScrapeRequest = None):
         movie_ids = [item.movie_id for item in check_result.issues]
         movies = [db.get_movie_by_id(mid) for mid in movie_ids if db.get_movie_by_id(mid)]
 
-    result = FixScrapeResponse(total=len(movies), fixed=0, failed=0, results=[])
+    total = len(movies)
 
-    for m in movies:
-        movie_id = m.get("id")
-        code = m.get("code", "")
-        fixed = False
-        message = ""
+    def generate():
+        fixed_count = 0
+        failed_count = 0
 
-        try:
-            # 获取本地视频路径
-            local_video_path = None
-            if m.get("local_video_id"):
-                lv = db.get_local_video_by_id(m.get("local_video_id"))
-                if lv:
-                    local_video_path = lv.get("path")
+        for i, m in enumerate(movies):
+            movie_id = m.get("id")
+            code = m.get("code", "")
+            fixed = False
+            message = ""
 
-            # 检查是否需要下载封面
-            need_cover = m.get("cover_url") and (
-                not m.get("poster_path") or not Path(m.get("poster_path", "")).exists()
-            )
-            # 检查是否需要生成 NFO
-            safe_code = re.sub(r'[<>:"/\\|?*]', '_', code)
-            code_dir = covers_dir / safe_code
-            nfo_path = code_dir / f"{safe_code}.nfo"
-            need_nfo = not nfo_path.exists()
+            try:
+                # 获取本地视频路径
+                local_video_path = None
+                if m.get("local_video_id"):
+                    lv = db.get_local_video_by_id(m.get("local_video_id"))
+                    if lv:
+                        local_video_path = lv.get("path")
 
-            if need_cover or need_nfo:
-                # 统一后处理
-                updated = save_movie_assets(m, covers_dir, local_video_path)
+                # 检查是否需要下载封面
+                need_cover = m.get("cover_url") and (
+                    not m.get("poster_path") or not Path(m.get("poster_path", "")).exists()
+                )
+                # 检查是否需要生成 NFO
+                safe_code = re.sub(r'[<>:"/\\|?*]', '_', code)
+                code_dir = covers_dir / safe_code
+                nfo_path = code_dir / f"{safe_code}.nfo"
+                need_nfo = not nfo_path.exists()
 
-                # 更新数据库（封面路径）
-                if need_cover and updated.get("poster_path"):
-                    db.update_movie(movie_id, {
-                        "fanart_path": updated.get("fanart_path"),
-                        "poster_path": updated.get("poster_path"),
-                        "thumb_path": updated.get("thumb_path")
+                if need_cover or need_nfo:
+                    # 统一后处理
+                    updated = save_movie_assets(m, covers_dir, local_video_path)
+
+                    # 更新数据库（封面路径）
+                    if need_cover and updated.get("poster_path"):
+                        db.update_movie(movie_id, {
+                            "fanart_path": updated.get("fanart_path"),
+                            "poster_path": updated.get("poster_path"),
+                            "thumb_path": updated.get("thumb_path")
+                        })
+                        fixed = True
+                        message += "已下载封面; "
+
+                    if need_nfo and nfo_path.exists():
+                        fixed = True
+                        message += "已生成 NFO; "
+
+                if fixed:
+                    fixed_count += 1
+                    yield _send_sse({
+                        "type": "success",
+                        "job_id": job_id,
+                        "code": code,
+                        "title": m.get("title", ""),
+                        "message": message,
+                        "index": i + 1,
+                        "total": total,
+                        "pct": int(((i + 1) / total) * 100)
                     })
-                    fixed = True
-                    message += "已下载封面; "
+                else:
+                    failed_count += 1
+                    yield _send_sse({
+                        "type": "skipped",
+                        "job_id": job_id,
+                        "code": code,
+                        "message": "无需修复",
+                        "index": i + 1,
+                        "total": total,
+                        "pct": int(((i + 1) / total) * 100)
+                    })
 
-                if need_nfo and nfo_path.exists():
-                    fixed = True
-                    message += "已生成 NFO; "
+            except Exception as e:
+                logger.error(f"修复影片 {code} 失败: {e}")
+                message = f"修复失败: {str(e)}"
+                failed_count += 1
+                yield _send_sse({
+                    "type": "error",
+                    "job_id": job_id,
+                    "code": code,
+                    "message": message,
+                    "index": i + 1,
+                    "total": total,
+                    "pct": int(((i + 1) / total) * 100)
+                })
 
-            if fixed:
-                result.fixed += 1
-            else:
-                message = "无需修复"
-                result.failed += 1
+        # 完成
+        yield _send_sse({
+            "type": "done",
+            "job_id": job_id,
+            "success_count": fixed_count,
+            "fail_count": failed_count,
+            "message": f"修复完成：成功 {fixed_count}，失败 {failed_count}"
+        })
 
-        except Exception as e:
-            logger.error(f"修复影片 {code} 失败: {e}")
-            message = f"修复失败: {str(e)}"
-            result.failed += 1
-
-        result.results.append(FixScrapeResult(
-            movie_id=movie_id,
-            code=code,
-            fixed=fixed,
-            message=message
-        ))
-
-    return result
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 
 # 单个影片的检查和修复
