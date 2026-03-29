@@ -1112,7 +1112,14 @@ class AvbaseScraper(BaseScraper):
         if actor_links:
             actors = [link.get_text(strip=True) for link in actor_links if link.get_text(strip=True)]
             if actors:
-                data["actors"] = actors
+                # 去重（保持顺序）
+                seen = set()
+                unique_actors = []
+                for actor in actors:
+                    if actor not in seen:
+                        seen.add(actor)
+                        unique_actors.append(actor)
+                data["actors"] = unique_actors
 
         # 提取时长 - 从页面文本中提取 "収録分数120"
         duration_match = re.search(r"収録分数\s*(\d+)", page_text)
@@ -1205,9 +1212,11 @@ class FanzaScraper(BaseScraper):
         功能: 搜索 Fanza (DMM)
         文件: scraper.py
         URL 格式: https://www.dmm.co.jp/mono/dvd/-/detail/=/cid=ssis254/
+        优化: 直接访问失败时，使用搜索页面兜底查找
         """
         results = []
 
+        # ========== 第一步：直接按 CID 格式尝试访问 ==========
         # 转换番号格式：SSIS-254 → ssis254
         code_dmm = keyword.upper().replace("-", "").lower()
 
@@ -1215,21 +1224,21 @@ class FanzaScraper(BaseScraper):
         match = re.match(r'([a-z]+)(\d+)', code_dmm)
         if match:
             prefix, number = match.groups()
-            
+
             # DMM 格式：补零到 3-5 位，尝试多种格式
             variants = []
-            
+
             # 1. 原格式
             variants.append(code_dmm)
-            
+
             # 2. 补零到 3 位
             if len(number) < 3:
                 variants.append(f"{prefix}{number.zfill(3)}")
-            
+
             # 3. 补零到 5 位
             if len(number) < 5:
                 variants.append(f"{prefix}{number.zfill(5)}")
-            
+
             # 遍历尝试
             for variant in variants:
                 url = f"{self.BASE_URL}/mono/dvd/-/detail/=/cid={variant}/"
@@ -1243,8 +1252,67 @@ class FanzaScraper(BaseScraper):
                     logger.info(f"Fanza 找到结果: {url}")
                     return [detail]  # 返回包含完整信息的列表
 
+        # ========== 第二步：搜索页面兜底 ==========
+        logger.info(f"Fanza 直接访问未找到，尝试搜索: {keyword}")
+        search_result = self._search_via_search_page(keyword)
+        if search_result:
+            return [search_result]
+
         logger.warning(f"Fanza 未找到: {keyword}")
         return results
+
+    def _search_via_search_page(self, keyword: str) -> Optional[Dict]:
+        """
+        功能: 通过 Fanza 搜索页面查找番号
+        文件: scraper.py
+        说明: 当直接按 CID 访问失败时（如 JERA-16 实际 CID 是 1jera016），
+              使用搜索页面找到正确的详情链接
+        """
+        search_url = f"{self.BASE_URL}/mono/-/search/=/searchstr={keyword}/"
+        soup = self._get(search_url)
+
+        if not soup:
+            return None
+
+        # 找搜索结果中的详情链接（只看 mono/dvd 或 mono/blu-ray）
+        links = soup.select('a[href*="/detail/"]')
+        detail_links = []
+        for link in links:
+            href = link.get('href', '')
+            if '/mono/dvd/' in href or '/mono/blu-ray/' in href:
+                detail_links.append(href)
+
+        if not detail_links:
+            return None
+
+        # 取第一个结果，跳过 DOD（数字发行版）等变体
+        target_url = None
+        for href in detail_links:
+            # 跳过 DOD 版本
+            if 'dod' in href.lower():
+                continue
+            target_url = href
+            break
+
+        # 如果只有 DOD 版本，也用
+        if not target_url and detail_links:
+            target_url = detail_links[0]
+
+        if not target_url:
+            return None
+
+        logger.info(f"Fanza 搜索找到链接: {target_url}")
+
+        # 访问详情页
+        detail_soup = self._get(target_url)
+        if not detail_soup:
+            return None
+
+        data = self._parse_detail_page(detail_soup, target_url)
+        data["code"] = keyword.upper()
+        data["source"] = "fanza"
+        data["detail_url"] = target_url
+        return data
 
     def _is_valid_page(self, soup: BeautifulSoup, keyword: str) -> bool:
         """检查页面是否有效（避免 404 或空页面）"""
@@ -1323,10 +1391,23 @@ class FanzaScraper(BaseScraper):
                 if text and text not in ["AV女優一覧", "AV女優", "女優一覧", "一覧"]:
                     actors.append(text)
             if actors:
-                data["actors"] = actors
+                # 去重（保持顺序）
+                seen = set()
+                unique_actors = []
+                for actor in actors:
+                    if actor not in seen:
+                        seen.add(actor)
+                        unique_actors.append(actor)
+                data["actors"] = unique_actors
 
-        # 提取男演员（出演男優）- Fanza 可能没有单独标注
-        # 暂时留空，可从页面文本中尝试提取
+        # 提取男演员（出演男優）- 从页面文本提取
+        male_actor_match = re.search(r"出演男優[：:]\s*([^\n]+)", page_text)
+        if male_actor_match:
+            male_actors_text = male_actor_match.group(1).strip()
+            # 按斜杠或逗号分割
+            male_actors = [a.strip() for a in re.split(r'[/、,，]', male_actors_text) if a.strip()]
+            if male_actors:
+                data["actors_male"] = male_actors
 
         # 提取制作商（メーカー）
         maker_link = soup.select_one('a[href*="article=maker"]')

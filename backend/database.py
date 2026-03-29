@@ -398,14 +398,14 @@ def row_to_movie_response(row: dict) -> dict:
 def calculate_scrape_status(movie_data: dict) -> str:
     """
     计算削刮完整度状态
-    complete: 有图片、有女演员、有发行商、有发布时间
+    complete: 有标题 + 有发布日期 + 有制作商 + 有女演员
     partial: 部分字段有值
     empty: 仅番号，无其他信息
     """
-    # 必填字段：cover_url, actors, studio, release_date
-    has_cover = bool(movie_data.get("cover_url"))
+    # 必填字段：title, release_date, maker, actors
+    has_title = bool(movie_data.get("title"))
     has_release_date = bool(movie_data.get("release_date"))
-    has_studio = bool(movie_data.get("studio"))
+    has_maker = bool(movie_data.get("maker"))  # 制作商
     
     # 演员字段特殊处理（可能是列表或JSON字符串）
     actors = movie_data.get("actors")
@@ -421,9 +421,9 @@ def calculate_scrape_status(movie_data: dict) -> str:
                 pass
     
     # 判断完整度：必须同时满足4个条件
-    if has_cover and has_actors and has_studio and has_release_date:
+    if has_title and has_release_date and has_maker and has_actors:
         return "complete"
-    elif has_cover or has_actors or has_studio or has_release_date:
+    elif has_title or has_release_date or has_maker or has_actors:
         return "partial"
     else:
         return "empty"

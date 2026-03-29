@@ -378,6 +378,57 @@ async def get_movie_by_code(code: str):
         raise HTTPException(status_code=500, detail=f"影片数据格式错误 ({code}): {str(e)[:100]}")
 
 
+
+@app.get("/open-folder")
+async def open_folder(path: str = Query(..., description="要打开的文件夹路径")):
+    """打开本地文件夹（Windows 资源管理器）"""
+    import subprocess
+    import os
+
+    # 安全检查：只允许打开已知目录下的路径
+    # 获取所有已注册的本地目录
+    sources = db.get_all_sources()
+    allowed_dirs = [s["path"] for s in sources if s.get("path")]
+
+    # 如果路径在允许的目录内，则允许打开
+    is_allowed = False
+    for allowed in allowed_dirs:
+        if path.startswith(allowed) or os.path.normpath(path).startswith(os.path.normpath(allowed)):
+            is_allowed = True
+            break
+
+    if not is_allowed:
+        # 额外检查：如果路径就是某个本地视频的路径，也允许
+        conn = db.get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT path FROM local_videos WHERE path = ?", (path,))
+        if cursor.fetchone():
+            is_allowed = True
+        # 也检查文件夹路径
+        folder = os.path.dirname(path)
+        if folder:
+            cursor.execute("SELECT path FROM local_videos WHERE path LIKE ?", (folder + '%',))
+            if cursor.fetchone():
+                is_allowed = True
+        conn.close()
+
+    if not is_allowed:
+        raise HTTPException(status_code=403, detail="不允许访问此路径")
+
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="路径不存在")
+
+    try:
+        # Windows: 用 explorer 打开文件夹，如果路径是文件则打开其所在文件夹并选中
+        if os.path.isfile(path):
+            subprocess.Popen(f'explorer /select,"{os.path.normpath(path)}"')
+        else:
+            subprocess.Popen(f'explorer "{os.path.normpath(path)}"')
+        return {"success": True, "message": f"已打开: {path}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"打开失败: {str(e)}")
+
+
 @app.get("/search")
 async def search_movies(
     q: str = Query(..., description="搜索关键词"),
@@ -430,6 +481,13 @@ async def scrape_movie_endpoint(request: ScrapeRequest):
         if local_video:
             db.mark_video_scraped(local_video["id"], movie_id)
             db.link_movie_to_local_video(movie_id, local_video["id"])
+        else:
+            # 即使前端没有指定本地视频，也尝试自动匹配
+            auto_match = db.get_local_video_by_code(request.keyword.strip())
+            if auto_match:
+                db.mark_video_scraped(auto_match["id"], movie_id)
+                db.link_movie_to_local_video(movie_id, auto_match["id"])
+                local_video = auto_match
 
         movie = db.get_movie_by_id(movie_id)
         movie = db.row_to_movie_response(movie)
@@ -591,6 +649,11 @@ async def scrape_batch(req: ScrapeRequest):
             # 检查是否已有完整削刮记录
             existing = db.get_movie_by_code(code)
             if existing and existing.get("scrape_status") == "complete":
+                # 即使跳过刮削，也要检查是否需要关联本地视频
+                if local_video_id and not existing.get("local_video_id"):
+                    db.mark_video_scraped(local_video_id, existing["id"])
+                    db.link_movie_to_local_video(existing["id"], local_video_id)
+                    local_link_count += 1
                 skipped_count += 1
                 yield _send_sse({
                     "type": "skipped",

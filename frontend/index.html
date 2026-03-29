@@ -671,7 +671,7 @@
                 <p>还没有影片，试试输入编号刮削一个吧！</p>
             </div>
             <div v-else class="movie-grid">
-                <div v-for="m in movies" :key="m.id" class="movie-card" @click="showDetail(m)">
+                <div v-for="m in movies" :key="m.id" class="movie-card" @click="showMovieDetail(m.id)">
                     <img :src="getCoverUrl(m)" class="movie-poster" @error="handleImgError">
                     <div class="movie-info">
                         <div class="movie-code">{{ m.code }}</div>
@@ -928,8 +928,12 @@
                 <div class="modal-row"><span class="modal-label">制作商</span><span class="modal-value">{{ selectedMovie.studio || '-' }}</span></div>
                 <div class="modal-row"><span class="modal-label">片商</span><span class="modal-value">{{ selectedMovie.maker || '-' }}</span></div>
                 <div class="modal-row"><span class="modal-label">导演</span><span class="modal-value">{{ selectedMovie.director || '-' }}</span></div>
-                <div class="modal-row"><span class="modal-label">演员</span>
+                <div class="modal-row"><span class="modal-label">女演员</span>
                     <span class="modal-value">{{ formatArray(selectedMovie.actors) }}</span>
+                </div>
+                <div class="modal-row">
+                    <span class="modal-label">男演员</span>
+                    <span class="modal-value">{{ formatArray(selectedMovie.actors_male) }}</span>
                 </div>
                 <!-- 刮削状态 -->
                 <div class="modal-row">
@@ -1386,22 +1390,31 @@ createApp({
         };
 
 
-        // ========== 打开本地视频 ==========
+        // ========== 打开本地视频文件夹 ==========
         const openLocalVideo = (path) => {
             if (!path) {
                 showToast('视频路径为空', 'warning');
                 return;
             }
-            // Windows 下用 file:/// 协议可能不生效，提示用户复制路径
-            if (navigator.clipboard) {
-                navigator.clipboard.writeText(path).then(() => {
-                    showToast('路径已复制到剪贴板: ' + path, 'success');
-                }).catch(() => {
-                    showToast('请手动复制路径: ' + path, 'warning');
+            // 调用后端 API 打开文件浏览器
+            fetch(`${API}/open-folder?path=${encodeURIComponent(path)}`)
+                .then(res => {
+                    if (!res.ok) return res.json().then(d => { throw new Error(d.detail || '打开失败'); });
+                    return res.json();
+                })
+                .then(() => {
+                    showToast('已打开文件夹', 'success');
+                })
+                .catch(e => {
+                    // 后端不可用时回退到复制路径
+                    if (navigator.clipboard) {
+                        navigator.clipboard.writeText(path).then(() => {
+                            showToast('后端不可用，路径已复制: ' + path, 'warning');
+                        });
+                    } else {
+                        showToast('打开失败: ' + e.message, 'error');
+                    }
                 });
-            } else {
-                showToast('请手动复制路径: ' + path, 'warning');
-            }
         };
 
         // ========== 获取文件夹路径 ==========
