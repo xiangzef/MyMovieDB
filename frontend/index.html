@@ -888,7 +888,10 @@
                     <div class="video-info">
                         <div class="video-name" :title="v.name">{{ v.name }}</div>
                         <div v-if="v.title" class="video-name" style="color:#fff;font-size:13px;margin-bottom:1px;" :title="v.title">{{ v.title.split('\\n')[0] }}</div>
-                        <div class="video-path" :title="v.path">{{ v.path }}</div>
+                        <div class="video-path" :title="v.path">
+                            <a href="javascript:void(0)" @click="playVideo(v.path)" style="color:#4a9eff;text-decoration:none;">{{ v.path }}</a>
+                            <button class="btn btn-sm btn-secondary" @click="openLocalVideo(v.path)" style="margin-left:8px;padding:2px 6px;font-size:11px;" title="打开文件夹">📁</button>
+                        </div>
                         <!-- 影片元数据 -->
                         <div v-if="v.release_date || v.maker" class="video-meta">
                             <span v-if="v.release_date">📅 {{ v.release_date }}</span>
@@ -1442,6 +1445,29 @@ createApp({
                             showToast('后端不可用，路径已复制: ' + path, 'warning');
                         });
                     } else {
+                        showToast('打开失败: ' + e.message, 'danger');
+                    }
+                });
+        };
+
+        const playVideo = (path) => {
+            if (!path) {
+                showToast('视频路径为空', 'warning');
+                return;
+            }
+            // 调用后端 API 用迅雷播放器打开视频
+            fetch(`${API}/play-video?path=${encodeURIComponent(path)}`)
+                .then(res => {
+                    if (!res.ok) return res.json().then(d => { throw new Error(d.detail || '播放失败'); });
+                    return res.json();
+                })
+                .then(() => {
+                    showToast('正在启动播放器...', 'success');
+                })
+                .catch(e => {
+                    showToast('播放失败: ' + e.message, 'danger');
+                });
+        };
                         showToast('打开失败: ' + e.message, 'error');
                     }
                 });
@@ -1809,7 +1835,7 @@ createApp({
             localVideos, videoStats, localVideosLoading, videoPage, videoPageSize, videoFilter,
             videoTotalPages, videoVisiblePages,
             loadVideoStats, loadLocalVideos, videoPrevPage, videoNextPage, videoGoToPage,
-            scrapeOneLocal, deleteLocalVideo, cleanupInvalidCodes, cleanupResult, cleaning, formatSize, getVideoCoverUrl,
+            scrapeOneLocal, deleteLocalVideo, cleanupInvalidCodes, cleanupResult, cleaning, formatSize, getVideoCoverUrl, playVideo,
             // Scrape check and fix
             checking, fixing, scrapeCheckResult, movieCheckResult, checkAllScrape, fixAllScrape, checkMovieScrape, fixMovieScrape,
             // Scrape Panel

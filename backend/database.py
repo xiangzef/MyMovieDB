@@ -77,6 +77,38 @@ def init_db():
     # 如需优化演员查询，可考虑单独建立 actors 表
     # cursor.execute("CREATE INDEX IF NOT EXISTS idx_movies_actors ON movies(actors)")
     
+    # ========== 用户权限系统表（RBAC 模型） ==========
+    
+    # 用户表
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            email TEXT,
+            role TEXT NOT NULL DEFAULT 'guest',
+            is_active INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_login TIMESTAMP
+        )
+    """)
+    
+    # 角色权限映射表（简化版：直接在用户表存储角色，权限硬编码）
+    # admin: 全部权限
+    # premium: 刮削、查看、导出
+    # guest: 仅查看
+    
+    # 创建默认 admin 账户
+    cursor.execute("SELECT id FROM users WHERE username = 'admin'")
+    if not cursor.fetchone():
+        from hashlib import sha256
+        password_hash = sha256("123".encode()).hexdigest()
+        cursor.execute("""
+            INSERT INTO users (username, password_hash, role, is_active)
+            VALUES (?, ?, 'admin', 1)
+        """, ('admin', password_hash))
+        print("✅ 创建默认 admin 账户（密码: 123）")
+    
     conn.commit()
     conn.close()
 

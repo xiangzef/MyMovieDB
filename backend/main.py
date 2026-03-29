@@ -7,7 +7,7 @@ FastAPI 主入口
     - python-dotenv: 环境变量管理
 """
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
@@ -18,6 +18,9 @@ import threading
 import re
 import time
 import asyncio
+from hashlib import sha256
+import secrets
+from datetime import datetime, timedelta
 
 from models import (
     MovieResponse, MovieListResponse,
@@ -307,6 +310,124 @@ if cfg.FRONTEND_DIR.exists():
     app.mount("/frontend", StaticFiles(directory=str(cfg.FRONTEND_DIR), html=True), name="frontend")
 
 
+# ========== 认证相关 API ==========
+
+# 简单的 token 存储（生产环境应使用 Redis）
+active_tokens = {}
+
+def verify_token(token: str) -> dict:
+    """验证 token 并返回用户信息"""
+    if not token or token not in active_tokens:
+        raise HTTPException(status_code=401, detail="未登录或 token 已过期")
+    
+    user_data = active_tokens[token]
+    # 检查 token 是否过期（24小时）
+    if datetime.now() - user_data['created_at'] > timedelta(hours=24):
+        del active_tokens[token]
+        raise HTTPException(status_code=401, detail="token 已过期，请重新登录")
+    
+    return user_data['user']
+
+
+def get_current_user(token: str = Query(None, alias="token")):
+    """FastAPI 依赖项：获取当前登录用户"""
+    if not token:
+        # 尝试从 header 获取
+        from fastapi import Request
+        raise HTTPException(status_code=401, detail="缺少 token")
+    return verify_token(token)
+
+
+@app.post("/auth/login", response_model=LoginResponse)
+async def login(request: UserLogin):
+    """用户登录"""
+    conn = db.get_db()
+    cursor = conn.cursor()
+    
+    # 查询用户
+    password_hash = sha256(request.password.encode()).hexdigest()
+    cursor.execute("""
+        SELECT id, username, password_hash, role, email, created_at, last_login
+        FROM users
+        WHERE username = ? AND is_active = 1
+    """, (request.username,))
+    
+    row = cursor.fetchone()
+    if not row or row['password_hash'] != password_hash:
+        conn.close()
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+    
+    # 生成 token
+    token = secrets.token_urlsafe(32)
+    user_data = {
+        'id': row['id'],
+        'username': row['username'],
+        'role': row['role'],
+        'email': row['email'],
+        'created_at': row['created_at'],
+        'last_login': row['last_login']
+    }
+    
+    active_tokens[token] = {
+        'user': user_data,
+        'created_at': datetime.now()
+    }
+    
+    # 更新最后登录时间
+    cursor.execute("""
+        UPDATE users SET last_login = ? WHERE id = ?
+    """, (datetime.now().isoformat(), row['id']))
+    conn.commit()
+    conn.close()
+    
+    return {
+        'token': token,
+        'user': user_data
+    }
+
+
+@app.post("/auth/register")
+async def register(request: UserRegister):
+    """用户注册（默认为 guest 角色）"""
+    conn = db.get_db()
+    cursor = conn.cursor()
+    
+    # 检查用户名是否已存在
+    cursor.execute("SELECT id FROM users WHERE username = ?", (request.username,))
+    if cursor.fetchone():
+        conn.close()
+        raise HTTPException(status_code=400, detail="用户名已存在")
+    
+    # 创建用户
+    password_hash = sha256(request.password.encode()).hexdigest()
+    cursor.execute("""
+        INSERT INTO users (username, password_hash, email, role, is_active)
+        VALUES (?, ?, ?, 'guest', 1)
+    """, (request.username, password_hash, request.email))
+    
+    conn.commit()
+    conn.close()
+    
+    return {"success": True, "message": "注册成功"}
+
+
+@app.get("/auth/me")
+async def get_current_user_info(token: str = Query(None)):
+    """获取当前用户信息"""
+    user = get_current_user(token)
+    return user
+
+
+@app.post("/auth/logout")
+async def logout(token: str = Query(None)):
+    """用户登出"""
+    if token and token in active_tokens:
+        del active_tokens[token]
+    return {"success": True, "message": "已登出"}
+
+
+# ========== 前端页面路由 ==========
+
 @app.get("/")
 async def root():
     """API 根路径 - 重定向到前端页面"""
@@ -411,6 +532,80 @@ async def open_folder(path: str = Query(..., description="要打开的文件夹�
         cursor.execute("SELECT DISTINCT path FROM local_videos", ())
         for row in cursor.fetchall():
             existing_folder = os.path.normpath(os.path.dirname(row[0]))
+            if folder == existing_folder:
+                is_allowed = True
+                break
+
+    conn.close()
+
+    if not is_allowed:
+        raise HTTPException(status_code=403, detail="路径不在允许访问的范围内")
+
+    # 打开文件夹
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="路径不存在")
+
+    try:
+        folder = os.path.dirname(path) if os.path.isfile(path) else path
+        subprocess.Popen(f'explorer "{folder}"')
+        return {"success": True, "message": f"已打开文件夹: {folder}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"打开失败: {str(e)}")
+
+
+@app.get("/play-video")
+async def play_video(path: str = Query(..., description="要播放的视频文件路径")):
+    """用迅雷播放器打开本地视频"""
+    import subprocess
+    import os
+
+    # 安全检查（与 open-folder 相同）
+    is_allowed = False
+    conn = db.get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT path FROM local_videos WHERE path = ?", (path,))
+    if cursor.fetchone():
+        is_allowed = True
+
+    if not is_allowed:
+        sources = db.get_all_sources()
+        norm_path = os.path.normpath(path)
+        for s in sources:
+            if s.get("path") and norm_path.startswith(os.path.normpath(s["path"])):
+                is_allowed = True
+                break
+
+    conn.close()
+
+    if not is_allowed:
+        raise HTTPException(status_code=403, detail="路径不在允许访问的范围内")
+
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    try:
+        # 尝试迅雷播放器路径
+        xunlei_paths = [
+            r"C:\Program Files (x86)\Thunder Network\Thunder\Program\Thunder.exe",
+            r"C:\Program Files\Thunder Network\Thunder\Program\Thunder.exe",
+            r"D:\Program Files (x86)\Thunder Network\Thunder\Program\Thunder.exe",
+        ]
+        
+        player_path = None
+        for p in xunlei_paths:
+            if os.path.exists(p):
+                player_path = p
+                break
+        
+        if player_path:
+            subprocess.Popen([player_path, path])
+            return {"success": True, "message": f"正在用迅雷播放器打开"}
+        else:
+            # 回退：用系统默认程序打开
+            os.startfile(path)
+            return {"success": True, "message": "迅雷未安装，已用默认程序打开"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"播放失败: {str(e)}")
             if folder == existing_folder or folder.startswith(existing_folder + os.sep):
                 is_allowed = True
                 break

@@ -65,3 +65,42 @@ class MovieListResponse(BaseModel):
     page: int
     page_size: int
     items: List[MovieResponse]
+
+
+# ========== 认证相关模型 ==========
+
+class UserLogin(BaseModel):
+    """用户登录请求"""
+    username: str
+    password: str
+
+
+class UserRegister(BaseModel):
+    """用户注册请求"""
+    username: str
+    password: str
+    email: Optional[str] = None
+
+
+class UserResponse(BaseModel):
+    """用户信息响应"""
+    id: int
+    username: str
+    role: str
+    email: Optional[str] = None
+    created_at: str
+    last_login: Optional[str] = None
+
+
+class LoginResponse(BaseModel):
+    """登录响应"""
+    token: str
+    user: UserResponse
+
+
+class LocalVideoListResponse(BaseModel):
+    """本地视频列表响应"""
+    total: int
+    page: int
+    page_size: int
+    items: List[dict]
