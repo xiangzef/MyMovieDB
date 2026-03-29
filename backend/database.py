@@ -164,8 +164,11 @@ def get_movie_by_id(movie_id: int) -> Optional[dict]:
             lv_dict = dict(lv_row)
             # 把 path 重命名为 local_video_path，避免与 movies.path 冲突
             if 'path' in lv_dict:
-                lv_dict['local_video_path'] = lv_dict.pop('path')
-            result.update(lv_dict)
+                result['local_video_path'] = lv_dict.pop('path')
+            # 只用 local_videos 的图片路径覆盖 movies 的，如果 movies 已有值则保留
+            for key in ('fanart_path', 'poster_path', 'thumb_path'):
+                if key in lv_dict and lv_dict[key] is not None:
+                    result[key] = lv_dict[key]
     
     conn.close()
     return result
