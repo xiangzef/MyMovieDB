@@ -158,7 +158,7 @@
             width: 100%;
             aspect-ratio: 3/4;
             object-fit: cover;
-            object-position: 70% 20%;
+            object-position: center center;
             background: #0f3460;
             display: block;
         }
@@ -264,11 +264,10 @@
         }
         .modal-poster {
             width: 300px;
-            /* height:auto with max-height to show full poster */
             height: auto;
             max-height: 450px;
-            object-fit: cover;
-            object-position: top center;
+            object-fit: contain;
+            object-position: center center;
             display: block;
             background: #0a1628;
         }

@@ -141,7 +141,7 @@ def download_and_crop_cover(cover_url: str, code: str, save_dir: Path) -> Option
     依赖: PIL.Image, requests
     说明:
         - fanart: 横向 1920x1080 (用于背景)
-        - poster: 竖向 1000x1500 (用于海报)
+        - poster: 竖向 1000x1500 (从 fanart 右半边中间截取，展示女演员全身照)
         - thumb: 缩略图 300x450
         - 文件结构: {save_dir}/{code}/{code}-{type}.jpg
     """
@@ -166,20 +166,7 @@ def download_and_crop_cover(cover_url: str, code: str, save_dir: Path) -> Option
 
         paths = {}
 
-        # 1. Poster (竖向 1000x1500)
-        poster_path = code_dir / f"{safe_code}-poster.jpg"
-        if original_height > original_width:
-            # 原图是竖向
-            poster = img.copy()
-            poster.thumbnail((1000, 1500), Image.Resampling.LANCZOS)
-        else:
-            # 原图是横向，裁切中间部分
-            poster = _crop_to_portrait(img, 1000, 1500)
-        poster = poster.convert("RGB")
-        poster.save(poster_path, "JPEG", quality=90)
-        paths["poster"] = str(poster_path)
-
-        # 2. Fanart (横向 1920x1080)
+        # 1. Fanart (横向 1920x1080) — 先生成 fanart
         fanart_path = code_dir / f"{safe_code}-fanart.jpg"
         if original_width > original_height:
             # 原图是横向
@@ -192,9 +179,16 @@ def download_and_crop_cover(cover_url: str, code: str, save_dir: Path) -> Option
         fanart.save(fanart_path, "JPEG", quality=90)
         paths["fanart"] = str(fanart_path)
 
-        # 3. Thumb (缩略图 300x450)
+        # 2. Poster (竖向 1000x1500) — 从 fanart 右半边中间截取
+        poster_path = code_dir / f"{safe_code}-poster.jpg"
+        poster = _crop_poster_from_right(fanart, 1000, 1500)
+        poster = poster.convert("RGB")
+        poster.save(poster_path, "JPEG", quality=90)
+        paths["poster"] = str(poster_path)
+
+        # 3. Thumb (缩略图 300x450) — 从 poster 缩放
         thumb_path = code_dir / f"{safe_code}-thumb.jpg"
-        thumb = img.copy()
+        thumb = poster.copy()
         thumb.thumbnail((300, 450), Image.Resampling.LANCZOS)
         thumb = thumb.convert("RGB")
         thumb.save(thumb_path, "JPEG", quality=85)
@@ -209,6 +203,78 @@ def download_and_crop_cover(cover_url: str, code: str, save_dir: Path) -> Option
     except Exception as e:
         logger.error(f"封面处理失败 {code}: {e}")
         return None
+
+
+def regenerate_poster_from_fanart(fanart_path: str, poster_path: str, thumb_path: str = None) -> bool:
+    """
+    功能: 从已有的 fanart 图片重新生成 poster（右半边中间截取）和 thumb
+    文件: scraper.py
+    参数:
+        fanart_path: fanart 图片路径
+        poster_path: 要保存的 poster 路径
+        thumb_path: 要保存的 thumb 路径（可选）
+    返回: True/False
+    说明:
+        - 从 fanart 右半边中间部分截取竖向 1000x1500 poster
+        - poster 右半部分通常包含女演员全身照
+    """
+    if not PIL_AVAILABLE:
+        return False
+
+    try:
+        fanart = Image.open(fanart_path)
+        # 生成 poster：从 fanart 右半边中间截取
+        poster = _crop_poster_from_right(fanart, 1000, 1500)
+        poster = poster.convert("RGB")
+        poster.save(poster_path, "JPEG", quality=90)
+
+        # 生成 thumb：从 poster 缩放
+        if thumb_path:
+            thumb = poster.copy()
+            thumb.thumbnail((300, 450), Image.Resampling.LANCZOS)
+            thumb = thumb.convert("RGB")
+            thumb.save(thumb_path, "JPEG", quality=85)
+
+        logger.info(f"从 fanart 重新生成 poster: {poster_path}")
+        return True
+
+    except Exception as e:
+        logger.error(f"重新生成 poster 失败: {e}")
+        return False
+
+
+def _crop_poster_from_right(fanart: Image, target_width: int, target_height: int) -> Image:
+    """
+    功能: 从 fanart 图片的右半边中间截取竖向 poster
+    说明:
+        - fanart 是横向图（如 1920x1080）
+        - poster 需要竖向比例（如 1000x1500, 比例 2:3）
+        - 取 fanart 右半部分（x: width/2 ~ width），纵向居中裁切
+        - 这样截取的区域包含封面图右侧的女演员全身照
+    """
+    width, height = fanart.size
+    target_ratio = target_width / target_height  # 2:3 ≈ 0.667
+
+    # 从右半边取区域
+    right_half_width = width // 2
+    left = width - right_half_width
+
+    # 计算在右半边中能截取的最大竖向区域
+    available_width = right_half_width
+    available_height = height
+
+    if available_width / available_height > target_ratio:
+        # 右半边更宽，按高度填满，裁切宽度
+        new_width = int(available_height * target_ratio)
+        # 在右半边内水平居中（稍微偏右，因为人物可能更靠右边缘）
+        offset_x = (available_width - new_width) // 2
+        crop_left = left + offset_x
+        return fanart.crop((crop_left, 0, crop_left + new_width, height))
+    else:
+        # 右半边更高（窄），按宽度填满，纵向居中裁切
+        new_height = int(available_width / target_ratio)
+        top = (height - new_height) // 2
+        return fanart.crop((left, top, width, top + new_height))
 
 
 def generate_nfo(movie_data: dict, nfo_path: Path, local_video_path: str = None) -> bool:

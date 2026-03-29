@@ -1062,6 +1062,67 @@ async def get_cover(filename: str):
     return {"url": f"/covers/{filename}"}
 
 
+# 批量重新生成所有 poster（从 fanart 右半边截取）
+@app.post("/regenerate-posters", tags=["封面图"])
+async def regenerate_all_posters():
+    """
+    从已有的 fanart 图片重新生成所有 poster 和 thumb
+    poster 从 fanart 右半边中间截取（展示女演员全身照）
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        raise HTTPException(status_code=500, detail="Pillow 未安装，无法处理图片")
+
+    from scraper import regenerate_poster_from_fanart
+    from pathlib import Path
+
+    covers_base = Path(cfg.COVERS_DIR)
+    if not covers_base.exists():
+        return {"success": False, "message": "封面目录不存在"}
+
+    regenerated = 0
+    failed = 0
+
+    # 遍历每个番号文件夹
+    for code_dir in sorted(covers_base.iterdir()):
+        if not code_dir.is_dir():
+            continue
+
+        fanart_file = None
+        for f in code_dir.iterdir():
+            if f.stem.endswith("-fanart") and f.suffix.lower() in (".jpg", ".jpeg", ".png"):
+                fanart_file = f
+                break
+
+        if not fanart_file:
+            continue
+
+        poster_file = code_dir / f"{fanart_file.stem.replace('-fanart', '')}-poster.jpg"
+        thumb_file = code_dir / f"{fanart_file.stem.replace('-fanart', '')}-thumb.jpg"
+
+        try:
+            ok = regenerate_poster_from_fanart(
+                str(fanart_file),
+                str(poster_file),
+                str(thumb_file)
+            )
+            if ok:
+                regenerated += 1
+            else:
+                failed += 1
+        except Exception as e:
+            logger.error(f"重新生成 poster 失败 {code_dir.name}: {e}")
+            failed += 1
+
+    return {
+        "success": True,
+        "regenerated": regenerated,
+        "failed": failed,
+        "message": f"重新生成 {regenerated} 个 poster，{failed} 个失败"
+    }
+
+
 # 健康检查
 @app.get("/health")
 async def health_check():
