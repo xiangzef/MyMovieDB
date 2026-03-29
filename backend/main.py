@@ -17,6 +17,7 @@ import logging
 import threading
 import re
 import time
+import asyncio
 
 from models import (
     MovieResponse, MovieListResponse,
@@ -939,12 +940,9 @@ async def scan_local_sources():
     }
 
 
-@app.post("/local-sources/scrape", tags=["本地视频"])
-async def scrape_local_videos():
-    """对扫描到的本地视频批量刮削（只刮削有编号的）"""
+def _do_scrape_local_videos():
+    """同步刮削逻辑，在线程池中运行，避免阻塞事件循环"""
     from scraper import scrape_movie
-    import threading
-    import time
 
     unscraped = db.get_unscraped_local_videos()
     if not unscraped:
@@ -996,6 +994,14 @@ async def scrape_local_videos():
         "results": results,
         "stats": db.get_local_video_stats()
     }
+
+
+@app.post("/local-sources/scrape", tags=["本地视频"])
+async def scrape_local_videos():
+    """对扫描到的本地视频批量刮削（只刮削有编号的）"""
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, _do_scrape_local_videos)
+    return result
 
 
 @app.get("/local-videos", response_model=LocalVideoListResponse, tags=["本地视频"])
