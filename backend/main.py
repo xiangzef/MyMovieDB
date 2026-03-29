@@ -1630,11 +1630,11 @@ async def fix_scrape_results(request: FixScrapeRequest = None):
     修复不完整的刮削结果（SSE 实时进度）
 
     修复操作：
-    1. 重新下载缺失的封面图片
-    2. 重新生成 NFO 文件
-    3. 更新数据库中的封面路径
+    1. 重新刮削缺失元数据的影片
+    2. 重新下载缺失的封面图片
+    3. 重新生成 NFO 文件
     """
-    from scraper import save_movie_assets
+    from scraper import scrape_movie, save_movie_assets
     import uuid
 
     job_id = str(uuid.uuid4())[:8]
@@ -1671,33 +1671,81 @@ async def fix_scrape_results(request: FixScrapeRequest = None):
                     if lv:
                         local_video_path = lv.get("path")
 
-                # 检查是否需要下载封面
-                need_cover = m.get("cover_url") and (
-                    not m.get("poster_path") or not Path(m.get("poster_path", "")).exists()
+                # 检查是否缺少元数据（需要重新刮削）
+                need_metadata = (
+                    not m.get("title") or
+                    not m.get("release_date") or
+                    not m.get("maker") or
+                    not m.get("actors")
                 )
-                # 检查是否需要生成 NFO
-                safe_code = re.sub(r'[<>:"/\\|?*]', '_', code)
-                code_dir = covers_dir / safe_code
-                nfo_path = code_dir / f"{safe_code}.nfo"
-                need_nfo = not nfo_path.exists()
 
-                if need_cover or need_nfo:
-                    # 统一后处理
-                    updated = save_movie_assets(m, covers_dir, local_video_path)
+                if need_metadata and code:
+                    # 重新刮削元数据
+                    yield _send_sse({
+                        "type": "scraping",
+                        "job_id": job_id,
+                        "code": code,
+                        "index": i + 1,
+                        "total": total,
+                        "pct": int(((i + 1) / total) * 100)
+                    })
 
-                    # 更新数据库（封面路径）
-                    if need_cover and updated.get("poster_path"):
-                        db.update_movie(movie_id, {
-                            "fanart_path": updated.get("fanart_path"),
-                            "poster_path": updated.get("poster_path"),
-                            "thumb_path": updated.get("thumb_path")
+                    result = scrape_movie(code, save_cover=True, local_video_path=local_video_path)
+                    if result:
+                        # 更新数据库
+                        update_data = {k: v for k, v in result.items() if v}
+                        db.update_movie(movie_id, update_data)
+                        fixed = True
+                        message += "已重新刮削元数据; "
+
+                        # 下载封面
+                        if result.get("cover_url"):
+                            updated = save_movie_assets(result, covers_dir, local_video_path)
+                            if updated.get("poster_path"):
+                                db.update_movie(movie_id, {
+                                    "fanart_path": updated.get("fanart_path"),
+                                    "poster_path": updated.get("poster_path"),
+                                    "thumb_path": updated.get("thumb_path")
+                                })
+                                message += "已下载封面; "
+                    else:
+                        message = "重新刮削失败"
+                        failed_count += 1
+                        yield _send_sse({
+                            "type": "error",
+                            "job_id": job_id,
+                            "code": code,
+                            "message": message,
+                            "index": i + 1,
+                            "total": total,
+                            "pct": int(((i + 1) / total) * 100)
                         })
-                        fixed = True
-                        message += "已下载封面; "
+                        continue
+                else:
+                    # 只检查封面和 NFO
+                    need_cover = m.get("cover_url") and (
+                        not m.get("poster_path") or not Path(m.get("poster_path", "")).exists()
+                    )
+                    safe_code = re.sub(r'[<>:"/\\|?*]', '_', code)
+                    code_dir = covers_dir / safe_code
+                    nfo_path = code_dir / f"{safe_code}.nfo"
+                    need_nfo = not nfo_path.exists()
 
-                    if need_nfo and nfo_path.exists():
-                        fixed = True
-                        message += "已生成 NFO; "
+                    if need_cover or need_nfo:
+                        updated = save_movie_assets(m, covers_dir, local_video_path)
+
+                        if need_cover and updated.get("poster_path"):
+                            db.update_movie(movie_id, {
+                                "fanart_path": updated.get("fanart_path"),
+                                "poster_path": updated.get("poster_path"),
+                                "thumb_path": updated.get("thumb_path")
+                            })
+                            fixed = True
+                            message += "已下载封面; "
+
+                        if need_nfo and nfo_path.exists():
+                            fixed = True
+                            message += "已生成 NFO; "
 
                 if fixed:
                     fixed_count += 1

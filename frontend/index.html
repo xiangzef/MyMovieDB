@@ -774,7 +774,7 @@
                     <img :src="getCoverUrl(m)" class="movie-poster" @error="handleImgError">
                     <div class="movie-info">
                         <div class="movie-code">{{ m.code }}</div>
-                        <div class="movie-title" :title="m.title">{{ m.title }}</div>
+                        <div class="movie-title" :title="m.title_cn || m.title">{{ m.title_cn || m.title }}</div>
                         <div class="movie-meta">
                             <span v-if="m.release_date">{{ m.release_date }}</span>
                             <span v-if="m.duration">{{ m.duration }}分钟</span>
@@ -1047,7 +1047,17 @@
             <!-- 右侧信息区 -->
             <div class="modal-info">
                 <div class="modal-code">{{ selectedMovie.code }}</div>
-                <div class="modal-title" style="white-space:pre-wrap;">{{ selectedMovie.title }}</div>
+                <!-- 标题显示：优先显示中文标题，原标题放第二行 -->
+                <div class="modal-title" v-if="selectedMovie.title_cn" style="white-space:pre-wrap;">
+                    {{ selectedMovie.title_cn }}
+                </div>
+                <div class="modal-title" v-else style="white-space:pre-wrap;">
+                    {{ selectedMovie.title }}
+                </div>
+                <div class="modal-row" v-if="selectedMovie.title_jp">
+                    <span class="modal-label">原标题</span>
+                    <span class="modal-value" style="font-size:14px;color:#999;">{{ selectedMovie.title_jp }}</span>
+                </div>
                 <div class="modal-row"><span class="modal-label">发布日期</span><span class="modal-value">{{ selectedMovie.release_date || '-' }}</span></div>
                 <div class="modal-row"><span class="modal-label">时长</span><span class="modal-value">{{ selectedMovie.duration ? selectedMovie.duration + '分钟' : '-' }}</span></div>
                 <div class="modal-row"><span class="modal-label">制作商</span><span class="modal-value">{{ selectedMovie.studio || '-' }}</span></div>

@@ -13,6 +13,7 @@ class MovieBase(BaseModel):
 
     code: str
     title: str
+    title_cn: Optional[str] = None
     title_jp: Optional[str] = None
     release_date: Optional[str] = None
     duration: Optional[int] = None
