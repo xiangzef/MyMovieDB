@@ -187,6 +187,32 @@
         .stat-card.green .num { color: #28a745; }
         .stat-card.orange .num { color: #fd7e14; }
         .stat-card.blue .num { color: #17a2b8; }
+        .stat-card.purple { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); }
+        .stat-card.purple .num { color: #00a4dc; }
+
+        /* Jellyfin 来源标识 */
+        .jellyfin-badge {
+            display: inline-block;
+            background: linear-gradient(135deg, #00a4dc, #0054a6);
+            color: white;
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 4px;
+            margin-left: 8px;
+            vertical-align: middle;
+        }
+        .source-tag {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: rgba(0,0,0,0.7);
+            border-radius: 4px;
+            padding: 2px 6px;
+            font-size: 11px;
+        }
+        .source-tag.jellyfin {
+            background: linear-gradient(135deg, #00a4dc, #0054a6);
+        }
 
         /* Grid */
         .movie-grid {
@@ -770,8 +796,10 @@
                 <p>还没有影片，试试输入编号刮削一个吧！</p>
             </div>
             <div v-else class="movie-grid">
-                <div v-for="m in movies" :key="m.id" class="movie-card" @click="showMovieDetail(m.id)">
+                <div v-for="m in movies" :key="m.id" class="movie-card" @click="showMovieDetail(m.id)" style="position: relative;">
                     <img :src="getCoverUrl(m)" class="movie-poster" @error="handleImgError">
+                    <!-- 来源标识 -->
+                    <span v-if="m.source === 'jellyfin'" class="source-tag jellyfin" title="Jellyfin 导入">📁</span>
                     <div class="movie-info">
                         <div class="movie-code">{{ m.code }}</div>
                         <div class="movie-title" :title="m.title_cn || m.title">{{ m.title_cn || m.title }}</div>
@@ -837,6 +865,10 @@
                     <div class="num">{{ localStats.unscraped || 0 }}</div>
                     <div class="label">待刮削</div>
                 </div>
+                <div class="stat-card purple">
+                    <div class="num">{{ jellyfinCount || 0 }}</div>
+                    <div class="label">📁 Jellyfin</div>
+                </div>
             </div>
 
             <!-- 目录列表 -->
@@ -847,7 +879,10 @@
                 <div v-for="s in localSources" :key="s.id" class="source-item">
                     <div class="source-icon">📁</div>
                     <div class="source-info">
-                        <div class="source-path">{{ s.path }}</div>
+                        <div class="source-path">
+                            {{ s.path }}
+                            <span v-if="s.is_jellyfin" class="jellyfin-badge" title="Jellyfin 格式目录">Jellyfin</span>
+                        </div>
                         <div class="source-meta">
                             {{ s.video_count || 0 }} 个视频
                             <span v-if="s.last_scan_at"> · 最后扫描: {{ s.last_scan_at }}</span>
@@ -857,6 +892,17 @@
                         <button class="btn btn-sm btn-danger" @click="removeSource(s.id)">删除</button>
                     </div>
                 </div>
+            </div>
+
+            <!-- Jellyfin 扫描按钮 -->
+            <div style="margin-top: 20px; padding-top: 15px; border-top: 1px dashed #333;">
+                <button class="btn btn-primary" @click="scanJellyfin" :disabled="scraping">
+                    🔍 扫描 Jellyfin 格式影视库
+                </button>
+                <p style="font-size: 12px; color: #888; margin-top: 8px;">
+                    扫描已按 Jellyfin 格式整理的影视目录（女星名称/番号/电影+NFO+图片）<br>
+                    不会移动或修改任何文件，仅读取信息导入数据库
+                </p>
             </div>
         </div>
 
@@ -1077,6 +1123,13 @@
                         {{ selectedMovie.scrape_status === 'complete' ? '✅ 已完成' : '⚠️ 缺失部分内容' }}
                     </span>
                 </div>
+                <div class="modal-row">
+                    <span class="modal-label">数据来源</span>
+                    <span class="modal-value">
+                        <span v-if="selectedMovie.source === 'jellyfin'" class="jellyfin-badge">📁 Jellyfin 导入</span>
+                        <span v-else style="color:#888;">🕷️ 爬虫刮削</span>
+                    </span>
+                </div>
                 <!-- 本地视频路径（显示文件夹 + 播放按钮） -->
                 <div v-if="selectedMovie.local_video_id" class="modal-row">
                     <span class="modal-label" style="color:#17a2b8;">本地视频</span>
@@ -1231,6 +1284,7 @@ createApp({
             logs: [],
             pct: 0,
             jobId: null,
+            abortController: null,  // 用于取消 Jellyfin 扫描
             stats: { success: 0, fail: 0, linked: 0 }
         });
         const scrapeLogEl = ref(null);
@@ -1453,8 +1507,19 @@ createApp({
         // 停止刮削
         const stopScrape = async () => {
             if (!scrapePanel.value.jobId) return;  // 防止重复点击
+
             const jobId = scrapePanel.value.jobId;
             scrapePanel.value.jobId = null;  // 立即清空，防止重复
+
+            // 如果是 Jellyfin 扫描，使用 AbortController 取消
+            if (jobId.startsWith('jellyfin-') && scrapePanel.value.abortController) {
+                scrapePanel.value.abortController.abort();
+                addScrapeLog('info', '⏹ 已取消扫描');
+                scraping.value = false;
+                return;
+            }
+
+            // 其他刮削任务，调用后端 API 停止
             try {
                 const res = await fetch(`${API}/scrape/stop`, {
                     method: 'POST',
@@ -1963,11 +2028,125 @@ createApp({
             loadMovies();
             loadSources();
             loadVideoStats();
+            loadJellyfinCount();
 
             document.addEventListener('keydown', (e) => {
                 if (e.key === 'Escape') closeDetail();
             });
         });
+
+        // ========== Jellyfin 导入 ==========
+        const jellyfinCount = ref(0);
+
+        const loadJellyfinCount = async () => {
+            try {
+                const res = await fetch(`${API}/jellyfin/stats`);
+                const data = await res.json();
+                jellyfinCount.value = data.total_imported || 0;
+            } catch (e) {
+                console.error('获取 Jellyfin 统计失败:', e);
+            }
+        };
+
+        const scanJellyfin = async () => {
+            const dir = prompt('请输入 Jellyfin 影视库目录路径：', 'Z:\\影视库');
+            if (!dir) return;
+
+            scraping.value = true;
+            const jobId = 'jellyfin-' + Date.now();  // 生成唯一 job_id
+            const abortController = new AbortController();  // 用于取消请求
+
+            scrapePanel.value = {
+                show: true,
+                title: '扫描 Jellyfin 影视库',
+                pct: 0,
+                logs: [],
+                jobId: jobId,
+                abortController: abortController,  // 保存以便停止时使用
+                stats: { success: 0, failed: 0, skipped: 0 }
+            };
+
+            addScrapeLog('info', `📁 开始扫描: ${dir}`);
+
+            try {
+                const res = await fetch(`${API}/jellyfin/scan`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ directory: dir, job_id: jobId }),
+                    signal: abortController.signal  // 支持取消
+                });
+
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        try {
+                            const evt = JSON.parse(line.slice(6));
+                            handleJellyfinEvent(evt, dir);
+                        } catch (e) { /* ignore */ }
+                    }
+                }
+
+                if (buffer.startsWith('data: ')) {
+                    try {
+                        const evt = JSON.parse(buffer.slice(6));
+                        handleJellyfinEvent(evt, dir);
+                    } catch (e) { /* ignore */ }
+                }
+            } catch (e) {
+                if (e.name === 'AbortError') {
+                    addScrapeLog('info', '⏹ 已取消扫描');
+                } else {
+                    addScrapeLog('error', `扫描失败: ${e.message}`);
+                    console.error('[Jellyfin scan error]:', e);
+                }
+            } finally {
+                // 无论成功还是失败，都要关闭进度浮窗
+                scraping.value = false;
+            }
+        };
+
+        const handleJellyfinEvent = (evt, directory) => {
+            switch (evt.type) {
+                case 'start':
+                    addScrapeLog('info', `📁 扫描目录: ${evt.directory}`);
+                    break;
+                case 'progress':
+                    scrapePanel.value.pct = evt.pct;
+                    addScrapeLog('scraping', `→ 正在导入 ${evt.code} (${evt.current}/${evt.total})`);
+                    break;
+                case 'imported':
+                    scrapePanel.value.stats.success++;
+                    addScrapeLog('success', `✅ ${evt.code} 导入成功`);
+                    break;
+                case 'skipped':
+                    scrapePanel.value.stats.skipped++;
+                    addScrapeLog('skipped', `⏭️ ${evt.code} ${evt.message || '已存在'}`);
+                    break;
+                case 'error':
+                    scrapePanel.value.stats.failed++;
+                    addScrapeLog('error', `❌ ${evt.code || '未知'} 导入失败`);
+                    break;
+                case 'complete':
+                    addScrapeLog('success', `🎉 导入完成！成功 ${evt.imported} 部，跳过 ${evt.skipped} 部`);
+                    // 刷新数据
+                    loadMovies();
+                    loadSources();
+                    loadVideoStats();
+                    loadJellyfinCount();
+                    break;
+            }
+        };
 
         return {
             currentTab, backendStatus, currentUser, logout, getRoleName,
@@ -1988,6 +2167,8 @@ createApp({
             videoTotalPages, videoVisiblePages,
             loadVideoStats, loadLocalVideos, videoPrevPage, videoNextPage, videoGoToPage,
             scrapeOneLocal, deleteLocalVideo, cleanupInvalidCodes, cleanupResult, cleaning, formatSize, getVideoCoverUrl, playVideo,
+            // Jellyfin
+            jellyfinCount, scanJellyfin,
             // Scrape check and fix
             checking, fixing, scrapeCheckResult, movieCheckResult, checkAllScrape, fixAllScrape, checkMovieScrape, fixMovieScrape,
             // Scrape Panel

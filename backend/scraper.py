@@ -1915,13 +1915,14 @@ class EnhancedMultiScraper:
 # 便捷函数
 # ===============================================================================
 
-def scrape_movie_enhanced(keyword: str, save_cover: bool = True) -> Optional[Dict]:
+def scrape_movie_enhanced(keyword: str, save_cover: bool = True, local_video_path: Optional[str] = None) -> Optional[Dict]:
     """
     功能: 增强版刮削函数（推荐使用）
     文件: scraper.py
     参数:
         keyword: 搜索关键词（番号）
         save_cover: 是否保存封面到本地
+        local_video_path: 本地视频路径（可选，用于封面保存位置）
     返回: 影片信息字典
     依赖: EnhancedMultiScraper
     使用语法:

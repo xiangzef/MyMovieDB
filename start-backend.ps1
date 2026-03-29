@@ -1,23 +1,22 @@
-# 启动后端服务
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$OutputEncoding = [System.Text.Encoding]::UTF8
-chcp 65001 > $null
+# 启动 MyMovieDB 后端
+$ErrorActionPreference = "Continue"
 
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$backendDir = Join-Path $scriptDir "backend"
+Write-Host "=== MyMovieDB 后端启动脚本 ===" -ForegroundColor Cyan
+Write-Host ""
 
-# 从 config.py 读取端口
-$port = 8000
-$portMatch = Select-String -Path "$backendDir\config.py" -Pattern 'PORT\s*=\s*(\d+)' | Select-Object -First 1
-if ($portMatch) {
-    $port = [int]$portMatch.Matches.Groups[1].Value
+# 切换到后端目录
+Set-Location "F:\github\MyMovieDB\backend"
+
+# 清除 Python 缓存
+if (Test-Path "__pycache__") {
+    Write-Host "清除 Python 缓存..." -ForegroundColor Yellow
+    Remove-Item "__pycache__" -Recurse -Force
 }
 
-Write-Host "🧹 清除 Python 缓存..." -ForegroundColor Yellow
-Remove-Item -Recurse -Force "$scriptDir\__pycache__" -ErrorAction SilentlyContinue
-Remove-Item -Recurse -Force "$backendDir\__pycache__" -ErrorAction SilentlyContinue
-Get-ChildItem -Path $backendDir -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-Write-Host "✅ 缓存清除完毕，启动后端（端口 $port）..." -ForegroundColor Green
+Write-Host "启动后端服务 (端口 8000)..." -ForegroundColor Green
+Write-Host "API 文档: http://localhost:8000/docs" -ForegroundColor Cyan
+Write-Host "前端页面: http://localhost:8000" -ForegroundColor Cyan
+Write-Host ""
 
-Set-Location $backendDir
-& python -m uvicorn main:app --host 0.0.0.0 --port $port
+# 启动服务
+python main.py

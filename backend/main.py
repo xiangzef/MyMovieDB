@@ -7,7 +7,7 @@ FastAPI 主入口
     - python-dotenv: 环境变量管理
 """
 
-from fastapi import FastAPI, HTTPException, Query, Depends
+from fastapi import FastAPI, HTTPException, Query, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
@@ -915,6 +915,22 @@ async def scrape_batch(req: ScrapeRequest):
 
             # 检查是否已有完整削刮记录
             existing = db.get_movie_by_code(code)
+            
+            # 跳过 Jellyfin 来源的影片
+            if existing and existing.get("source") == "jellyfin":
+                skipped_count += 1
+                yield _send_sse({
+                    "type": "skipped",
+                    "job_id": job_id,
+                    "code": code,
+                    "title": existing.get("title", ""),
+                    "message": "📁 Jellyfin 导入，跳过刮削",
+                    "index": i + 1,
+                    "total": total,
+                    "pct": int(((i + 1) / total) * 100)
+                })
+                continue
+            
             if existing and existing.get("scrape_status") == "complete":
                 # 即使跳过刮削，也要检查是否需要关联本地视频
                 if local_video_id and not existing.get("local_video_id"):
@@ -1254,6 +1270,22 @@ async def scrape_local_videos():
 
             # 检查是否已有完整刮削记录
             existing = db.get_movie_by_code(code)
+            
+            # 跳过 Jellyfin 来源的影片
+            if existing and existing.get("source") == "jellyfin":
+                skip_count += 1
+                yield _send_sse({
+                    "type": "skipped",
+                    "job_id": job_id,
+                    "code": code,
+                    "title": existing.get("title", ""),
+                    "message": "📁 Jellyfin 导入，跳过刮削",
+                    "index": i + 1,
+                    "total": total,
+                    "pct": int(((i + 1) / total) * 100)
+                })
+                continue
+            
             if existing and existing.get("scrape_status") == "complete":
                 # 已完整刮削，跳过
                 if video_id and not existing.get("local_video_id"):
@@ -1663,6 +1695,16 @@ async def fix_scrape_results(request: FixScrapeRequest = None):
             fixed = False
             message = ""
 
+            # 跳过 Jellyfin 来源的影片
+            if m.get("source") == "jellyfin":
+                yield _send_sse({
+                    "type": "skipped",
+                    "job_id": job_id,
+                    "code": code,
+                    "message": "📁 Jellyfin 导入，跳过修复"
+                })
+                continue
+
             try:
                 # 获取本地视频路径
                 local_video_path = None
@@ -1946,11 +1988,185 @@ async def health_check():
     return {"status": "ok"}
 
 
+# ===============================================================================
+# Jellyfin 导入 API
+# ===============================================================================
+
+@app.get("/jellyfin/stats", tags=["Jellyfin"])
+async def jellyfin_stats():
+    """获取 Jellyfin 导入统计"""
+    count = db.get_jellyfin_count()
+    return {
+        "total_imported": count,
+        "status": "ok"
+    }
+
+
+@app.post("/jellyfin/scan", tags=["Jellyfin"])
+async def jellyfin_scan(request: Request):
+    """
+    扫描 Jellyfin 格式影视库（SSE 流式响应）
+    
+    请求体: { "directory": "Z:\\\\影视库" }
+    
+    目录结构期望：
+    根目录/
+    ├── 女星名称/
+    │   ├── SSIS-001/
+    │   │   ├── SSIS-001.mp4
+    │   │   ├── SSIS-001.nfo
+    │   │   ├── SSIS-001-poster.jpg
+    │   │   └── SSIS-001-fanart.jpg
+    │   └── ...
+    └── ...
+    """
+    from jellyfin import scan_jellyfin_directory
+    
+    body = await request.json()
+    directory = body.get("directory", "Z:\\影视库")
+    
+    # 调试日志
+    print(f"[Jellyfin] 接收到的 directory: {repr(directory)}")
+    
+    async def generate():
+        # 发送开始事件
+        yield _send_sse({
+            "type": "start",
+            "directory": directory
+        })
+        
+        # 扫描目录
+        try:
+            results = scan_jellyfin_directory(directory)
+        except Exception as e:
+            yield _send_sse({
+                "type": "error",
+                "message": f"扫描目录失败: {str(e)}"
+            })
+            return
+        
+        total = len(results)
+        
+        if total == 0:
+            yield _send_sse({
+                "type": "complete",
+                "imported": 0,
+                "skipped": 0,
+                "errors": ["未找到有效内容"]
+            })
+            return
+        
+        imported = 0
+        skipped = 0
+        errors = []
+        
+        for i, item in enumerate(results):
+            code = item['code']
+            
+            # 检查是否需要停止
+            if stop_scraping:
+                yield _send_sse({
+                    "type": "stopped",
+                    "message": "用户取消"
+                })
+                break
+            
+            # 发送进度
+            yield _send_sse({
+                "type": "progress",
+                "current": i + 1,
+                "total": total,
+                "code": code,
+                "pct": int((i + 1) / total * 100),
+                "title": f"正在导入 {code} ({i+1}/{total})..."
+            })
+            
+            # 导入数据库
+            movie_id = db.import_jellyfin_movie(
+                code=code,
+                metadata=item['metadata'],
+                video_path=item['video_path'],
+                poster_file=item.get('poster_file'),
+                fanart_file=item.get('fanart_file'),
+                thumb_file=item.get('thumb_file'),
+            )
+            
+            if movie_id > 0:
+                imported += 1
+                yield _send_sse({
+                    "type": "imported",
+                    "code": code,
+                    "movie_id": movie_id,
+                    "title": item['metadata'].get('title', code)
+                })
+            elif movie_id == 0:
+                skipped += 1
+                yield _send_sse({
+                    "type": "skipped",
+                    "code": code,
+                    "message": "已存在"
+                })
+            else:
+                errors.append(code)
+                yield _send_sse({
+                    "type": "error",
+                    "code": code,
+                    "message": "导入失败"
+                })
+        
+        # 标记目录为 Jellyfin 格式
+        db.mark_source_as_jellyfin(directory)
+        
+        # 完成
+        yield _send_sse({
+            "type": "complete",
+            "imported": imported,
+            "skipped": skipped,
+            "errors": errors
+        })
+    
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@app.post("/jellyfin/mark-directory", tags=["Jellyfin"])
+async def mark_directory_as_jellyfin(request: Request):
+    """标记本地目录为 Jellyfin 格式"""
+    body = await request.json()
+    directory = body.get("directory")
+    
+    if not directory:
+        return {"success": False, "error": "目录路径不能为空"}
+    
+    success = db.mark_source_as_jellyfin(directory)
+    return {"success": success}
+
+
 # 挂载前端静态文件（必须在所有路由定义之后）
 if cfg.FRONTEND_DIR.exists():
     app.mount("/", StaticFiles(directory=str(cfg.FRONTEND_DIR), html=True), name="static")
 
 
+@app.get("/local-sources", tags=["本地目录"])
+async def get_local_sources_list():
+    """获取本地目录列表（包含 Jellyfin 标记）"""
+    sources = db.get_local_sources_with_jellyfin()
+    return {"sources": sources}
+
+
+@app.get("/local-sources/stats", tags=["本地目录"])
+async def get_local_sources_stats():
+    """获取本地视频统计信息（包含 Jellyfin 导入数量）"""
+    stats = db.get_local_video_stats()
+    jellyfin_count = db.get_jellyfin_count()
+    
+    return {
+        "total": stats.get("total", 0),
+        "scraped": stats.get("scraped", 0),
+        "pending": stats.get("unscraped", 0),
+        "jellyfin_imported": jellyfin_count
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)

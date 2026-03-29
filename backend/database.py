@@ -63,6 +63,8 @@ def init_db():
         "fanart_path": "ALTER TABLE movies ADD COLUMN fanart_path TEXT",  # Jellyfin/Kodi 背景
         "poster_path": "ALTER TABLE movies ADD COLUMN poster_path TEXT",  # Jellyfin/Kodi 海报
         "thumb_path": "ALTER TABLE movies ADD COLUMN thumb_path TEXT",  # Jellyfin/Kodi 缩略图
+        "source": "ALTER TABLE movies ADD COLUMN source TEXT DEFAULT 'scraped'",  # 数据来源: scraped/jellyfin/manual
+        "plot": "ALTER TABLE movies ADD COLUMN plot TEXT",  # 剧情简介
     }
     for col_name, sql in new_columns.items():
         if col_name not in existing_columns:
@@ -543,9 +545,18 @@ def init_local_sources_table():
             enabled INTEGER DEFAULT 1,
             video_count INTEGER DEFAULT 0,
             last_scan_at TEXT,
+            is_jellyfin INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    # 添加 is_jellyfin 字段（向后兼容）
+    existing_columns = [col[1] for col in cursor.execute("PRAGMA table_info(local_sources)")]
+    if "is_jellyfin" not in existing_columns:
+        try:
+            cursor.execute("ALTER TABLE local_sources ADD COLUMN is_jellyfin INTEGER DEFAULT 0")
+        except Exception:
+            pass
 
     conn.commit()
     conn.close()
@@ -955,3 +966,167 @@ def get_local_video_stats() -> dict:
 
     conn.close()
     return dict(row) if row else {"total": 0, "scraped": 0, "unscraped": 0}
+
+
+# ===============================================================================
+# Jellyfin 导入相关函数
+# ===============================================================================
+
+def import_jellyfin_movie(code: str, metadata: dict, video_path: str, 
+                          poster_file: str = None, fanart_file: str = None,
+                          thumb_file: str = None) -> int:
+    """
+    导入 Jellyfin 格式影片到数据库
+    
+    Args:
+        code: 番号
+        metadata: NFO 元数据字典
+        video_path: 视频文件路径
+        poster_file: 海报图片路径（本地文件）
+        fanart_file: 背景图路径（本地文件）
+        thumb_file: 缩略图路径（本地文件）
+    
+    Returns:
+        movie_id 或 -1（失败）、0（跳过）
+    """
+    import os
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    try:
+        # 检查是否已存在
+        cursor.execute("SELECT id, source FROM movies WHERE code = ?", (code,))
+        existing = cursor.fetchone()
+        
+        if existing:
+            movie_id = existing['id']
+            existing_source = existing['source']
+            
+            # 如果已经是 Jellyfin 来源，跳过
+            if existing_source == 'jellyfin':
+                conn.close()
+                return 0  # 跳过
+            
+            # 更新现有记录（只更新空值字段）
+            update_fields = []
+            update_values = []
+            
+            for field in ['title', 'title_jp', 'plot', 'release_date', 'studio', 
+                          'maker', 'director']:
+                if metadata.get(field):
+                    update_fields.append(f"{field} = ?")
+                    update_values.append(metadata[field])
+            
+            # 更新演员（JSON）
+            if metadata.get('actors'):
+                update_fields.append("actors = ?")
+                update_values.append(json.dumps(metadata['actors'], ensure_ascii=False))
+            if metadata.get('actors_male'):
+                update_fields.append("actors_male = ?")
+                update_values.append(json.dumps(metadata['actors_male'], ensure_ascii=False))
+            if metadata.get('genres'):
+                update_fields.append("genres = ?")
+                update_values.append(json.dumps(metadata['genres'], ensure_ascii=False))
+            
+            # 更新本地图片路径
+            if poster_file:
+                update_fields.append("poster_path = ?")
+                update_values.append(poster_file)
+            if fanart_file:
+                update_fields.append("fanart_path = ?")
+                update_values.append(fanart_file)
+            if thumb_file:
+                update_fields.append("thumb_path = ?")
+                update_values.append(thumb_file)
+            
+            # 标记来源和刮削状态
+            update_fields.append("source = ?")
+            update_values.append('jellyfin')
+            update_fields.append("scrape_status = ?")
+            update_values.append('complete')
+            
+            update_values.append(movie_id)
+            
+            if update_fields:
+                cursor.execute(f"""
+                    UPDATE movies SET {', '.join(update_fields)} WHERE id = ?
+                """, update_values)
+        else:
+            # 插入新记录
+            cursor.execute("""
+                INSERT INTO movies (code, title, title_jp, plot, release_date, 
+                                    studio, maker, director, actors, actors_male, 
+                                    genres, poster_path, fanart_path, thumb_path, 
+                                    source, scrape_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'jellyfin', 'complete')
+            """, (
+                code,
+                metadata.get('title') or code,
+                metadata.get('title_jp'),
+                metadata.get('plot'),
+                metadata.get('release_date'),
+                metadata.get('studio'),
+                metadata.get('maker'),
+                metadata.get('director'),
+                json.dumps(metadata.get('actors', []), ensure_ascii=False) if metadata.get('actors') else None,
+                json.dumps(metadata.get('actors_male', []), ensure_ascii=False) if metadata.get('actors_male') else None,
+                json.dumps(metadata.get('genres', []), ensure_ascii=False) if metadata.get('genres') else None,
+                poster_file,
+                fanart_file,
+                thumb_file,
+            ))
+            movie_id = cursor.lastrowid
+            
+            # 同时插入 local_videos 记录
+            file_size = os.path.getsize(video_path) if os.path.exists(video_path) else 0
+            cursor.execute("""
+                INSERT OR IGNORE INTO local_videos (path, name, size, code, movie_id, scraped)
+                VALUES (?, ?, ?, ?, ?, 1)
+            """, (video_path, os.path.basename(video_path), file_size, code, movie_id))
+        
+        conn.commit()
+        return movie_id
+    
+    except Exception as e:
+        conn.rollback()
+        print(f"[Database] 导入失败: {e}")
+        return -1
+    finally:
+        conn.close()
+
+
+def get_jellyfin_count() -> int:
+    """获取 Jellyfin 导入的影片数量"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM movies WHERE source = 'jellyfin'")
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+
+def mark_source_as_jellyfin(source_path: str) -> bool:
+    """标记本地目录为 Jellyfin 格式"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE local_sources SET is_jellyfin = 1 WHERE path = ?
+    """, (source_path,))
+    conn.commit()
+    affected = cursor.rowcount
+    conn.close()
+    return affected > 0
+
+
+def get_local_sources_with_jellyfin() -> list:
+    """获取本地目录列表，包含 Jellyfin 标记"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, path, name, enabled, video_count, last_scan_at, is_jellyfin, created_at
+        FROM local_sources
+        ORDER BY created_at DESC
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
