@@ -42,6 +42,8 @@ class MovieResponse(MovieBase):
     poster_path: Optional[str] = None
     thumb_path: Optional[str] = None
     local_video_path: Optional[str] = None  # 本地视频文件路径
+    # 刮削状态（动态计算）
+    scrape_status: Optional[str] = None
 
 
 class ScrapeRequest(BaseModel):

@@ -392,6 +392,9 @@ def row_to_movie_response(row: dict) -> dict:
         row["actors_male"] = json.loads(row["actors_male"])
     else:
         row["actors_male"] = None
+    # 动态计算刮削状态
+    if not row.get("scrape_status"):
+        row["scrape_status"] = calculate_scrape_status(row)
     return row
 
 
