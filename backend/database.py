@@ -197,6 +197,36 @@ def get_all_movies(page: int = 1, page_size: int = 20) -> tuple:
     return total, [dict(row) for row in rows]
 
 
+def get_all_movies_no_paging() -> list:
+    """获取所有影片（不分页，用于检查和修复）"""
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT m.*, lv.fanart_path, lv.poster_path, lv.thumb_path
+        FROM movies m
+        LEFT JOIN local_videos lv ON m.local_video_id = lv.id
+        ORDER BY m.id
+    """)
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [dict(row) for row in rows]
+
+
+def get_local_video_by_id(video_id: int) -> Optional[dict]:
+    """根据ID获取本地视频记录"""
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT * FROM local_videos WHERE id = ?", (video_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    return dict(row) if row else None
+
+
 def search_movies(keyword: str, page: int = 1, page_size: int = 20) -> tuple:
     """搜索影片"""
     conn = get_db()
@@ -700,9 +730,9 @@ def get_local_videos(
 
     offset = (page - 1) * page_size
     cursor.execute(f"""
-        SELECT v.*, 
-               m.title, m.cover_url, m.local_cover_path, m.release_date, m.actors, 
-               m.maker, m.scrape_status
+        SELECT v.*,
+               m.title, m.cover_url, m.local_cover_path, m.release_date, m.actors,
+               m.maker, m.scrape_status, m.poster_path, m.thumb_path
         FROM local_videos v
         LEFT JOIN movies m ON v.movie_id = m.id
         WHERE {where_sql}
@@ -720,7 +750,12 @@ def get_local_videos(
         if item.get("actors") and isinstance(item["actors"], str):
             item["actors"] = json.loads(item["actors"])
         # 封面路径转换：本地路径 → API 路径
-        if item.get("local_cover_path"):
+        # 优先使用 poster_path（与影片库一致），其次 thumb_path，最后原始封面
+        if item.get("poster_path"):
+            item["cover_url_display"] = item["poster_path"]
+        elif item.get("thumb_path"):
+            item["cover_url_display"] = item["thumb_path"]
+        elif item.get("local_cover_path"):
             item["cover_url_display"] = item["local_cover_path"]
         elif item.get("cover_url"):
             # 外部 URL 直接用

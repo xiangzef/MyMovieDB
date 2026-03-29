@@ -71,6 +71,8 @@
         .btn-secondary:hover { border-color: #e94560; color: #e94560; }
         .btn-danger { background: #dc3545; color: #fff; }
         .btn-danger:hover { background: #c82333; }
+        .btn-warning { background: #ffc107; color: #212529; }
+        .btn-warning:hover { background: #e0a800; }
         .btn-success { background: #28a745; color: #fff; }
         .btn-success:hover { background: #218838; }
         .btn-sm { padding: 5px 14px; font-size: 12px; }
@@ -140,7 +142,7 @@
         /* Grid */
         .movie-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+            grid-template-columns: repeat(6, 1fr);
             gap: 20px;
         }
         .movie-card {
@@ -395,6 +397,7 @@
             height: 80px;
             border-radius: 6px;
             object-fit: cover;
+            object-position: center center;
             background: #0f3460;
             flex-shrink: 0;
         }
@@ -829,6 +832,26 @@
                 </div>
             </div>
 
+            <!-- 刮削检查结果 -->
+            <div v-if="scrapeCheckResult" class="scan-progress" style="margin-bottom:15px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <div>
+                        <strong>🔍 刮削检查结果</strong>
+                        <span style="color:#888;margin-left:12px;font-size:13px;">
+                            共 {{ scrapeCheckResult.total }} 部 · ✅ 完整 {{ scrapeCheckResult.complete }} · ⚠️ 不完整 {{ scrapeCheckResult.incomplete }}
+                        </span>
+                    </div>
+                    <button class="btn btn-sm btn-secondary" @click="scrapeCheckResult = null">收起</button>
+                </div>
+                <div v-if="scrapeCheckResult.issues.length > 0" style="max-height:200px;overflow-y:auto;margin-top:10px;">
+                    <div v-for="item in scrapeCheckResult.issues" :key="item.movie_id" style="font-size:12px;color:#aaa;padding:4px 8px;border-bottom:1px solid #2a2a3e;">
+                        <span style="color:#e94560;font-weight:bold;">{{ item.code }}</span>
+                        <span v-if="item.title" style="margin-left:8px;">{{ item.title.substring(0, 30) }}...</span>
+                        <span style="color:#ffc107;margin-left:8px;">{{ item.issues.join(', ') }}</span>
+                    </div>
+                </div>
+            </div>
+
             <!-- 筛选 -->
             <div class="video-filter-bar">
                 <select v-model="videoFilter.scraped" @change="loadLocalVideos">
@@ -844,6 +867,12 @@
                 <button class="btn btn-secondary btn-sm" @click="loadLocalVideos">筛选</button>
                 <button class="btn btn-secondary btn-sm" @click="videoFilter = {scraped:null, source_id:null, keyword:''}; loadLocalVideos()">重置</button>
                 <button class="btn btn-sm btn-secondary" @click="loadVideoStats">🔄 刷新统计</button>
+                <button class="btn btn-sm btn-secondary" @click="checkAllScrape" :disabled="checking">
+                    🔍 {{ checking ? '检查中...' : '检查刮削' }}
+                </button>
+                <button class="btn btn-sm btn-warning" @click="fixAllScrape" :disabled="fixing" v-if="scrapeCheckResult && scrapeCheckResult.incomplete > 0">
+                    🔧 {{ fixing ? '修复中...' : '修复刮削' }}
+                </button>
             </div>
 
             <div v-if="localVideosLoading" class="loading">加载中...</div>
@@ -985,10 +1014,29 @@
                     </span>
                 </div>
                 <!-- 二次刮削按钮 -->
-                <div class="modal-actions" v-if="selectedMovie.scrape_status !== 'complete'">
-                    <button class="btn btn-primary" @click="rescrapeMovie(selectedMovie)" :disabled="scraping">
+                <div class="modal-actions">
+                    <button v-if="selectedMovie.scrape_status !== 'complete'" class="btn btn-primary" @click="rescrapeMovie(selectedMovie)" :disabled="scraping">
                         🔄 重新刮削
                     </button>
+                    <button class="btn btn-secondary" @click="checkMovieScrape(selectedMovie.id)" :disabled="checking">
+                        🔍 检查刮削
+                    </button>
+                    <button v-if="movieCheckResult && !movieCheckResult.is_complete" class="btn btn-warning" @click="fixMovieScrape(selectedMovie.id)" :disabled="fixing">
+                        🔧 修复
+                    </button>
+                </div>
+                <!-- 单个影片检查结果 -->
+                <div v-if="movieCheckResult" class="modal-row" style="background:rgba(0,0,0,0.2);padding:10px;border-radius:8px;margin-top:10px;">
+                    <div style="font-size:13px;">
+                        <strong>{{ movieCheckResult.is_complete ? '✅ 刮削完整' : '⚠️ 存在问题' }}</strong>
+                        <span v-if="movieCheckResult.issues.length" style="color:#ffc107;margin-left:8px;">{{ movieCheckResult.issues.join(', ') }}</span>
+                    </div>
+                    <div style="font-size:11px;color:#666;margin-top:4px;">
+                        poster: {{ movieCheckResult.has_poster ? '✅' : '❌' }} ·
+                        fanart: {{ movieCheckResult.has_fanart ? '✅' : '❌' }} ·
+                        thumb: {{ movieCheckResult.has_thumb ? '✅' : '❌' }} ·
+                        NFO: {{ movieCheckResult.has_nfo ? '✅' : '❌' }}
+                    </div>
                 </div>
                 <div class="modal-tags">
                     <span v-for="g in ensureArray(selectedMovie.genres)" :key="g" class="tag">{{ g }}</span>
@@ -1609,6 +1657,95 @@ createApp({
             return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB';
         };
 
+        // ========== 刮削检查和修复 ==========
+        const checking = ref(false);
+        const fixing = ref(false);
+        const scrapeCheckResult = ref(null);  // { total, complete, incomplete, issues }
+        const movieCheckResult = ref(null);   // 单个影片检查结果
+
+        // 检查所有刮削结果
+        const checkAllScrape = async () => {
+            checking.value = true;
+            try {
+                const res = await fetch(`${API}/scrape/check`);
+                const data = await res.json();
+                scrapeCheckResult.value = data;
+                if (data.incomplete === 0) {
+                    showToast('所有影片刮削完整！', 'success');
+                } else {
+                    showToast(`发现 ${data.incomplete} 部影片需要修复`, 'warning');
+                }
+            } catch (e) {
+                showToast('检查失败: ' + e.message, 'error');
+            }
+            checking.value = false;
+        };
+
+        // 修复所有刮削结果
+        const fixAllScrape = async () => {
+            if (!confirm('确定修复不完整的刮削结果？将重新下载缺失的封面和生成NFO文件。')) return;
+            fixing.value = true;
+            try {
+                const res = await fetch(`${API}/scrape/fix`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})
+                });
+                const data = await res.json();
+                if (data.fixed > 0) {
+                    showToast(`成功修复 ${data.fixed} 部影片`, 'success');
+                    // 重新检查
+                    await checkAllScrape();
+                    // 刷新数据
+                    fetchMovies();
+                    loadSources();
+                    loadVideoStats();
+                    loadLocalVideos();
+                } else {
+                    showToast('没有需要修复的内容', 'info');
+                }
+            } catch (e) {
+                showToast('修复失败: ' + e.message, 'error');
+            }
+            fixing.value = false;
+        };
+
+        // 检查单个影片
+        const checkMovieScrape = async (movieId) => {
+            checking.value = true;
+            try {
+                const res = await fetch(`${API}/movies/${movieId}/check`);
+                const data = await res.json();
+                movieCheckResult.value = data;
+            } catch (e) {
+                showToast('检查失败: ' + e.message, 'error');
+            }
+            checking.value = false;
+        };
+
+        // 修复单个影片
+        const fixMovieScrape = async (movieId) => {
+            fixing.value = true;
+            try {
+                const res = await fetch(`${API}/movies/${movieId}/fix`, { method: 'POST' });
+                const data = await res.json();
+                if (data.success) {
+                    showToast('修复成功: ' + data.fixed.join(', '), 'success');
+                    // 刷新详情
+                    const movieRes = await fetch(`${API}/movies/${movieId}`);
+                    const movie = await movieRes.json();
+                    selectedMovie.value = movie;
+                    // 重新检查
+                    await checkMovieScrape(movieId);
+                } else {
+                    showToast('修复失败: ' + (data.errors?.join(', ') || '未知错误'), 'error');
+                }
+            } catch (e) {
+                showToast('修复失败: ' + e.message, 'error');
+            }
+            fixing.value = false;
+        };
+
         // ========== 本地视频封面 URL ==========
         const getVideoCoverUrl = (v) => {
             if (!v) return null;
@@ -1673,6 +1810,8 @@ createApp({
             videoTotalPages, videoVisiblePages,
             loadVideoStats, loadLocalVideos, videoPrevPage, videoNextPage, videoGoToPage,
             scrapeOneLocal, deleteLocalVideo, cleanupInvalidCodes, cleanupResult, cleaning, formatSize, getVideoCoverUrl,
+            // Scrape check and fix
+            checking, fixing, scrapeCheckResult, movieCheckResult, checkAllScrape, fixAllScrape, checkMovieScrape, fixMovieScrape,
             // Scrape Panel
             scrapePanel, scrapeLogEl,
             // Rescrape

@@ -1239,6 +1239,362 @@ async def regenerate_all_posters():
     }
 
 
+# ============================================================
+# 刮削结果检查和修复 API
+# ============================================================
+
+class ScrapeCheckResult(BaseModel):
+    """单个影片的刮削检查结果"""
+    movie_id: int
+    code: str
+    title: Optional[str] = None
+    scrape_status: str
+    issues: List[str] = []
+    has_poster: bool = False
+    has_fanart: bool = False
+    has_thumb: bool = False
+    has_nfo: bool = False
+
+
+class ScrapeCheckResponse(BaseModel):
+    """刮削检查结果响应"""
+    total: int
+    complete: int
+    incomplete: int
+    issues: List[ScrapeCheckResult]
+
+
+@app.get("/scrape/check", tags=["刮削"], response_model=ScrapeCheckResponse)
+async def check_scrape_results():
+    """
+    检查所有影片的刮削完整性
+
+    检查项目：
+    1. title（标题）
+    2. release_date（发布日期）
+    3. maker（制作商）
+    4. actors（女演员）
+    5. poster_path 文件存在
+    6. fanart_path 文件存在
+    7. NFO 文件存在
+    """
+    from pathlib import Path
+
+    movies = db.get_all_movies_no_paging()
+    covers_dir = Path(cfg.COVERS_DIR)
+
+    result = ScrapeCheckResponse(total=len(movies), complete=0, incomplete=0, issues=[])
+
+    for m in movies:
+        issues = []
+        movie_id = m.get("id")
+        code = m.get("code", "")
+
+        # 检查必填字段
+        if not m.get("title"):
+            issues.append("缺少标题")
+        if not m.get("release_date"):
+            issues.append("缺少发布日期")
+        if not m.get("maker"):
+            issues.append("缺少制作商")
+        if not m.get("actors"):
+            issues.append("缺少女演员")
+
+        # 检查封面文件
+        has_poster = False
+        has_fanart = False
+        has_thumb = False
+        has_nfo = False
+
+        poster_path = m.get("poster_path")
+        if poster_path:
+            try:
+                has_poster = Path(poster_path).exists()
+                if not has_poster:
+                    issues.append("poster 文件不存在")
+            except:
+                issues.append("poster 路径无效")
+
+        fanart_path = m.get("fanart_path")
+        if fanart_path:
+            try:
+                has_fanart = Path(fanart_path).exists()
+                if not has_fanart:
+                    issues.append("fanart 文件不存在")
+            except:
+                pass
+
+        thumb_path = m.get("thumb_path")
+        if thumb_path:
+            try:
+                has_thumb = Path(thumb_path).exists()
+            except:
+                pass
+
+        # 检查 NFO 文件
+        safe_code = re.sub(r'[<>:"/\\|?*]', '_', code)
+        nfo_path = covers_dir / safe_code / f"{safe_code}.nfo"
+        if nfo_path.exists():
+            has_nfo = True
+        else:
+            issues.append("缺少 NFO 文件")
+
+        # 计算状态
+        scrape_status = m.get("scrape_status", "empty")
+
+        item = ScrapeCheckResult(
+            movie_id=movie_id,
+            code=code,
+            title=m.get("title"),
+            scrape_status=scrape_status,
+            issues=issues,
+            has_poster=has_poster,
+            has_fanart=has_fanart,
+            has_thumb=has_thumb,
+            has_nfo=has_nfo
+        )
+
+        if issues:
+            result.incomplete += 1
+            result.issues.append(item)
+        else:
+            result.complete += 1
+
+    return result
+
+
+class FixScrapeRequest(BaseModel):
+    """修复刮削请求"""
+    movie_ids: Optional[List[int]] = None  # 指定影片ID，为空则修复所有
+
+
+class FixScrapeResult(BaseModel):
+    """单个影片的修复结果"""
+    movie_id: int
+    code: str
+    fixed: bool
+    message: str
+
+
+class FixScrapeResponse(BaseModel):
+    """修复刮削响应"""
+    total: int
+    fixed: int
+    failed: int
+    results: List[FixScrapeResult]
+
+
+@app.post("/scrape/fix", tags=["刮削"], response_model=FixScrapeResponse)
+async def fix_scrape_results(request: FixScrapeRequest = None):
+    """
+    修复不完整的刮削结果
+
+    修复操作：
+    1. 重新下载缺失的封面图片
+    2. 重新生成 NFO 文件
+    3. 更新数据库中的封面路径
+    """
+    from pathlib import Path
+    from scraper import download_and_crop_cover, generate_nfo
+
+    covers_dir = Path(cfg.COVERS_DIR)
+    covers_dir.mkdir(parents=True, exist_ok=True)
+
+    # 获取需要修复的影片
+    if request and request.movie_ids:
+        movies = [db.get_movie_by_id(mid) for mid in request.movie_ids if db.get_movie_by_id(mid)]
+    else:
+        # 检查所有影片，筛选有问题的
+        check_result = await check_scrape_results()
+        movie_ids = [item.movie_id for item in check_result.issues]
+        movies = [db.get_movie_by_id(mid) for mid in movie_ids if db.get_movie_by_id(mid)]
+
+    result = FixScrapeResponse(total=len(movies), fixed=0, failed=0, results=[])
+
+    for m in movies:
+        movie_id = m.get("id")
+        code = m.get("code", "")
+        fixed = False
+        message = ""
+
+        try:
+            safe_code = re.sub(r'[<>:"/\\|?*]', '_', code)
+            code_dir = covers_dir / safe_code
+            code_dir.mkdir(parents=True, exist_ok=True)
+
+            # 检查并下载封面
+            cover_url = m.get("cover_url")
+            if cover_url and (not m.get("poster_path") or not Path(m.get("poster_path", "")).exists()):
+                crop_paths = download_and_crop_cover(cover_url, code, covers_dir)
+                if crop_paths:
+                    # 更新数据库
+                    db.update_movie(movie_id, crop_paths)
+                    fixed = True
+                    message += "已下载封面; "
+
+            # 生成 NFO
+            nfo_path = code_dir / f"{safe_code}.nfo"
+            if not nfo_path.exists():
+                # 获取本地视频路径（如果有）
+                local_video_path = None
+                if m.get("local_video_id"):
+                    # 从 local_videos 表获取路径
+                    lv = db.get_local_video_by_id(m.get("local_video_id"))
+                    if lv:
+                        local_video_path = lv.get("path")
+
+                generate_nfo(m, nfo_path, local_video_path)
+                fixed = True
+                message += "已生成 NFO; "
+
+            if fixed:
+                result.fixed += 1
+            else:
+                message = "无需修复"
+                result.failed += 1
+
+        except Exception as e:
+            logger.error(f"修复影片 {code} 失败: {e}")
+            message = f"修复失败: {str(e)}"
+            result.failed += 1
+
+        result.results.append(FixScrapeResult(
+            movie_id=movie_id,
+            code=code,
+            fixed=fixed,
+            message=message
+        ))
+
+    return result
+
+
+# 单个影片的检查和修复
+@app.get("/movies/{movie_id}/check", tags=["刮削"])
+async def check_movie_scrape(movie_id: int):
+    """检查单个影片的刮削完整性"""
+    m = db.get_movie_by_id(movie_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="影片不存在")
+
+    from pathlib import Path
+    covers_dir = Path(cfg.COVERS_DIR)
+
+    issues = []
+    code = m.get("code", "")
+
+    # 检查必填字段
+    if not m.get("title"):
+        issues.append("缺少标题")
+    if not m.get("release_date"):
+        issues.append("缺少发布日期")
+    if not m.get("maker"):
+        issues.append("缺少制作商")
+    if not m.get("actors"):
+        issues.append("缺少女演员")
+
+    # 检查封面文件
+    has_poster = False
+    has_fanart = False
+    has_thumb = False
+    has_nfo = False
+
+    poster_path = m.get("poster_path")
+    if poster_path:
+        try:
+            has_poster = Path(poster_path).exists()
+            if not has_poster:
+                issues.append("poster 文件不存在")
+        except:
+            issues.append("poster 路径无效")
+
+    fanart_path = m.get("fanart_path")
+    if fanart_path:
+        try:
+            has_fanart = Path(fanart_path).exists()
+        except:
+            pass
+
+    thumb_path = m.get("thumb_path")
+    if thumb_path:
+        try:
+            has_thumb = Path(thumb_path).exists()
+        except:
+            pass
+
+    # 检查 NFO
+    safe_code = re.sub(r'[<>:"/\\|?*]', '_', code)
+    nfo_path = covers_dir / safe_code / f"{safe_code}.nfo"
+    has_nfo = nfo_path.exists()
+    if not has_nfo:
+        issues.append("缺少 NFO 文件")
+
+    return {
+        "movie_id": movie_id,
+        "code": code,
+        "title": m.get("title"),
+        "scrape_status": m.get("scrape_status"),
+        "issues": issues,
+        "has_poster": has_poster,
+        "has_fanart": has_fanart,
+        "has_thumb": has_thumb,
+        "has_nfo": has_nfo,
+        "is_complete": len(issues) == 0
+    }
+
+
+@app.post("/movies/{movie_id}/fix", tags=["刮削"])
+async def fix_movie_scrape(movie_id: int):
+    """修复单个影片的刮削结果"""
+    m = db.get_movie_by_id(movie_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="影片不存在")
+
+    from pathlib import Path
+    from scraper import download_and_crop_cover, generate_nfo
+
+    covers_dir = Path(cfg.COVERS_DIR)
+    code = m.get("code", "")
+    safe_code = re.sub(r'[<>:"/\\|?*]', '_', code)
+    code_dir = covers_dir / safe_code
+    code_dir.mkdir(parents=True, exist_ok=True)
+
+    fixed = []
+    errors = []
+
+    # 检查并下载封面
+    cover_url = m.get("cover_url")
+    if cover_url and (not m.get("poster_path") or not Path(m.get("poster_path", "")).exists()):
+        try:
+            crop_paths = download_and_crop_cover(cover_url, code, covers_dir)
+            if crop_paths:
+                db.update_movie(movie_id, crop_paths)
+                fixed.append("已下载封面")
+        except Exception as e:
+            errors.append(f"下载封面失败: {e}")
+
+    # 生成 NFO
+    nfo_path = code_dir / f"{safe_code}.nfo"
+    if not nfo_path.exists():
+        try:
+            local_video_path = None
+            if m.get("local_video_id"):
+                lv = db.get_local_video_by_id(m.get("local_video_id"))
+                if lv:
+                    local_video_path = lv.get("path")
+            generate_nfo(m, nfo_path, local_video_path)
+            fixed.append("已生成 NFO")
+        except Exception as e:
+            errors.append(f"生成 NFO 失败: {e}")
+
+    return {
+        "movie_id": movie_id,
+        "code": code,
+        "fixed": fixed,
+        "errors": errors,
+        "success": len(fixed) > 0 or len(errors) == 0
+    }
+
+
 # 健康检查
 @app.get("/health")
 async def health_check():
