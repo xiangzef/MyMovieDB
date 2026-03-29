@@ -940,68 +940,136 @@ async def scan_local_sources():
     }
 
 
-def _do_scrape_local_videos():
-    """同步刮削逻辑，在线程池中运行，避免阻塞事件循环"""
+@app.post("/local-sources/scrape", tags=["本地视频"])
+async def scrape_local_videos():
+    """
+    对扫描到的本地视频批量刮削（支持 SSE 实时进度）
+    只刮削有编号的视频，返回 SSE 流
+    """
     from scraper import scrape_movie
+    import uuid
+
+    job_id = str(uuid.uuid4())[:8]
+    stop_event = threading.Event()
+    with _scrape_lock:
+        _scrape_stop_flags[job_id] = stop_event
 
     unscraped = db.get_unscraped_local_videos()
     if not unscraped:
-        return {"success": True, "message": "没有需要刮削的视频", "processed": 0, "success_count": 0}
+        with _scrape_lock:
+            _scrape_stop_flags.pop(job_id, None)
+        return {"success": True, "message": "没有需要刮削的视频", "processed": 0}
 
-    success_count = 0
-    fail_count = 0
-    skip_count = 0
-    results = []
+    total = len(unscraped)
 
-    for video in unscraped:
-        code = video.get("code")
-        video_id = video["id"]
+    def generate():
+        success_count = 0
+        fail_count = 0
+        skip_count = 0
 
-        if not code:
-            skip_count += 1
-            results.append({"video_id": video_id, "code": None, "status": "skip", "message": "无编号"})
-            continue
+        for i, video in enumerate(unscraped):
+            # 检查停止标志
+            if stop_event.is_set():
+                yield _send_sse({
+                    "type": "stopped",
+                    "job_id": job_id,
+                    "code": video.get("code"),
+                    "index": i + 1,
+                    "total": total,
+                    "message": "用户停止了刮削"
+                })
+                break
 
-        try:
-            movie_data = scrape_movie(code, save_cover=True)
-            if not movie_data:
-                fail_count += 1
-                results.append({"video_id": video_id, "code": code, "status": "fail", "message": "未找到"})
+            code = video.get("code")
+            video_id = video["id"]
+
+            if not code:
+                skip_count += 1
+                yield _send_sse({
+                    "type": "skip",
+                    "job_id": job_id,
+                    "code": None,
+                    "message": "无编号，跳过",
+                    "index": i + 1,
+                    "total": total,
+                    "pct": int(((i + 1) / total) * 100)
+                })
                 continue
 
-            # upsert 影片
-            movie_id, is_new = db.upsert_movie(movie_data)
-            # 关联本地视频：local_videos.movie_id 和 movies.local_video_id 双向关联
-            db.mark_video_scraped(video_id, movie_id)
-            db.link_movie_to_local_video(movie_id, video_id)
-            success_count += 1
-            results.append({"video_id": video_id, "code": code, "status": "success", "title": movie_data.get("title")})
+            # 发送当前处理信息
+            yield _send_sse({
+                "type": "scraping",
+                "job_id": job_id,
+                "code": code,
+                "title": f"正在刮削 {code} ({i+1}/{total})...",
+                "index": i + 1,
+                "total": total,
+                "pct": int((i / total) * 100)
+            })
 
-            # 避免请求过快
-            time.sleep(0.5)
+            try:
+                movie_data = scrape_movie(code, save_cover=True)
+                if not movie_data:
+                    fail_count += 1
+                    yield _send_sse({
+                        "type": "fail",
+                        "job_id": job_id,
+                        "code": code,
+                        "message": "未找到",
+                        "index": i + 1,
+                        "total": total,
+                        "pct": int(((i + 1) / total) * 100)
+                    })
+                    continue
 
-        except Exception as e:
-            logger.error(f"刮削 {code} 失败: {e}")
-            fail_count += 1
-            results.append({"video_id": video_id, "code": code, "status": "error", "message": str(e)[:100]})
+                # upsert 影片
+                movie_id, is_new = db.upsert_movie(movie_data)
+                # 关联本地视频
+                db.mark_video_scraped(video_id, movie_id)
+                db.link_movie_to_local_video(movie_id, video_id)
+                success_count += 1
 
-    return {
-        "success": True,
-        "processed": len(unscraped),
-        "success_count": success_count,
-        "fail_count": fail_count,
-        "skip_count": skip_count,
-        "results": results,
-        "stats": db.get_local_video_stats()
-    }
+                yield _send_sse({
+                    "type": "success",
+                    "job_id": job_id,
+                    "code": code,
+                    "title": movie_data.get("title", ""),
+                    "index": i + 1,
+                    "total": total,
+                    "pct": int(((i + 1) / total) * 100)
+                })
 
+                # 避免请求过快
+                time.sleep(0.5)
 
-@app.post("/local-sources/scrape", tags=["本地视频"])
-async def scrape_local_videos():
-    """对扫描到的本地视频批量刮削（只刮削有编号的）"""
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, _do_scrape_local_videos)
-    return result
+            except Exception as e:
+                logger.error(f"刮削 {code} 失败: {e}")
+                fail_count += 1
+                yield _send_sse({
+                    "type": "error",
+                    "job_id": job_id,
+                    "code": code,
+                    "message": str(e)[:100],
+                    "index": i + 1,
+                    "total": total,
+                    "pct": int(((i + 1) / total) * 100)
+                })
+
+        # 发送完成消息
+        yield _send_sse({
+            "type": "done",
+            "job_id": job_id,
+            "processed": total,
+            "success_count": success_count,
+            "fail_count": fail_count,
+            "skip_count": skip_count
+        })
+
+        # 清理停止标志
+        with _scrape_lock:
+            _scrape_stop_flags.pop(job_id, None)
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @app.get("/local-videos", response_model=LocalVideoListResponse, tags=["本地视频"])
