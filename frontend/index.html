@@ -1244,9 +1244,7 @@ createApp({
                     break;
                 case 'done':
                     scrapePanel.value.pct = 100;
-                    const skipMsg = evt.skip_count ? `，跳过 ${evt.skip_count}` : '';
-                    const linkMsg = evt.local_link_count ? `，关联 ${evt.local_link_count}` : '';
-                    addScrapeLog('info', `🎉 完成！成功 ${evt.success_count}，失败 ${evt.fail_count}${skipMsg}${linkMsg}`);
+                    addScrapeLog('info', `🎉 完成！成功 ${evt.success_count}，失败 ${evt.fail_count}`);
                     // 3秒后关闭浮层
                     setTimeout(() => {
                         scrapePanel.value.show = false;
@@ -1328,10 +1326,7 @@ createApp({
                 showToast('打开详情失败: ' + e.message, 'error');
             }
         };
-                console.error('[showDetail] 错误:', e);
-                showToast('打开详情失败: ' + e.message, 'error');
-            }
-        };
+
         // 点击主演示图在可用图片间切换
         const cycleDetailMain = () => {
             if (detailThumbs.value.length === 0) return;
