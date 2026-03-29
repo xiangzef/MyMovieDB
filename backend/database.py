@@ -750,11 +750,11 @@ def get_local_videos(
         if item.get("actors") and isinstance(item["actors"], str):
             item["actors"] = json.loads(item["actors"])
         # 封面路径转换：本地路径 → API 路径
-        # 优先使用 poster_path（与影片库一致），其次 thumb_path，最后原始封面
-        if item.get("poster_path"):
-            item["cover_url_display"] = item["poster_path"]
-        elif item.get("thumb_path"):
+        # 本地视频库列表用缩略图（thumb_path），节省带宽和加载速度
+        if item.get("thumb_path"):
             item["cover_url_display"] = item["thumb_path"]
+        elif item.get("poster_path"):
+            item["cover_url_display"] = item["poster_path"]
         elif item.get("local_cover_path"):
             item["cover_url_display"] = item["local_cover_path"]
         elif item.get("cover_url"):
