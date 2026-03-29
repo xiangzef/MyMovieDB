@@ -606,13 +606,16 @@ async def scrape_batch(req: ScrapeRequest):
     请求体: { "keyword": "ABC-123, XYZ-456\nDEF-789", "save_cover": true }
     keyword 支持多番号，用逗号/空格/换行/分号分隔
     """
-    from scraper import scrape_movie
+    from scraper import scrape_movie, set_stop_check
     import uuid
 
     job_id = str(uuid.uuid4())[:8]
     stop_event = threading.Event()
     with _scrape_lock:
         _scrape_stop_flags[job_id] = stop_event
+
+    # 设置停止检查回调
+    set_stop_check(lambda: stop_event.is_set())
 
     codes = _parse_codes(req.keyword)
     if not codes:
@@ -946,13 +949,16 @@ async def scrape_local_videos():
     对扫描到的本地视频批量刮削（支持 SSE 实时进度）
     只刮削有编号的视频，返回 SSE 流
     """
-    from scraper import scrape_movie
+    from scraper import scrape_movie, set_stop_check
     import uuid
 
     job_id = str(uuid.uuid4())[:8]
     stop_event = threading.Event()
     with _scrape_lock:
         _scrape_stop_flags[job_id] = stop_event
+
+    # 设置停止检查回调
+    set_stop_check(lambda: stop_event.is_set())
 
     unscraped = db.get_unscraped_local_videos()
     if not unscraped:

@@ -446,6 +446,21 @@ def make_bilingual_title(jp_title: str, cn_title: str = None) -> str:
 # 爬虫基类 - 提供通用功能
 # ===============================================================================
 
+# 全局停止检查回调（由 main.py 设置）
+_scrape_stop_check = None
+
+def set_stop_check(check_func):
+    """设置停止检查回调函数"""
+    global _scrape_stop_check
+    _scrape_stop_check = check_func
+
+def should_stop():
+    """检查是否应该停止刮削"""
+    if _scrape_stop_check:
+        return _scrape_stop_check()
+    return False
+
+
 class BaseScraper:
     """
     功能: 爬虫基类，所有具体爬虫的父类
@@ -494,6 +509,11 @@ class BaseScraper:
             soup = self._get("https://example.com")
         """
         for i in range(retry):
+            # 检查停止信号
+            if should_stop():
+                logger.info("收到停止信号，中断请求")
+                return None
+
             try:
                 # 请求前等待（防止请求过快）
                 time.sleep(self.delay)
