@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>用户中心 - MyMovieDB</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>👤</text></svg>">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #eee;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        
+        .profile-container {
+            background: rgba(22, 33, 62, 0.8);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 40px;
+            width: 100%;
+            max-width: 500px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .avatar {
+            width: 100px;
+            height: 100px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #e94560, #ff6b6b);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 48px;
+            margin: 0 auto 20px;
+            box-shadow: 0 8px 20px rgba(233, 69, 96, 0.3);
+        }
+        
+        h1 {
+            font-size: 28px;
+            color: #fff;
+            margin-bottom: 8px;
+        }
+        
+        .user-role {
+            display: inline-block;
+            padding: 6px 16px;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        
+        .role-admin {
+            background: rgba(220, 53, 69, 0.2);
+            color: #dc3545;
+        }
+        
+        .role-premium {
+            background: rgba(255, 193, 7, 0.2);
+            color: #ffc107;
+        }
+        
+        .role-guest {
+            background: rgba(108, 117, 125, 0.2);
+            color: #6c757d;
+        }
+        
+        .info-section {
+            background: rgba(26, 26, 46, 0.6);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .info-section h3 {
+            font-size: 14px;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        
+        .info-row:last-child {
+            border-bottom: none;
+        }
+        
+        .info-label {
+            color: #888;
+            font-size: 14px;
+        }
+        
+        .info-value {
+            color: #fff;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        
+        .permission-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+            margin-top: 10px;
+        }
+        
+        .permission-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 8px;
+            font-size: 13px;
+        }
+        
+        .permission-item.granted {
+            color: #28a745;
+        }
+        
+        .permission-item.denied {
+            color: #6c757d;
+        }
+        
+        .permission-icon {
+            font-size: 16px;
+        }
+        
+        .actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 30px;
+        }
+        
+        .btn {
+            flex: 1;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 10px;
+            font-size: 15px;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-decoration: none;
+            text-align: center;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #e94560, #ff6b6b);
+            color: #fff;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(233, 69, 96, 0.3);
+        }
+        
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.1);
+            color: #ccc;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.15);
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 60px 0;
+            color: #e94560;
+        }
+        
+        .premium-banner {
+            background: linear-gradient(135deg, rgba(255, 193, 7, 0.2), rgba(255, 193, 7, 0.1));
+            border: 1px solid rgba(255, 193, 7, 0.3);
+            border-radius: 12px;
+            padding: 20px;
+            margin-top: 20px;
+            text-align: center;
+        }
+        
+        .premium-banner h4 {
+            color: #ffc107;
+            font-size: 16px;
+            margin-bottom: 8px;
+        }
+        
+        .premium-banner p {
+            color: #888;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        /* 管理员区域 */
+        .admin-section {
+            background: rgba(220, 53, 69, 0.1);
+            border: 1px solid rgba(220, 53, 69, 0.3);
+        }
+
+        .admin-section h3 {
+            color: #dc3545;
+        }
+
+        .admin-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .btn-danger {
+            background: #dc3545;
+            color: #fff;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        .btn-danger:hover {
+            background: #c82333;
+            transform: translateY(-1px);
+        }
+
+        /* Toast */
+        .toast-container {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        .toast {
+            background: #16213e;
+            border-left: 4px solid #e94560;
+            padding: 12px 18px;
+            border-radius: 8px;
+            font-size: 14px;
+            color: #ccc;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.4);
+            animation: slideIn 0.3s ease;
+        }
+        
+        .toast.error { border-left-color: #dc3545; }
+        
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+<div id="app">
+    <div v-if="loading" class="profile-container">
+        <div class="loading">加载中...</div>
+    </div>
+    
+    <div v-else-if="currentUser" class="profile-container">
+        <!-- Header -->
+        <div class="header">
+            <div class="avatar">👤</div>
+            <h1>{{ currentUser.username }}</h1>
+            <span class="user-role" :class="'role-' + currentUser.role">
+                {{ getRoleName(currentUser.role) }}
+            </span>
+        </div>
+        
+        <!-- 基本信息 -->
+        <div class="info-section">
+            <h3>📋 基本信息</h3>
+            <div class="info-row">
+                <span class="info-label">用户 ID</span>
+                <span class="info-value">#{{ currentUser.id }}</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">邮箱</span>
+                <span class="info-value">{{ currentUser.email || '未设置' }}</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">注册时间</span>
+                <span class="info-value">{{ formatTime(currentUser.created_at) }}</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">最后登录</span>
+                <span class="info-value">{{ formatTime(currentUser.last_login) }}</span>
+            </div>
+        </div>
+        
+        <!-- 付费状态 -->
+        <div class="info-section">
+            <h3>💎 会员状态</h3>
+            <div class="info-row">
+                <span class="info-label">当前等级</span>
+                <span class="info-value">
+                    <span v-if="currentUser.role === 'admin'">👑 管理员</span>
+                    <span v-else-if="currentUser.role === 'premium'">⭐ 付费会员</span>
+                    <span v-else>🆓 免费用户</span>
+                </span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">会员有效期</span>
+                <span class="info-value">
+                    <span v-if="currentUser.role === 'admin'">永久有效</span>
+                    <span v-else-if="currentUser.role === 'premium'">2026-12-31</span>
+                    <span v-else>-</span>
+                </span>
+            </div>
+        </div>
+        
+        <!-- 权限列表 -->
+        <div class="info-section">
+            <h3>🔑 权限列表</h3>
+            <div class="permission-grid">
+                <div class="permission-item" :class="hasPermission('scrape') ? 'granted' : 'denied'">
+                    <span class="permission-icon">{{ hasPermission('scrape') ? '✅' : '❌' }}</span>
+                    <span>刮削影片</span>
+                </div>
+                <div class="permission-item" :class="hasPermission('delete') ? 'granted' : 'denied'">
+                    <span class="permission-icon">{{ hasPermission('delete') ? '✅' : '❌' }}</span>
+                    <span>删除影片</span>
+                </div>
+                <div class="permission-item" :class="hasPermission('export') ? 'granted' : 'denied'">
+                    <span class="permission-icon">{{ hasPermission('export') ? '✅' : '❌' }}</span>
+                    <span>导出数据</span>
+                </div>
+                <div class="permission-item" :class="hasPermission('admin') ? 'granted' : 'denied'">
+                    <span class="permission-icon">{{ hasPermission('admin') ? '✅' : '❌' }}</span>
+                    <span>管理用户</span>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 升级提示 -->
+        <div v-if="currentUser.role === 'guest'" class="premium-banner">
+            <h4>⭐ 升级到付费会员</h4>
+            <p>解锁刮削、导出等高级功能，享受更好的体验</p>
+        </div>
+        
+        <!-- 管理员入口 -->
+        <div v-if="currentUser.role === 'admin'" class="info-section admin-section">
+            <h3>⚙️ 管理员功能</h3>
+            <div class="admin-actions">
+                <a href="admin.html" class="btn btn-danger" style="text-decoration:none;">
+                    👥 用户管理后台
+                </a>
+            </div>
+        </div>
+
+        <!-- 操作按钮 -->
+        <div class="actions">
+            <a href="index.html" class="btn btn-secondary">返回主页</a>
+            <button class="btn btn-primary" @click="logout">登出账户</button>
+        </div>
+    </div>
+    
+    <!-- Toast -->
+    <div class="toast-container">
+        <div v-for="t in toasts" :key="t.id" class="toast" :class="t.type">{{ t.msg }}</div>
+    </div>
+</div>
+
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script>
+const { createApp, ref, computed, onMounted } = Vue;
+
+createApp({
+    setup() {
+        const API = 'http://localhost:8000';
+        const token = ref(localStorage.getItem('token') || '');
+        const currentUser = ref(null);
+        const loading = ref(true);
+        
+        // Toast
+        const toasts = ref([]);
+        let toastId = 0;
+        const showToast = (msg, type = '') => {
+            const id = ++toastId;
+            toasts.value.push({ id, msg, type });
+            setTimeout(() => { toasts.value = toasts.value.filter(t => t.id !== id); }, 3500);
+        };
+        
+        // 检查登录状态
+        const checkAuth = async () => {
+            if (!token.value) {
+                window.location.href = 'login.html';
+                return;
+            }
+            
+            try {
+                const res = await fetch(`${API}/auth/me?token=${token.value}`);
+                if (!res.ok) {
+                    localStorage.removeItem('token');
+                    window.location.href = 'login.html';
+                    return;
+                }
+                currentUser.value = await res.json();
+            } catch (e) {
+                showToast('获取用户信息失败', 'error');
+                setTimeout(() => { window.location.href = 'login.html'; }, 1500);
+            } finally {
+                loading.value = false;
+            }
+        };
+        
+        // 登出
+        const logout = async () => {
+            try {
+                await fetch(`${API}/auth/logout?token=${token.value}`, { method: 'POST' });
+            } catch (e) {}
+            localStorage.removeItem('token');
+            window.location.href = 'login.html';
+        };
+        
+        // 角色名称映射
+        const getRoleName = (role) => {
+            const names = {
+                admin: '管理员',
+                premium: '付费会员',
+                guest: '免费用户'
+            };
+            return names[role] || role;
+        };
+        
+        // 格式化时间
+        const formatTime = (time) => {
+            if (!time) return '-';
+            const date = new Date(time);
+            return date.toLocaleString('zh-CN', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        };
+        
+        // 权限检查
+        const hasPermission = (permission) => {
+            const role = currentUser.value?.role;
+            if (!role) return false;
+            
+            const permissions = {
+                admin: ['scrape', 'delete', 'export', 'admin'],
+                premium: ['scrape', 'export'],
+                guest: []
+            };
+            
+            return permissions[role]?.includes(permission) || false;
+        };
+        
+        onMounted(() => {
+            checkAuth();
+        });
+        
+        return {
+            loading, currentUser, toasts, showToast,
+            logout, getRoleName, formatTime, hasPermission
+        };
+    }
+}).mount('#app');
+</script>
+</body>
+</html>

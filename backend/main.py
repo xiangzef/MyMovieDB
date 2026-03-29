@@ -24,7 +24,8 @@ from datetime import datetime, timedelta
 
 from models import (
     MovieResponse, MovieListResponse,
-    ScrapeRequest, ScrapeResponse
+    ScrapeRequest, ScrapeResponse,
+    UserLogin, UserRegister, UserResponse, LoginResponse
 )
 from pydantic import BaseModel, Field
 import database as db
@@ -305,9 +306,8 @@ cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
 cfg.COVERS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/covers", StaticFiles(directory=str(cfg.COVERS_DIR)), name="covers")
 
-# 挂载前端目录（让127.0.0.1:8000 直接打开前端页面）
-if cfg.FRONTEND_DIR.exists():
-    app.mount("/frontend", StaticFiles(directory=str(cfg.FRONTEND_DIR), html=True), name="frontend")
+# 挂载前端目录到根路径（必须在所有路由之后挂载）
+# 注意：静态文件挂载会在最后执行
 
 
 # ========== 认证相关 API ==========
@@ -426,16 +426,102 @@ async def logout(token: str = Query(None)):
     return {"success": True, "message": "已登出"}
 
 
+# ========== 管理员 API ==========
+
+class UserUpdateRequest(BaseModel):
+    role: Optional[str] = Field(None, description="用户角色")
+    is_active: Optional[int] = Field(None, description="是否激活")
+
+
+@app.get("/admin/users")
+async def get_all_users(token: str = Query(None)):
+    """获取所有用户列表（仅管理员）"""
+    user = get_current_user(token)
+    if user['role'] != 'admin':
+        raise HTTPException(status_code=403, detail="权限不足")
+    
+    conn = db.get_db()
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT id, username, email, role, is_active, created_at, last_login
+        FROM users
+        ORDER BY created_at DESC
+    """)
+    
+    users = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    
+    return {"users": users}
+
+
+@app.put("/admin/users/{user_id}")
+async def update_user(user_id: int, request: UserUpdateRequest, token: str = Query(None)):
+    """更新用户信息（仅管理员）"""
+    user = get_current_user(token)
+    if user['role'] != 'admin':
+        raise HTTPException(status_code=403, detail="权限不足")
+    
+    conn = db.get_db()
+    cursor = conn.cursor()
+    
+    # 检查用户是否存在
+    cursor.execute("SELECT id FROM users WHERE id = ?", (user_id,))
+    if not cursor.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="用户不存在")
+    
+    # 更新用户信息
+    updates = []
+    params = []
+    if request.role is not None:
+        updates.append("role = ?")
+        params.append(request.role)
+    if request.is_active is not None:
+        updates.append("is_active = ?")
+        params.append(request.is_active)
+    
+    if updates:
+        params.append(user_id)
+        cursor.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = ?", params)
+        conn.commit()
+    
+    conn.close()
+    
+    return {"success": True, "message": "更新成功"}
+
+
+@app.delete("/admin/users/{user_id}")
+async def delete_user(user_id: int, token: str = Query(None)):
+    """删除用户（仅管理员）"""
+    user = get_current_user(token)
+    if user['role'] != 'admin':
+        raise HTTPException(status_code=403, detail="权限不足")
+    
+    conn = db.get_db()
+    cursor = conn.cursor()
+    
+    # 不能删除自己
+    if user_id == user['id']:
+        conn.close()
+        raise HTTPException(status_code=400, detail="不能删除自己的账户")
+    
+    # 检查用户是否存在
+    cursor.execute("SELECT id FROM users WHERE id = ?", (user_id,))
+    if not cursor.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="用户不存在")
+    
+    cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+    
+    return {"success": True, "message": "删除成功"}
+
+
 # ========== 前端页面路由 ==========
 
-@app.get("/")
-async def root():
-    """API 根路径 - 重定向到前端页面"""
-    frontend_index = cfg.FRONTEND_DIR / "index.html"
-    if frontend_index.exists():
-        from fastapi.responses import FileResponse
-        return FileResponse(str(frontend_index))
-    return {"message": "MyMovieDB API", "version": "1.0.0"}
+
 
 
 @app.get("/movies", response_model=MovieListResponse)
@@ -584,49 +670,19 @@ async def play_video(path: str = Query(..., description="要播放的视频文�
         raise HTTPException(status_code=404, detail="文件不存在")
 
     try:
-        # 尝试迅雷播放器路径
-        xunlei_paths = [
-            r"C:\Program Files (x86)\Thunder Network\Thunder\Program\Thunder.exe",
-            r"C:\Program Files\Thunder Network\Thunder\Program\Thunder.exe",
-            r"D:\Program Files (x86)\Thunder Network\Thunder\Program\Thunder.exe",
-        ]
+        # 迅雷播放器桌面快捷方式路径
+        xmp_path = r"C:\Program Files (x86)\Thunder Network\Xmp\program\xmp.exe"
         
-        player_path = None
-        for p in xunlei_paths:
-            if os.path.exists(p):
-                player_path = p
-                break
-        
-        if player_path:
-            subprocess.Popen([player_path, path])
-            return {"success": True, "message": f"正在用迅雷播放器打开"}
+        if os.path.exists(xmp_path):
+            # 使用迅雷播放器桌面图标方式启动
+            subprocess.Popen([xmp_path, "-StartType:DesktopIcon", path])
+            return {"success": True, "message": "正在用迅雷播放器打开"}
         else:
             # 回退：用系统默认程序打开
             os.startfile(path)
-            return {"success": True, "message": "迅雷未安装，已用默认程序打开"}
+            return {"success": True, "message": "迅雷播放器未安装，已用默认程序打开"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"播放失败: {str(e)}")
-            if folder == existing_folder or folder.startswith(existing_folder + os.sep):
-                is_allowed = True
-                break
-
-    conn.close()
-
-    if not is_allowed:
-        raise HTTPException(status_code=403, detail="不允许访问此路径")
-
-    if not os.path.exists(path):
-        raise HTTPException(status_code=404, detail="路径不存在")
-
-    try:
-        # Windows: 用 explorer 打开文件夹，如果路径是文件则打开其所在文件夹并选中
-        if os.path.isfile(path):
-            subprocess.Popen(f'explorer /select,"{os.path.normpath(path)}"')
-        else:
-            subprocess.Popen(f'explorer "{os.path.normpath(path)}"')
-        return {"success": True, "message": f"已打开: {path}"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"打开失败: {str(e)}")
 
 
 @app.get("/search")
@@ -1796,6 +1852,11 @@ async def fix_movie_scrape(movie_id: int):
 @app.get("/health")
 async def health_check():
     return {"status": "ok"}
+
+
+# 挂载前端静态文件（必须在所有路由定义之后）
+if cfg.FRONTEND_DIR.exists():
+    app.mount("/", StaticFiles(directory=str(cfg.FRONTEND_DIR), html=True), name="static")
 
 
 if __name__ == "__main__":

@@ -36,6 +36,52 @@
             border-radius: 12px;
             font-size: 12px;
         }
+        
+        /* 用户菜单 */
+        .user-menu {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 4px 12px;
+            background: rgba(22, 33, 62, 0.5);
+            border-radius: 8px;
+        }
+        
+        .user-name-link {
+            color: #4a9eff;
+            text-decoration: none;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: color 0.2s;
+        }
+        
+        .user-name-link:hover {
+            color: #6bb3ff;
+        }
+        
+        .user-role-badge {
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 10px;
+            font-weight: 500;
+        }
+        
+        .user-role-badge.role-admin {
+            background: rgba(220, 53, 69, 0.2);
+            color: #dc3545;
+        }
+        
+        .user-role-badge.role-premium {
+            background: rgba(255, 193, 7, 0.2);
+            color: #ffc107;
+        }
+        
+        .user-role-badge.role-guest {
+            background: rgba(108, 117, 125, 0.2);
+            color: #6c757d;
+        }
 
         /* 顶部快捷入口 */
         .quick-bar {
@@ -670,6 +716,19 @@
             <h1>🎬 MyMovieDB</h1>
             <div class="header-right">
                 <span class="badge">后端: {{ backendStatus }}</span>
+                <!-- 用户信息 -->
+                <div v-if="currentUser" class="user-menu">
+                    <a href="profile.html" class="user-name-link">
+                        👤 {{ currentUser.username }}
+                        <span class="user-role-badge" :class="'role-' + currentUser.role">
+                            {{ getRoleName(currentUser.role) }}
+                        </span>
+                    </a>
+                    <button class="btn btn-sm btn-secondary" @click="logout">登出</button>
+                </div>
+                <div v-else class="user-menu">
+                    <a href="login.html" class="btn btn-sm btn-primary">登录</a>
+                </div>
             </div>
         </header>
 
@@ -1005,7 +1064,7 @@
                         {{ selectedMovie.scrape_status === 'complete' ? '✅ 已完成' : '⚠️ 缺失部分内容' }}
                     </span>
                 </div>
-                <!-- 本地视频路径（显示文件夹） -->
+                <!-- 本地视频路径（显示文件夹 + 播放按钮） -->
                 <div v-if="selectedMovie.local_video_id" class="modal-row">
                     <span class="modal-label" style="color:#17a2b8;">本地视频</span>
                     <span class="modal-value" style="color:#17a2b8;font-size:12px;">
@@ -1014,6 +1073,11 @@
                            @click.prevent="openLocalVideo(selectedMovie.local_video_path)">
                             📁 {{ getFolderPath(selectedMovie.local_video_path) || '已关联' }}
                         </a>
+                        <button class="btn btn-sm btn-primary" 
+                                @click="playVideo(selectedMovie.local_video_path)"
+                                style="margin-left:10px;padding:3px 10px;font-size:11px;">
+                            ▶️ 播放
+                        </button>
                     </span>
                 </div>
                 <!-- 二次刮削按钮 -->
@@ -1073,6 +1137,53 @@ const calcVisiblePages = (current, total) => {
 createApp({
     setup() {
         const API = 'http://localhost:8000';
+        
+        // 用户管理
+        const currentUser = ref(null);
+        const token = ref(localStorage.getItem('token') || '');
+        
+        // 检查登录状态
+        const checkAuth = async () => {
+            if (!token.value) {
+                currentUser.value = null;
+                return;
+            }
+            
+            try {
+                const res = await fetch(`${API}/auth/me?token=${token.value}`);
+                if (res.ok) {
+                    currentUser.value = await res.json();
+                } else {
+                    localStorage.removeItem('token');
+                    token.value = '';
+                    currentUser.value = null;
+                }
+            } catch (e) {
+                console.error('获取用户信息失败:', e);
+                currentUser.value = null;
+            }
+        };
+        
+        // 登出
+        const logout = async () => {
+            try {
+                await fetch(`${API}/auth/logout?token=${token.value}`, { method: 'POST' });
+            } catch (e) {}
+            localStorage.removeItem('token');
+            token.value = '';
+            currentUser.value = null;
+            window.location.href = 'login.html';
+        };
+        
+        // 角色名称映射
+        const getRoleName = (role) => {
+            const names = {
+                admin: '管理员',
+                premium: '付费用户',
+                guest: '普通用户'
+            };
+            return names[role] || role;
+        };
 
         // 路径转换：本地封面路径 → API 可访问 URL
         const localToApi = (localPath) => {
@@ -1089,7 +1200,7 @@ createApp({
         const movies = ref([]);
         const total = ref(0);
         const currentPage = ref(1);
-        const pageSize = ref(20);
+        const pageSize = ref(24);
         const loading = ref(false);
         const searchKeyword = ref('');
         const scrapeKeyword = ref('');
@@ -1468,10 +1579,6 @@ createApp({
                     showToast('播放失败: ' + e.message, 'danger');
                 });
         };
-                        showToast('打开失败: ' + e.message, 'error');
-                    }
-                });
-        };
 
         // ========== 获取文件夹路径 ==========
         const getFolderPath = (path) => {
@@ -1795,6 +1902,9 @@ createApp({
 
         // ========== Init ==========
         onMounted(async () => {
+            // 检查登录状态
+            await checkAuth();
+            
             // 检查后端状态
             try {
                 const res = await fetch(`${API}/health`);
@@ -1818,7 +1928,7 @@ createApp({
         });
 
         return {
-            currentTab, backendStatus,
+            currentTab, backendStatus, currentUser, logout, getRoleName,
             // Movies
             movies, total, currentPage, pageSize, loading, searchKeyword, scrapeKeyword, scraping, selectedMovie,
             totalPages, visiblePages,

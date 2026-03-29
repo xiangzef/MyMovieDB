@@ -156,6 +156,7 @@
                 <input type="password" id="password" placeholder="请输入密码" required autocomplete="current-password">
             </div>
 
+            <!-- 暂时隐藏验证码
             <div class="form-group">
                 <label>验证码</label>
                 <div class="captcha-row">
@@ -163,6 +164,7 @@
                     <div class="captcha-img" id="captchaImg" title="点击刷新"></div>
                 </div>
             </div>
+            -->
 
             <button type="submit" class="btn-login" id="loginBtn">登录</button>
         </form>
@@ -175,8 +177,10 @@
 
     <script>
         const API = window.location.origin;
-        let captchaCode = '';
+        // let captchaCode = '';
 
+        // 暂时隐藏验证码生成
+        /*
         // 生成验证码
         function generateCaptcha() {
             const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -190,6 +194,7 @@
         // 初始化验证码
         generateCaptcha();
         document.getElementById('captchaImg').addEventListener('click', generateCaptcha);
+        */
 
         // 登录表单提交
         document.getElementById('loginForm').addEventListener('submit', async (e) => {
@@ -197,10 +202,12 @@
 
             const username = document.getElementById('username').value.trim();
             const password = document.getElementById('password').value;
-            const captcha = document.getElementById('captcha').value.toUpperCase();
+            // const captcha = document.getElementById('captcha').value.toUpperCase();
             const errorMsg = document.getElementById('errorMsg');
             const loginBtn = document.getElementById('loginBtn');
 
+            // 暂时隐藏验证码检查
+            /*
             // 验证码检查
             if (captcha !== captchaCode) {
                 errorMsg.textContent = '验证码错误';
@@ -208,6 +215,7 @@
                 generateCaptcha();
                 return;
             }
+            */
 
             // 禁用按钮
             loginBtn.disabled = true;

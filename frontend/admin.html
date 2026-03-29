@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>管理员后台 - MyMovieDB</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔐</text></svg>">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+        }
+        
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        
+        /* Header */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 0;
+            border-bottom: 1px solid #333;
+            margin-bottom: 30px;
+        }
+        
+        h1 { font-size: 24px; color: #e94560; }
+        
+        .header-actions {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 16px;
+            background: #16213e;
+            border-radius: 8px;
+        }
+        
+        .user-name {
+            color: #4a9eff;
+            text-decoration: none;
+            font-weight: 500;
+        }
+        
+        .user-name:hover { text-decoration: underline; }
+        
+        /* Buttons */
+        .btn {
+            padding: 8px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-decoration: none;
+            display: inline-block;
+        }
+        
+        .btn-primary { background: #e94560; color: #fff; }
+        .btn-primary:hover { background: #ff6b6b; }
+        .btn-secondary { background: #16213e; color: #ccc; border: 1px solid #333; }
+        .btn-secondary:hover { border-color: #e94560; color: #e94560; }
+        .btn-danger { background: #dc3545; color: #fff; }
+        .btn-danger:hover { background: #c82333; }
+        .btn-warning { background: #ffc107; color: #212529; }
+        .btn-warning:hover { background: #e0a800; }
+        .btn-success { background: #28a745; color: #fff; }
+        .btn-success:hover { background: #218838; }
+        .btn-sm { padding: 5px 14px; font-size: 12px; }
+        
+        /* Stats */
+        .stats-row {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+        
+        .stat-card {
+            background: #16213e;
+            padding: 20px 30px;
+            border-radius: 10px;
+            text-align: center;
+            min-width: 150px;
+        }
+        
+        .stat-card .num {
+            font-size: 32px;
+            font-weight: bold;
+            color: #e94560;
+        }
+        
+        .stat-card .label {
+            font-size: 13px;
+            color: #888;
+            margin-top: 6px;
+        }
+        
+        .stat-card.green .num { color: #28a745; }
+        .stat-card.blue .num { color: #4a9eff; }
+        .stat-card.orange .num { color: #fd7e14; }
+        
+        /* User Table */
+        .user-table-wrap {
+            background: #16213e;
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        th, td {
+            padding: 14px 18px;
+            text-align: left;
+            border-bottom: 1px solid #2a2a3e;
+        }
+        
+        th {
+            background: #1a1a2e;
+            color: #888;
+            font-weight: 600;
+            font-size: 13px;
+            text-transform: uppercase;
+        }
+        
+        td { font-size: 14px; }
+        
+        tr:hover { background: rgba(233, 69, 96, 0.05); }
+        
+        .role-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        
+        .role-admin { background: rgba(220, 53, 69, 0.2); color: #dc3545; }
+        .role-premium { background: rgba(255, 193, 7, 0.2); color: #ffc107; }
+        .role-guest { background: rgba(108, 117, 125, 0.2); color: #6c757d; }
+        
+        .status-active { color: #28a745; }
+        .status-inactive { color: #dc3545; }
+        
+        .action-btns { display: flex; gap: 6px; }
+        
+        /* Modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.7);
+            z-index: 200;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .modal-overlay.show { display: flex; }
+        
+        .modal {
+            background: #16213e;
+            border-radius: 12px;
+            width: 400px;
+            max-width: 95vw;
+            padding: 30px;
+        }
+        
+        .modal h3 {
+            font-size: 18px;
+            margin-bottom: 20px;
+            color: #e94560;
+        }
+        
+        .form-group {
+            margin-bottom: 15px;
+        }
+        
+        .form-group label {
+            display: block;
+            font-size: 13px;
+            color: #888;
+            margin-bottom: 6px;
+        }
+        
+        .form-group select, .form-group input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #333;
+            border-radius: 6px;
+            background: #1a1a2e;
+            color: #fff;
+            font-size: 14px;
+        }
+        
+        .modal-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+        
+        /* Toast */
+        .toast-container {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        .toast {
+            background: #16213e;
+            border-left: 4px solid #e94560;
+            padding: 12px 18px;
+            border-radius: 8px;
+            font-size: 14px;
+            color: #ccc;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.4);
+            animation: slideIn 0.3s ease;
+        }
+        
+        .toast.success { border-left-color: #28a745; }
+        .toast.error { border-left-color: #dc3545; }
+        
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        
+        .loading { text-align: center; padding: 60px; color: #e94560; }
+    </style>
+</head>
+<body>
+<div id="app">
+    <div class="container">
+        <!-- Header -->
+        <header>
+            <h1>🔐 管理员后台</h1>
+            <div class="header-actions">
+                <a href="index.html" class="btn btn-secondary">← 返回主页</a>
+                <div class="user-info">
+                    <span>{{ currentUser.username }}</span>
+                    <span class="role-badge" :class="'role-' + currentUser.role">{{ getRoleName(currentUser.role) }}</span>
+                </div>
+            </div>
+        </header>
+        
+        <!-- Stats -->
+        <div class="stats-row">
+            <div class="stat-card blue">
+                <div class="num">{{ stats.total }}</div>
+                <div class="label">总用户数</div>
+            </div>
+            <div class="stat-card green">
+                <div class="num">{{ stats.active }}</div>
+                <div class="label">活跃用户</div>
+            </div>
+            <div class="stat-card orange">
+                <div class="num">{{ stats.admin }}</div>
+                <div class="label">管理员</div>
+            </div>
+            <div class="stat-card">
+                <div class="num">{{ stats.premium }}</div>
+                <div class="label">付费用户</div>
+            </div>
+        </div>
+        
+        <!-- User Table -->
+        <div v-if="loading" class="loading">加载中...</div>
+        <div v-else class="user-table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>用户名</th>
+                        <th>邮箱</th>
+                        <th>角色</th>
+                        <th>状态</th>
+                        <th>注册时间</th>
+                        <th>最后登录</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr v-for="u in users" :key="u.id">
+                        <td>{{ u.id }}</td>
+                        <td><strong>{{ u.username }}</strong></td>
+                        <td>{{ u.email || '-' }}</td>
+                        <td>
+                            <span class="role-badge" :class="'role-' + u.role">
+                                {{ getRoleName(u.role) }}
+                            </span>
+                        </td>
+                        <td>
+                            <span :class="u.is_active ? 'status-active' : 'status-inactive'">
+                                {{ u.is_active ? '✅ 正常' : '❌ 禁用' }}
+                            </span>
+                        </td>
+                        <td>{{ formatTime(u.created_at) }}</td>
+                        <td>{{ formatTime(u.last_login) }}</td>
+                        <td>
+                            <div class="action-btns">
+                                <button class="btn btn-sm btn-warning" @click="editUser(u)">编辑</button>
+                                <button 
+                                    class="btn btn-sm btn-danger" 
+                                    @click="deleteUser(u.id)"
+                                    :disabled="u.id === currentUser.id">
+                                    删除
+                                </button>
+                            </div>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    
+    <!-- Edit Modal -->
+    <div class="modal-overlay" :class="{show: showEditModal}" @click.self="closeEditModal">
+        <div class="modal">
+            <h3>编辑用户</h3>
+            <div class="form-group">
+                <label>用户名</label>
+                <input type="text" :value="editingUser.username" disabled>
+            </div>
+            <div class="form-group">
+                <label>角色</label>
+                <select v-model="editingUser.role">
+                    <option value="admin">管理员 (admin)</option>
+                    <option value="premium">付费用户 (premium)</option>
+                    <option value="guest">普通用户 (guest)</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>状态</label>
+                <select v-model="editingUser.is_active">
+                    <option :value="1">正常</option>
+                    <option :value="0">禁用</option>
+                </select>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" @click="closeEditModal">取消</button>
+                <button class="btn btn-primary" @click="saveUser">保存</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Toast -->
+    <div class="toast-container">
+        <div v-for="t in toasts" :key="t.id" class="toast" :class="t.type">{{ t.msg }}</div>
+    </div>
+</div>
+
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script>
+const { createApp, ref, computed, onMounted } = Vue;
+
+createApp({
+    setup() {
+        const API = 'http://localhost:8000';
+        const token = ref(localStorage.getItem('token') || '');
+        
+        const users = ref([]);
+        const loading = ref(false);
+        const currentUser = ref({});
+        const showEditModal = ref(false);
+        const editingUser = ref({});
+        
+        const stats = computed(() => {
+            const total = users.value.length;
+            const active = users.value.filter(u => u.is_active).length;
+            const admin = users.value.filter(u => u.role === 'admin').length;
+            const premium = users.value.filter(u => u.role === 'premium').length;
+            return { total, active, admin, premium };
+        });
+        
+        // Toast
+        const toasts = ref([]);
+        let toastId = 0;
+        const showToast = (msg, type = '') => {
+            const id = ++toastId;
+            toasts.value.push({ id, msg, type });
+            setTimeout(() => { toasts.value = toasts.value.filter(t => t.id !== id); }, 3500);
+        };
+        
+        // 检查登录状态
+        const checkAuth = async () => {
+            if (!token.value) {
+                window.location.href = 'login.html';
+                return false;
+            }
+            
+            try {
+                const res = await fetch(`${API}/auth/me?token=${token.value}`);
+                if (!res.ok) {
+                    localStorage.removeItem('token');
+                    window.location.href = 'login.html';
+                    return false;
+                }
+                
+                const user = await res.json();
+                if (user.role !== 'admin') {
+                    showToast('权限不足', 'error');
+                    setTimeout(() => { window.location.href = 'index.html'; }, 1500);
+                    return false;
+                }
+                
+                currentUser.value = user;
+                return true;
+            } catch (e) {
+                console.error(e);
+                localStorage.removeItem('token');
+                window.location.href = 'login.html';
+                return false;
+            }
+        };
+        
+        // 加载用户列表
+        const loadUsers = async () => {
+            loading.value = true;
+            try {
+                const res = await fetch(`${API}/admin/users?token=${token.value}`);
+                if (!res.ok) {
+                    const data = await res.json();
+                    throw new Error(data.detail || '加载失败');
+                }
+                const data = await res.json();
+                users.value = data.users;
+            } catch (e) {
+                showToast('加载失败: ' + e.message, 'error');
+            }
+            loading.value = false;
+        };
+        
+        // 角色名称映射
+        const getRoleName = (role) => {
+            const names = {
+                admin: '管理员',
+                premium: '付费用户',
+                guest: '普通用户'
+            };
+            return names[role] || role;
+        };
+        
+        // 格式化时间
+        const formatTime = (time) => {
+            if (!time) return '-';
+            const date = new Date(time);
+            return date.toLocaleString('zh-CN', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        };
+        
+        // 编辑用户
+        const editUser = (user) => {
+            editingUser.value = { ...user };
+            showEditModal.value = true;
+        };
+        
+        const closeEditModal = () => {
+            showEditModal.value = false;
+            editingUser.value = {};
+        };
+        
+        // 保存用户
+        const saveUser = async () => {
+            try {
+                const res = await fetch(`${API}/admin/users/${editingUser.value.id}?token=${token.value}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        role: editingUser.value.role,
+                        is_active: editingUser.value.is_active
+                    })
+                });
+                
+                if (!res.ok) {
+                    const data = await res.json();
+                    throw new Error(data.detail || '保存失败');
+                }
+                
+                showToast('保存成功', 'success');
+                closeEditModal();
+                loadUsers();
+            } catch (e) {
+                showToast('保存失败: ' + e.message, 'error');
+            }
+        };
+        
+        // 删除用户
+        const deleteUser = async (userId) => {
+            if (!confirm('确定删除此用户？')) return;
+            
+            try {
+                const res = await fetch(`${API}/admin/users/${userId}?token=${token.value}`, {
+                    method: 'DELETE'
+                });
+                
+                if (!res.ok) {
+                    const data = await res.json();
+                    throw new Error(data.detail || '删除失败');
+                }
+                
+                showToast('删除成功', 'success');
+                loadUsers();
+            } catch (e) {
+                showToast('删除失败: ' + e.message, 'error');
+            }
+        };
+        
+        onMounted(async () => {
+            const authOk = await checkAuth();
+            if (authOk) {
+                loadUsers();
+            }
+        });
+        
+        return {
+            users, loading, currentUser, stats,
+            showEditModal, editingUser,
+            toasts, showToast,
+            loadUsers, getRoleName, formatTime,
+            editUser, closeEditModal, saveUser, deleteUser
+        };
+    }
+}).mount('#app');
+</script>
+</body>
+</html>
