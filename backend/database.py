@@ -683,7 +683,9 @@ def get_local_videos(
 
     offset = (page - 1) * page_size
     cursor.execute(f"""
-        SELECT v.*, m.title, m.cover_url, m.local_cover_path, m.release_date, m.actors
+        SELECT v.*, 
+               m.title, m.cover_url, m.local_cover_path, m.release_date, m.actors, 
+               m.maker, m.scrape_status
         FROM local_videos v
         LEFT JOIN movies m ON v.movie_id = m.id
         WHERE {where_sql}
@@ -700,6 +702,14 @@ def get_local_videos(
         # actors 可能是 JSON 字符串
         if item.get("actors") and isinstance(item["actors"], str):
             item["actors"] = json.loads(item["actors"])
+        # 封面路径转换：本地路径 → API 路径
+        if item.get("local_cover_path"):
+            item["cover_url_display"] = item["local_cover_path"]
+        elif item.get("cover_url"):
+            # 外部 URL 直接用
+            item["cover_url_display"] = item["cover_url"]
+        else:
+            item["cover_url_display"] = None
         result.append(item)
 
     return total, result
