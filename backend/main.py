@@ -1651,6 +1651,15 @@ async def check_scrape_results():
         movie_id = m.get("id")
         code = m.get("code", "")
 
+        # 判断是否是 Jellyfin 来源
+        source_type = m.get("source_type") or m.get("source")
+        is_jellyfin = source_type == "jellyfin"
+
+        # Jellyfin 视频不参与修复检查（它们有自己的元数据系统）
+        if is_jellyfin:
+            result.complete += 1
+            continue
+
         # 检查必填字段
         if not m.get("title"):
             issues.append("缺少标题")
@@ -1692,18 +1701,13 @@ async def check_scrape_results():
             except:
                 pass
 
-        # 检查 NFO 文件（Jellyfin 视频跳过此检查）
-        source_type = m.get("source_type") or m.get("source")
-        if source_type == "jellyfin":
-            # Jellyfin 视频有自己的元数据系统，不需要 NFO 文件
+        # 检查 NFO 文件
+        safe_code = re.sub(r'[<>:"/\\|?*]', '_', code)
+        nfo_path = covers_dir / safe_code / f"{safe_code}.nfo"
+        if nfo_path.exists():
             has_nfo = True
         else:
-            safe_code = re.sub(r'[<>:"/\\|?*]', '_', code)
-            nfo_path = covers_dir / safe_code / f"{safe_code}.nfo"
-            if nfo_path.exists():
-                has_nfo = True
-            else:
-                issues.append("缺少 NFO 文件")
+            issues.append("缺少 NFO 文件")
 
         # 计算状态
         scrape_status = m.get("scrape_status", "empty")
@@ -1778,16 +1782,22 @@ async def fix_scrape_results(request: FixScrapeRequest = None):
         movies = [db.get_movie_by_id(mid) for mid in request.movie_ids if db.get_movie_by_id(mid)]
     else:
         # 检查所有影片，筛选有问题的
-        check_result = await check_scrape_results()
-        movie_ids = [item.movie_id for item in check_result.issues]
-        movies = [db.get_movie_by_id(mid) for mid in movie_ids if db.get_movie_by_id(mid)]
+        try:
+            check_result = await check_scrape_results()
+            movie_ids = [item.movie_id for item in check_result.issues]
+            movies = [db.get_movie_by_id(mid) for mid in movie_ids if db.get_movie_by_id(mid)]
+            logger.info(f"[fix_scrape] check_result.issues count: {len(check_result.issues)}, movies count: {len(movies)}")
+        except Exception as e:
+            logger.error(f"检查刮削结果失败: {e}", exc_info=True)
+            movies = []
 
     total = len(movies)
+    logger.info(f"[fix_scrape] total movies to fix: {total}")
 
     def generate():
         fixed_count = 0
         failed_count = 0
-        
+
         # 发送开始事件（包含 job_id，让前端可以停止）
         yield _send_sse({
             "type": "start",
@@ -1804,7 +1814,10 @@ async def fix_scrape_results(request: FixScrapeRequest = None):
                     "job_id": job_id,
                     "message": "用户已停止修复"
                 })
-                break
+                # 清理停止标志
+                with _scrape_lock:
+                    _scrape_stop_flags.pop(job_id, None)
+                return  # 使用 return 而不是 break，直接结束生成器
             
             movie_id = m.get("id")
             code = m.get("code", "")
@@ -1980,6 +1993,25 @@ async def check_movie_scrape(movie_id: int):
 
     issues = []
     code = m.get("code", "")
+
+    # 判断是否是 Jellyfin 来源
+    source_type = m.get("source_type") or m.get("source")
+    is_jellyfin = source_type == "jellyfin"
+
+    # Jellyfin 视频直接返回完整状态
+    if is_jellyfin:
+        return {
+            "movie_id": movie_id,
+            "code": code,
+            "title": m.get("title"),
+            "scrape_status": m.get("scrape_status"),
+            "issues": [],
+            "has_poster": bool(m.get("poster_path")),
+            "has_fanart": bool(m.get("fanart_path")),
+            "has_thumb": bool(m.get("thumb_path")),
+            "has_nfo": True,
+            "is_complete": True
+        }
 
     # 检查必填字段
     if not m.get("title"):
