@@ -1077,8 +1077,8 @@ async def add_local_source(req: LocalSourceCreate):
 
 @app.get("/local-sources", tags=["本地视频"])
 async def list_local_sources():
-    """获取所有本地视频源"""
-    sources = db.get_local_sources()
+    """获取所有本地视频源（包含 Jellyfin 标记）"""
+    sources = db.get_local_sources_with_jellyfin()
     stats = db.get_local_video_stats()
     return {"sources": sources, "stats": stats}
 
@@ -1106,107 +1106,185 @@ def _find_image_path(directory: str, code: str, image_type: str) -> Optional[str
 @app.post("/local-sources/scan", tags=["本地视频"])
 async def scan_local_sources():
     """
-    扫描所有已添加的目录，查找视频文件
+    扫描所有已添加的目录，查找视频文件（SSE 实时进度）
     
     功能:
         - 遍历每个已添加的视频源目录（递归所有子文件夹）
         - 识别有效 AV 番号的视频文件
         - 排除非 AV 文件（如普通电影、综艺节目等）
         - 排除网站前缀干扰（如 390JNT-114 -> JNT-114）
-    
-    依赖:
-        - os.walk(): 递归遍历目录树
-        - os.path.splitext(): 分离文件名和扩展名
-        - _extract_code_from_filename(): 从文件名提取有效番号
+        - 实时推送扫描进度（目录数、文件数、当前文件名）
     
     返回:
-        dict: 扫描结果统计
+        SSE 流: 实时扫描进度
     """
     import os
-    import threading
     import time
-
-    # 视频扩展名
-    VIDEO_EXTENSIONS = {
-        '.mp4', '.mkv', '.avi', '.wmv', '.mov',
-        '.flv', '.webm', '.m4v', '.mpg', '.mpeg',
-        '.ts', '.mts', '.m2ts', '.vob', '.ogv'
+    
+    def _send_sse(data: dict):
+        return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+    
+    def generate():
+        VIDEO_EXTENSIONS = {
+            '.mp4', '.mkv', '.avi', '.wmv', '.mov',
+            '.flv', '.webm', '.m4v', '.mpg', '.mpeg',
+            '.ts', '.mts', '.m2ts', '.vob', '.ogv'
+        }
+        
+        sources = db.get_local_sources()
+        if not sources:
+            yield _send_sse({"type": "error", "message": "请先添加视频目录"})
+            return
+        
+        # 扫描前清理无效记录
+        db.cleanup_invalid_codes()
+        
+        total_sources = len(sources)
+        total_found = 0
+        scan_results = []
+        
+        # 阶段1: 开始扫描
+        yield _send_sse({
+            "type": "start",
+            "total_sources": total_sources,
+            "message": f"开始扫描 {total_sources} 个目录..."
+        })
+        
+        for s_idx, source in enumerate(sources, 1):
+            source_id = source["id"]
+            base_path = source["path"]
+            found_count = 0
+            
+            # 阶段2: 扫描目录
+            yield _send_sse({
+                "type": "source_start",
+                "source_index": s_idx,
+                "total_sources": total_sources,
+                "path": base_path,
+                "message": f"[{s_idx}/{total_sources}] 扫描: {base_path}"
+            })
+            
+            if not os.path.isdir(base_path):
+                scan_results.append({"source_id": source_id, "path": base_path, "status": "目录不存在", "count": 0})
+                yield _send_sse({
+                    "type": "source_done",
+                    "source_index": s_idx,
+                    "total_sources": total_sources,
+                    "found": 0,
+                    "status": "目录不存在"
+                })
+                continue
+            
+            # 先统计文件总数（用于进度百分比）
+            file_count = 0
+            try:
+                for root, dirs, files in os.walk(base_path):
+                    file_count += len([f for f in files if os.path.splitext(f)[1].lower() in VIDEO_EXTENSIONS])
+            except PermissionError:
+                scan_results.append({"source_id": source_id, "path": base_path, "status": "权限不足", "count": 0})
+                yield _send_sse({
+                    "type": "source_done",
+                    "source_index": s_idx,
+                    "total_sources": total_sources,
+                    "found": 0,
+                    "status": "权限不足"
+                })
+                continue
+            
+            # 阶段3: 扫描文件
+            processed_files = 0
+            try:
+                for root, dirs, files in os.walk(base_path):
+                    for filename in files:
+                        ext = os.path.splitext(filename)[1].lower()
+                        
+                        if ext not in VIDEO_EXTENSIONS:
+                            continue
+                        
+                        processed_files += 1
+                        
+                        # 提取番号
+                        name_without_ext = os.path.splitext(filename)[0]
+                        code = _extract_code_from_filename(name_without_ext)
+                        
+                        # 每 10 个文件推送一次进度
+                        if processed_files % 10 == 0 or processed_files == file_count:
+                            yield _send_sse({
+                                "type": "progress",
+                                "source_index": s_idx,
+                                "total_sources": total_sources,
+                                "processed": processed_files,
+                                "total_files": file_count,
+                                "pct": int((processed_files / file_count) * 100) if file_count > 0 else 0,
+                                "found": found_count,
+                                "current_file": filename,
+                                "message": f"[{s_idx}/{total_sources}] {processed_files}/{file_count} 文件 ({int((processed_files/file_count)*100)}%) - 已找到 {found_count} 个"
+                            })
+                        
+                        if not code:
+                            continue
+                        
+                        file_path = os.path.join(root, filename)
+                        
+                        try:
+                            file_size = os.path.getsize(file_path)
+                        except OSError:
+                            file_size = 0
+                        
+                        video_data = {
+                            "source_id": source_id,
+                            "name": filename,
+                            "path": file_path,
+                            "code": code,
+                            "extension": ext,
+                            "file_size": file_size,
+                            "fanart_path": _find_image_path(root, code, "fanart"),
+                            "poster_path": _find_image_path(root, code, "poster"),
+                            "thumb_path": _find_image_path(root, code, "thumb"),
+                        }
+                        
+                        vid_id, is_new = db.upsert_local_video(video_data)
+                        found_count += 1
+                        total_found += 1
+                        
+            except PermissionError:
+                scan_results.append({"source_id": source_id, "path": base_path, "status": "权限不足", "count": found_count})
+                yield _send_sse({
+                    "type": "source_done",
+                    "source_index": s_idx,
+                    "total_sources": total_sources,
+                    "found": found_count,
+                    "status": "权限不足"
+                })
+                continue
+            
+            # 更新源的视频数量
+            db.update_local_source_scan(source_id, found_count)
+            scan_results.append({"source_id": source_id, "path": base_path, "status": "完成", "count": found_count})
+            
+            yield _send_sse({
+                "type": "source_done",
+                "source_index": s_idx,
+                "total_sources": total_sources,
+                "found": found_count,
+                "status": "完成",
+                "message": f"[{s_idx}/{total_sources}] 完成 - 找到 {found_count} 个视频"
+            })
+        
+        # 阶段4: 全部完成
+        yield _send_sse({
+            "type": "done",
+            "total_found": total_found,
+            "results": scan_results,
+            "stats": db.get_local_video_stats()
+        })
+    
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no"
     }
-
-    sources = db.get_local_sources()
-    if not sources:
-        return {"success": False, "message": "请先添加视频目录"}
-
-    total_found = 0
-    scan_results = []
-
-    # 扫描前清理所有无效番号记录（NULL代码 + 不符合识别规则的代码）
-    db.cleanup_invalid_codes()
-
-    for source in sources:
-        source_id = source["id"]
-        base_path = source["path"]
-        found_count = 0
-
-        if not os.path.isdir(base_path):
-            scan_results.append({"source_id": source_id, "path": base_path, "status": "目录不存在", "count": 0})
-            continue
-
-        # 遍历目录（递归扫描所有子文件夹）
-        try:
-            for root, dirs, files in os.walk(base_path):
-                for filename in files:
-                    ext = os.path.splitext(filename)[1].lower()
-
-                    if ext not in VIDEO_EXTENSIONS:
-                        continue
-
-                    # 提取编号（使用增强的番号识别函数）
-                    name_without_ext = os.path.splitext(filename)[0]
-                    code = _extract_code_from_filename(name_without_ext)
-
-                    # 只保存有番号的视频
-                    if not code:
-                        continue
-
-                    file_path = os.path.join(root, filename)
-
-                    try:
-                        file_size = os.path.getsize(file_path)
-                    except OSError:
-                        file_size = 0
-
-                    video_data = {
-                        "source_id": source_id,
-                        "name": filename,
-                        "path": file_path,
-                        "code": code,
-                        "extension": ext,
-                        "file_size": file_size,
-                        # 提取同目录下的 fanart / poster / thumb 图片
-                        "fanart_path": _find_image_path(root, code, "fanart"),
-                        "poster_path": _find_image_path(root, code, "poster"),
-                        "thumb_path": _find_image_path(root, code, "thumb"),
-                    }
-
-                    vid_id, is_new = db.upsert_local_video(video_data)
-                    found_count += 1
-                    total_found += 1
-
-        except PermissionError:
-            scan_results.append({"source_id": source_id, "path": base_path, "status": "权限不足", "count": found_count})
-            continue
-
-        # 更新源的视频数量
-        db.update_local_source_scan(source_id, found_count)
-        scan_results.append({"source_id": source_id, "path": base_path, "status": "完成", "count": found_count})
-
-    return {
-        "success": True,
-        "total_found": total_found,
-        "results": scan_results,
-        "stats": db.get_local_video_stats()
-    }
+    return StreamingResponse(generate(), media_type="text/event-stream", headers=headers)
 
 
 @app.post("/local-sources/scrape", tags=["本地视频"])
@@ -1238,6 +1316,7 @@ async def scrape_local_videos():
         success_count = 0
         fail_count = 0
         skip_count = 0
+        last_pct = -1  # 上次推送的百分比，用于减少重复推送
 
         for i, video in enumerate(unscraped):
             # 检查停止标志
@@ -1254,71 +1333,75 @@ async def scrape_local_videos():
 
             code = video.get("code")
             video_id = video["id"]
+            current_pct = int(((i + 1) / total) * 100)
 
             if not code:
                 skip_count += 1
-                yield _send_sse({
-                    "type": "skip",
-                    "job_id": job_id,
-                    "code": None,
-                    "message": "无编号，跳过",
-                    "index": i + 1,
-                    "total": total,
-                    "pct": int(((i + 1) / total) * 100)
-                })
+                # 只在百分比变化时推送
+                if current_pct != last_pct:
+                    yield _send_sse({
+                        "type": "progress",
+                        "job_id": job_id,
+                        "index": i + 1,
+                        "total": total,
+                        "pct": current_pct,
+                        "stats": {"success": success_count, "fail": fail_count, "skip": skip_count}
+                    })
+                    last_pct = current_pct
                 continue
 
             # 检查是否已有完整刮削记录
             existing = db.get_movie_by_code(code)
-            
+
             # 跳过 Jellyfin 来源的影片
-            if existing and existing.get("source") == "jellyfin":
+            if existing and existing.get("source_type") == "jellyfin":
                 skip_count += 1
-                yield _send_sse({
-                    "type": "skipped",
-                    "job_id": job_id,
-                    "code": code,
-                    "title": existing.get("title", ""),
-                    "message": "📁 Jellyfin 导入，跳过刮削",
-                    "index": i + 1,
-                    "total": total,
-                    "pct": int(((i + 1) / total) * 100)
-                })
+                if current_pct != last_pct:
+                    yield _send_sse({
+                        "type": "progress",
+                        "job_id": job_id,
+                        "index": i + 1,
+                        "total": total,
+                        "pct": current_pct,
+                        "stats": {"success": success_count, "fail": fail_count, "skip": skip_count}
+                    })
+                    last_pct = current_pct
                 continue
-            
+
             if existing and existing.get("scrape_status") == "complete":
                 # 已完整刮削，跳过
                 if video_id and not existing.get("local_video_id"):
                     db.mark_video_scraped(video_id, existing["id"])
                     db.link_movie_to_local_video(existing["id"], video_id)
                 skip_count += 1
-                yield _send_sse({
-                    "type": "skipped",
-                    "job_id": job_id,
-                    "code": code,
-                    "title": existing.get("title", ""),
-                    "message": "已有完整刮削记录，跳过",
-                    "index": i + 1,
-                    "total": total,
-                    "pct": int(((i + 1) / total) * 100)
-                })
+                if current_pct != last_pct:
+                    yield _send_sse({
+                        "type": "progress",
+                        "job_id": job_id,
+                        "index": i + 1,
+                        "total": total,
+                        "pct": current_pct,
+                        "stats": {"success": success_count, "fail": fail_count, "skip": skip_count}
+                    })
+                    last_pct = current_pct
                 continue
 
-            # 发送当前处理信息
+            # 发送当前处理信息（重要事件，总是推送）
             yield _send_sse({
                 "type": "scraping",
                 "job_id": job_id,
                 "code": code,
-                "title": f"正在刮削 {code} ({i+1}/{total})...",
+                "title": f"正在刮削 {code}",
                 "index": i + 1,
                 "total": total,
-                "pct": int((i / total) * 100)
+                "pct": current_pct
             })
 
             try:
                 movie_data = scrape_movie(code, save_cover=True)
                 if not movie_data:
                     fail_count += 1
+                    # 失败事件总是推送
                     yield _send_sse({
                         "type": "fail",
                         "job_id": job_id,
@@ -1326,8 +1409,10 @@ async def scrape_local_videos():
                         "message": "未找到",
                         "index": i + 1,
                         "total": total,
-                        "pct": int(((i + 1) / total) * 100)
+                        "pct": current_pct,
+                        "stats": {"success": success_count, "fail": fail_count, "skip": skip_count}
                     })
+                    last_pct = current_pct
                     continue
 
                 # 统一后处理：下载封面 + 生成 NFO
@@ -1343,6 +1428,7 @@ async def scrape_local_videos():
                 db.link_movie_to_local_video(movie_id, video_id)
                 success_count += 1
 
+                # 成功事件总是推送
                 yield _send_sse({
                     "type": "success",
                     "job_id": job_id,
@@ -1350,10 +1436,13 @@ async def scrape_local_videos():
                     "title": movie_data.get("title", ""),
                     "index": i + 1,
                     "total": total,
-                    "pct": int(((i + 1) / total) * 100)
+                    "pct": current_pct,
+                    "stats": {"success": success_count, "fail": fail_count, "skip": skip_count}
                 })
+                last_pct = current_pct
 
                 # 避免请求过快
+                time.sleep(0.8)
                 time.sleep(0.5)
 
             except Exception as e:
@@ -1603,13 +1692,18 @@ async def check_scrape_results():
             except:
                 pass
 
-        # 检查 NFO 文件
-        safe_code = re.sub(r'[<>:"/\\|?*]', '_', code)
-        nfo_path = covers_dir / safe_code / f"{safe_code}.nfo"
-        if nfo_path.exists():
+        # 检查 NFO 文件（Jellyfin 视频跳过此检查）
+        source_type = m.get("source_type") or m.get("source")
+        if source_type == "jellyfin":
+            # Jellyfin 视频有自己的元数据系统，不需要 NFO 文件
             has_nfo = True
         else:
-            issues.append("缺少 NFO 文件")
+            safe_code = re.sub(r'[<>:"/\\|?*]', '_', code)
+            nfo_path = covers_dir / safe_code / f"{safe_code}.nfo"
+            if nfo_path.exists():
+                has_nfo = True
+            else:
+                issues.append("缺少 NFO 文件")
 
         # 计算状态
         scrape_status = m.get("scrape_status", "empty")
@@ -2063,14 +2157,6 @@ async def jellyfin_scan(request: Request):
         for i, item in enumerate(results):
             code = item['code']
             
-            # 检查是否需要停止
-            if stop_scraping:
-                yield _send_sse({
-                    "type": "stopped",
-                    "message": "用户取消"
-                })
-                break
-            
             # 发送进度
             yield _send_sse({
                 "type": "progress",
@@ -2082,14 +2168,22 @@ async def jellyfin_scan(request: Request):
             })
             
             # 导入数据库
-            movie_id = db.import_jellyfin_movie(
-                code=code,
-                metadata=item['metadata'],
-                video_path=item['video_path'],
-                poster_file=item.get('poster_file'),
-                fanart_file=item.get('fanart_file'),
-                thumb_file=item.get('thumb_file'),
-            )
+            print(f"[Jellyfin] 开始导入 {code}: video={item['video_path']}, poster={item.get('poster_file')}")
+            try:
+                movie_id = db.import_jellyfin_movie(
+                    code=code,
+                    metadata=item['metadata'],
+                    video_path=item['video_path'],
+                    poster_file=item.get('poster_file'),
+                    fanart_file=item.get('fanart_file'),
+                    thumb_file=item.get('thumb_file'),
+                )
+                print(f"[Jellyfin] 导入结果 {code}: movie_id={movie_id}")
+            except Exception as e:
+                print(f"[Jellyfin] 导入异常 {code}: {e}")
+                import traceback
+                traceback.print_exc()
+                movie_id = -1
             
             if movie_id > 0:
                 imported += 1
@@ -2114,8 +2208,8 @@ async def jellyfin_scan(request: Request):
                     "message": "导入失败"
                 })
         
-        # 标记目录为 Jellyfin 格式
-        db.mark_source_as_jellyfin(directory)
+        # 标记目录为 Jellyfin 格式，并更新视频数量
+        db.mark_source_as_jellyfin(directory, video_count=imported + skipped)
         
         # 完成
         yield _send_sse({
@@ -2141,16 +2235,81 @@ async def mark_directory_as_jellyfin(request: Request):
     return {"success": success}
 
 
+@app.get("/local-image", tags=["本地文件"])
+async def get_local_image(path: str = Query(..., description="本地图片路径")):
+    """
+    安全访问本地图片文件（仅限已注册目录下的图片）
+    
+    用于 Jellyfin 导入的影片，封面存储在原目录而非 data/covers/
+    """
+    from fastapi.responses import FileResponse
+    import os
+    
+    if not path:
+        raise HTTPException(status_code=400, detail="路径不能为空")
+    
+    # 安全检查：必须是绝对路径
+    if not os.path.isabs(path):
+        raise HTTPException(status_code=400, detail="必须是绝对路径")
+    
+    # 安全检查：路径规范化，防止 .. 跳转
+    path = os.path.normpath(path)
+    
+    # 安全检查：只允许图片文件
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
+        raise HTTPException(status_code=400, detail="只允许访问图片文件")
+    
+    # 安全检查：必须在已注册的目录下
+    sources = db.get_local_sources_with_jellyfin()
+    allowed_dirs = [s['path'] for s in sources]
+    
+    # 同时允许 data/covers 目录
+    allowed_dirs.append(str(cfg.COVERS_DIR))
+    allowed_dirs.append(str(cfg.DATA_DIR))
+    
+    # 规范化路径（统一使用系统分隔符）
+    norm_path = os.path.normpath(path)
+    
+    # 调试：打印路径比较
+    # print(f"[local-image] 请求路径: {norm_path}")
+    
+    in_allowed_dir = False
+    for allowed in allowed_dirs:
+        norm_allowed = os.path.normpath(allowed)
+        # 检查是否匹配（支持子目录）
+        if norm_path.startswith(norm_allowed + os.sep) or norm_path == norm_allowed:
+            in_allowed_dir = True
+            break
+    
+    if not in_allowed_dir:
+        # 尝试更宽松的匹配：忽略盘符大小写
+        for allowed in allowed_dirs:
+            if norm_path.lower().startswith(os.path.normpath(allowed).lower() + os.sep):
+                in_allowed_dir = True
+                print(f"[local-image] 宽松匹配成功: {allowed}")
+                break
+    
+    if not in_allowed_dir:
+        print(f"[local-image] 拒绝访问: {path} (不在允许目录列表中)")
+        print(f"[local-image] 允许的目录: {allowed_dirs}")
+        raise HTTPException(status_code=403, detail="只能访问已注册目录下的文件")
+    
+    # 检查文件是否存在
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="文件不存在")
+    
+    # 返回文件
+    return FileResponse(
+        path,
+        media_type=f"image/{ext[1:]}" if ext != '.jpg' else "image/jpeg",
+        filename=os.path.basename(path)
+    )
+
+
 # 挂载前端静态文件（必须在所有路由定义之后）
 if cfg.FRONTEND_DIR.exists():
     app.mount("/", StaticFiles(directory=str(cfg.FRONTEND_DIR), html=True), name="static")
-
-
-@app.get("/local-sources", tags=["本地目录"])
-async def get_local_sources_list():
-    """获取本地目录列表（包含 Jellyfin 标记）"""
-    sources = db.get_local_sources_with_jellyfin()
-    return {"sources": sources}
 
 
 @app.get("/local-sources/stats", tags=["本地目录"])

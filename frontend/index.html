@@ -782,7 +782,6 @@
                 <button class="btn btn-primary" @click="scrapeBatch" :disabled="scraping">
                     🔍 {{ scraping ? '刮削中...' : '批量刮削' }}
                 </button>
-                <button v-if="scraping" class="btn btn-danger" @click="stopScrape" title="停止刮削">⏹ 停止</button>
             </div>
 
             <div class="quick-bar">
@@ -848,7 +847,6 @@
                 <button class="btn btn-success" @click="scrapeAll" :disabled="scraping">
                     🌐 {{ scraping ? '刮削中...' : '批量刮削所有视频' }}
                 </button>
-                <button v-if="scraping" class="btn btn-danger" @click="stopScrape" title="停止刮削">⏹ 停止</button>
             </div>
 
             <!-- 统计 -->
@@ -903,6 +901,26 @@
                     扫描已按 Jellyfin 格式整理的影视目录（女星名称/番号/电影+NFO+图片）<br>
                     不会移动或修改任何文件，仅读取信息导入数据库
                 </p>
+                
+                <!-- 已扫描的 Jellyfin 目录列表 -->
+                <div v-if="jellyfinSources.length > 0" style="margin-top: 15px;">
+                    <h4 style="font-size: 14px; color: #aaa; margin-bottom: 10px;">已扫描的 Jellyfin 目录</h4>
+                    <div v-for="s in jellyfinSources" :key="s.id" class="source-item" style="background: #1a1a1a; margin-bottom: 8px;">
+                        <div class="source-icon">📁</div>
+                        <div class="source-info">
+                            <div class="source-path">{{ s.path }}</div>
+                            <div class="source-meta">
+                                {{ s.video_count || 0 }} 个影片
+                                <span v-if="s.last_scan_at"> · 最后扫描: {{ s.last_scan_at }}</span>
+                            </div>
+                        </div>
+                        <div class="source-actions">
+                            <button class="btn btn-sm btn-primary" @click="rescanJellyfin(s.path)" :disabled="scraping">
+                                🔄 重新扫描
+                            </button>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -975,7 +993,12 @@
                 </select>
                 <select v-model="videoFilter.source_id" @change="loadLocalVideos">
                     <option :value="null">全部目录</option>
-                    <option v-for="s in localSources" :key="s.id" :value="s.id">{{ s.path }}</option>
+                    <optgroup label="本地目录">
+                        <option v-for="s in regularSources" :key="s.id" :value="s.id">{{ s.path }}</option>
+                    </optgroup>
+                    <optgroup label="Jellyfin 目录" v-if="jellyfinSources.length > 0">
+                        <option v-for="s in jellyfinSources" :key="s.id" :value="s.id">🎬 {{ s.path }}</option>
+                    </optgroup>
                 </select>
                 <input v-model="videoFilter.keyword" placeholder="搜索文件名或编号..." @keyup.enter="loadLocalVideos">
                 <button class="btn btn-secondary btn-sm" @click="loadLocalVideos">筛选</button>
@@ -1126,21 +1149,44 @@
                 <div class="modal-row">
                     <span class="modal-label">数据来源</span>
                     <span class="modal-value">
-                        <span v-if="selectedMovie.source === 'jellyfin'" class="jellyfin-badge">📁 Jellyfin 导入</span>
-                        <span v-else style="color:#888;">🕷️ 爬虫刮削</span>
+                        <span v-if="selectedMovie.source_type === 'jellyfin'" class="jellyfin-badge">📁 Jellyfin 导入</span>
+                        <span v-else-if="selectedMovie.source_type === 'web'" style="color:#888;">🕷️ 网页刮削</span>
+                        <span v-else-if="selectedMovie.source_type === 'local'" style="color:#17a2b8;">💾 本地导入</span>
+                        <span v-else style="color:#666;">❓ 未知</span>
                     </span>
                 </div>
-                <!-- 本地视频路径（显示文件夹 + 播放按钮） -->
-                <div v-if="selectedMovie.local_video_id" class="modal-row">
+                <!-- 本地视频列表（支持多个） -->
+                <div v-if="selectedMovie.local_videos && selectedMovie.local_videos.length > 0" class="modal-row">
                     <span class="modal-label" style="color:#17a2b8;">本地视频</span>
                     <span class="modal-value" style="color:#17a2b8;font-size:12px;">
-                        <a :title="selectedMovie.local_video_path || ''"
+                        <div v-for="(lv, idx) in selectedMovie.local_videos" :key="lv.id" style="margin-bottom:6px;">
+                            <a :title="lv.path"
+                               style="color:#17a2b8;text-decoration:underline;cursor:pointer;"
+                               @click.prevent="openLocalVideo(lv.path)">
+                                📁 {{ getFolderPath(lv.path) }}
+                            </a>
+                            <button class="btn btn-sm btn-primary" 
+                                    @click="playVideo(lv.path)"
+                                    style="margin-left:10px;padding:2px 8px;font-size:10px;">
+                                ▶️ 播放
+                            </button>
+                            <span v-if="lv.size" style="margin-left:8px;color:#666;font-size:10px;">
+                                {{ (lv.size / 1024 / 1024 / 1024).toFixed(2) }} GB
+                            </span>
+                        </div>
+                    </span>
+                </div>
+                <!-- 单个本地视频（向后兼容） -->
+                <div v-else-if="selectedMovie.video_path || selectedMovie.local_video_path" class="modal-row">
+                    <span class="modal-label" style="color:#17a2b8;">本地视频</span>
+                    <span class="modal-value" style="color:#17a2b8;font-size:12px;">
+                        <a :title="selectedMovie.video_path || selectedMovie.local_video_path || ''"
                            style="color:#17a2b8;text-decoration:underline;cursor:pointer;"
-                           @click.prevent="openLocalVideo(selectedMovie.local_video_path)">
-                            📁 {{ getFolderPath(selectedMovie.local_video_path) || '已关联' }}
+                           @click.prevent="openLocalVideo(selectedMovie.video_path || selectedMovie.local_video_path)">
+                            📁 {{ getFolderPath(selectedMovie.video_path || selectedMovie.local_video_path) || '已关联' }}
                         </a>
                         <button class="btn btn-sm btn-primary" 
-                                @click="playVideo(selectedMovie.local_video_path)"
+                                @click="playVideo(selectedMovie.video_path || selectedMovie.local_video_path)"
                                 style="margin-left:10px;padding:3px 10px;font-size:11px;">
                             ▶️ 播放
                         </button>
@@ -1254,9 +1300,11 @@ createApp({
         // 路径转换：本地封面路径 → API 可访问 URL
         const localToApi = (localPath) => {
             if (!localPath) return null;
+            // 优先匹配 covers 目录
             const match = localPath.match(/[\/\\]covers[\/\\]([^\/\\]+[\/\\][^\/\\]+)$/);
             if (match) return `${API}/covers/${match[1].replace(/\\/g, '/')}`;
-            return null;
+            // 其他路径使用 /local-image API
+            return `${API}/local-image?path=${encodeURIComponent(localPath)}`;
         };
 
         const currentTab = ref('movies');
@@ -1276,6 +1324,9 @@ createApp({
         const detailMainSrc = ref('');
         const detailActiveThumb = ref(-1);
         const detailThumbs = ref([]);
+
+        // Jellyfin 扫描 AbortController（全局变量）
+        let jellyfinAbortController = null;
 
         // 刮削进度浮层
         const scrapePanel = ref({
@@ -1299,6 +1350,9 @@ createApp({
         const addingSource = ref(false);
         const scanning = ref(false);
         const scanResult = ref(null);
+        
+        // Jellyfin Sources
+        const jellyfinSources = ref([]);
 
         // Local Videos
         const localVideos = ref([]);
@@ -1438,6 +1492,15 @@ createApp({
             if (evt.title) scrapePanel.value.title = evt.title;
 
             switch (evt.type) {
+                case 'progress':
+                    // 只更新进度和统计，不添加日志
+                    scrapePanel.value.pct = evt.pct;
+                    if (evt.stats) {
+                        scrapePanel.value.stats.success = evt.stats.success || 0;
+                        scrapePanel.value.stats.fail = evt.stats.fail || 0;
+                        scrapePanel.value.stats.linked = evt.stats.skip || 0;
+                    }
+                    break;
                 case 'scraping':
                     scrapePanel.value.pct = evt.pct;
                     addScrapeLog('scraping', `→ 正在刮削 ${evt.code} (${evt.index}/${evt.total})`);
@@ -1506,16 +1569,25 @@ createApp({
 
         // 停止刮削
         const stopScrape = async () => {
-            if (!scrapePanel.value.jobId) return;  // 防止重复点击
+            console.log('[stopScrape] jobId:', scrapePanel.value.jobId);
+            console.log('[stopScrape] jellyfinAbortController:', jellyfinAbortController);
+            
+            if (!scrapePanel.value.jobId) {
+                console.log('[stopScrape] 没有 jobId，直接返回');
+                return;
+            }
 
             const jobId = scrapePanel.value.jobId;
-            scrapePanel.value.jobId = null;  // 立即清空，防止重复
+            scrapePanel.value.jobId = null;
 
             // 如果是 Jellyfin 扫描，使用 AbortController 取消
-            if (jobId.startsWith('jellyfin-') && scrapePanel.value.abortController) {
-                scrapePanel.value.abortController.abort();
+            if (jobId.startsWith('jellyfin-') && jellyfinAbortController) {
+                console.log('[stopScrape] 调用 abort()');
+                jellyfinAbortController.abort();
+                jellyfinAbortController = null;
                 addScrapeLog('info', '⏹ 已取消扫描');
                 scraping.value = false;
+                scrapePanel.value.show = false;
                 return;
             }
 
@@ -1547,6 +1619,13 @@ createApp({
                 try { return JSON.parse(val); } catch { return []; }
             }
             return [];
+        };
+        
+        const getFolderPath = (path) => {
+            if (!path) return null;
+            // 返回文件夹路径（去掉文件名）
+            const lastSep = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+            return lastSep > 0 ? path.substring(0, lastSep) : path;
         };
 
         const showDetail = (m) => {
@@ -1660,15 +1739,6 @@ createApp({
                 });
         };
 
-        // ========== 获取文件夹路径 ==========
-        const getFolderPath = (path) => {
-            if (!path) return '';
-            // 去掉文件名，只保留文件夹路径
-            const parts = path.split(/[/\\]/);
-            parts.pop(); // 移除文件名
-            return parts.join('\\');
-        };
-
         // ========== 本地目录 ==========
         const loadSources = async () => {
             try {
@@ -1676,8 +1746,15 @@ createApp({
                 const data = await res.json();
                 localSources.value = data.sources || [];
                 localStats.value = data.stats || {};
+                // 同时更新 Jellyfin 目录列表
+                jellyfinSources.value = (data.sources || []).filter(s => s.is_jellyfin === 1);
             } catch (e) { console.error(e); }
         };
+        
+        // 计算属性：非 Jellyfin 的普通目录
+        const regularSources = computed(() => {
+            return localSources.value.filter(s => s.is_jellyfin !== 1);
+        });
 
         const addSource = async () => {
             if (!newSourcePath.value.trim() || addingSource.value) return;
@@ -1714,16 +1791,78 @@ createApp({
             if (scanning.value) return;
             scanning.value = true;
             scanResult.value = null;
+            
+            // 打开进度浮窗
+            showScrapePanel.value = true;
+            scrapePanel.value = { pct: 0, stats: { success: 0, skipped: 0, failed: 0 }, logs: [] };
+            addScrapeLog('info', '🔍 开始扫描目录...');
+            
             try {
                 const res = await fetch(`${API}/local-sources/scan`, { method: 'POST' });
-                const data = await res.json();
-                scanResult.value = data;
-                showToast(`扫描完成，共发现 ${data.total_found} 个视频`, data.total_found > 0 ? 'success' : 'warning');
-                loadSources();
-                loadVideoStats();
-                if (currentTab.value === 'videos') loadLocalVideos();
-            } catch (e) { showToast('扫描失败', 'error'); }
-            scanning.value = false;
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+                    
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        try {
+                            const evt = JSON.parse(line.slice(6));
+                            handleScanEvent(evt);
+                        } catch (e) { /* ignore */ }
+                    }
+                }
+                
+                if (buffer.startsWith('data: ')) {
+                    try {
+                        const evt = JSON.parse(buffer.slice(6));
+                        handleScanEvent(evt);
+                    } catch (e) { /* ignore */ }
+                }
+            } catch (e) {
+                addScrapeLog('error', `扫描失败: ${e.message}`);
+            } finally {
+                scraping.value = false;
+            }
+        };
+        
+        const handleScanEvent = (evt) => {
+            switch (evt.type) {
+                case 'start':
+                    addScrapeLog('info', `📁 开始扫描 ${evt.total_sources} 个目录...`);
+                    break;
+                case 'source_start':
+                    scrapePanel.value.pct = Math.round((evt.source_index - 1) / evt.total_sources * 100);
+                    addScrapeLog('info', `📂 [${evt.source_index}/${evt.total_sources}] ${evt.path}`);
+                    break;
+                case 'progress':
+                    scrapePanel.value.pct = Math.round(((evt.source_index - 1) / evt.total_sources + (evt.processed / evt.total_files / evt.total_sources)) * 100);
+                    if (evt.processed % 50 === 0 || evt.processed === evt.total_files) {
+                        addScrapeLog('scraping', `→ ${evt.processed}/${evt.total_files} 文件 (${evt.pct}%) - 已找到 ${evt.found} 个`);
+                    }
+                    break;
+                case 'source_done':
+                    addScrapeLog('success', `✅ ${evt.message}`);
+                    break;
+                case 'done':
+                    scanResult.value = { total_found: evt.total_found, results: evt.results };
+                    addScrapeLog('success', `🎉 扫描完成！共找到 ${evt.total_found} 个视频`);
+                    // 刷新数据
+                    loadSources();
+                    loadVideoStats();
+                    if (currentTab.value === 'videos') loadLocalVideos();
+                    break;
+                case 'error':
+                    addScrapeLog('error', `❌ ${evt.message}`);
+                    break;
+            }
         };
 
         const scrapeAll = async () => {
@@ -2047,14 +2186,88 @@ createApp({
                 console.error('获取 Jellyfin 统计失败:', e);
             }
         };
+        
+        const loadJellyfinSources = async () => {
+            try {
+                const res = await fetch(`${API}/local-sources`);
+                const data = await res.json();
+                // 只筛选 Jellyfin 目录
+                jellyfinSources.value = (data.sources || []).filter(s => s.is_jellyfin === 1);
+            } catch (e) {
+                console.error('加载 Jellyfin 目录失败:', e);
+            }
+        };
+        
+        const rescanJellyfin = async (path) => {
+            scraping.value = true;
+            const jobId = 'jellyfin-' + Date.now();
+            jellyfinAbortController = new AbortController();
+            
+            scrapePanel.value = {
+                show: true,
+                title: '扫描 Jellyfin 影视库',
+                pct: 0,
+                logs: [],
+                jobId: jobId,
+                stats: { success: 0, failed: 0, skipped: 0 }
+            };
+            
+            addScrapeLog('info', `📁 重新扫描: ${path}`);
+            
+            try {
+                const res = await fetch(`${API}/jellyfin/scan`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ directory: path, job_id: jobId }),
+                    signal: jellyfinAbortController.signal
+                });
+                
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+                    
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        try {
+                            const evt = JSON.parse(line.slice(6));
+                            handleJellyfinEvent(evt, path);
+                        } catch (e) { /* ignore */ }
+                    }
+                }
+                
+                if (buffer.startsWith('data: ')) {
+                    try {
+                        const evt = JSON.parse(buffer.slice(6));
+                        handleJellyfinEvent(evt, path);
+                    } catch (e) { /* ignore */ }
+                }
+            } catch (e) {
+                if (e.name === 'AbortError') {
+                    addScrapeLog('info', '⏹ 已取消扫描');
+                } else {
+                    addScrapeLog('error', `扫描失败: ${e.message}`);
+                    console.error('[Jellyfin scan error]:', e);
+                }
+            } finally {
+                scraping.value = false;
+            }
+        };
 
         const scanJellyfin = async () => {
             const dir = prompt('请输入 Jellyfin 影视库目录路径：', 'Z:\\影视库');
             if (!dir) return;
 
             scraping.value = true;
-            const jobId = 'jellyfin-' + Date.now();  // 生成唯一 job_id
-            const abortController = new AbortController();  // 用于取消请求
+            const jobId = 'jellyfin-' + Date.now();
+            jellyfinAbortController = new AbortController();  // 保存到全局变量
 
             scrapePanel.value = {
                 show: true,
@@ -2062,7 +2275,6 @@ createApp({
                 pct: 0,
                 logs: [],
                 jobId: jobId,
-                abortController: abortController,  // 保存以便停止时使用
                 stats: { success: 0, failed: 0, skipped: 0 }
             };
 
@@ -2073,7 +2285,7 @@ createApp({
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ directory: dir, job_id: jobId }),
-                    signal: abortController.signal  // 支持取消
+                    signal: jellyfinAbortController.signal
                 });
 
                 const reader = res.body.getReader();
@@ -2144,6 +2356,8 @@ createApp({
                     loadSources();
                     loadVideoStats();
                     loadJellyfinCount();
+                    // 刷新 Jellyfin 目录列表
+                    loadJellyfinSources();
                     break;
             }
         };
@@ -2158,7 +2372,7 @@ createApp({
             // Detail Modal
             detailMainSrc, detailThumbs, detailActiveThumb, cycleDetailMain,
             // Helper functions
-            formatArray, ensureArray,
+            formatArray, ensureArray, getFolderPath,
             // Local Sources
             localSources, localStats, newSourcePath, addingSource, scanning, scanResult,
             addSource, removeSource, scanSources, scrapeAll,
@@ -2168,7 +2382,7 @@ createApp({
             loadVideoStats, loadLocalVideos, videoPrevPage, videoNextPage, videoGoToPage,
             scrapeOneLocal, deleteLocalVideo, cleanupInvalidCodes, cleanupResult, cleaning, formatSize, getVideoCoverUrl, playVideo,
             // Jellyfin
-            jellyfinCount, scanJellyfin,
+            jellyfinCount, scanJellyfin, jellyfinSources, rescanJellyfin, regularSources,
             // Scrape check and fix
             checking, fixing, scrapeCheckResult, movieCheckResult, checkAllScrape, fixAllScrape, checkMovieScrape, fixMovieScrape,
             // Scrape Panel

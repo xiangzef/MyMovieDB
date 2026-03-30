@@ -32,6 +32,16 @@ class MovieCreate(MovieBase):
     pass
 
 
+class LocalVideoItem(BaseModel):
+    """单个本地视频项"""
+    id: int
+    path: str
+    size: Optional[int] = None
+    duration: Optional[int] = None
+    codec: Optional[str] = None
+    is_scraped: Optional[int] = None
+
+
 class MovieResponse(MovieBase):
     """影片响应模型"""
     id: int
@@ -43,8 +53,14 @@ class MovieResponse(MovieBase):
     poster_path: Optional[str] = None
     thumb_path: Optional[str] = None
     local_video_path: Optional[str] = None  # 本地视频文件路径
+    # 来源信息
+    source: Optional[str] = None  # scraped/jellyfin/manual
+    source_type: Optional[str] = None  # web/jellyfin/local
+    video_path: Optional[str] = None  # 实际视频文件路径
     # 刮削状态（动态计算）
     scrape_status: Optional[str] = None
+    # 所有关联的本地视频（一对多）
+    local_videos: Optional[List[LocalVideoItem]] = None
 
 
 class ScrapeRequest(BaseModel):

@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>测试 Jellyfin SSE</title>
+</head>
+<body>
+    <h1>测试 Jellyfin 扫描</h1>
+    <button onclick="startScan()">开始扫描</button>
+    <button onclick="stopScan()">停止</button>
+    <pre id="log"></pre>
+
+    <script>
+        let abortController = null;
+
+        function log(msg) {
+            document.getElementById('log').textContent += msg + '\n';
+        }
+
+        async function startScan() {
+            document.getElementById('log').textContent = '';
+            log('开始扫描...');
+            
+            abortController = new AbortController();
+            
+            try {
+                const res = await fetch('http://localhost:8000/jellyfin/scan', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ directory: 'X:\\影视库' }),
+                    signal: abortController.signal
+                });
+
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        try {
+                            const evt = JSON.parse(line.slice(6));
+                            log(`[${evt.type}] ${JSON.stringify(evt)}`);
+                        } catch (e) { }
+                    }
+                }
+
+                log('扫描完成！');
+            } catch (e) {
+                if (e.name === 'AbortError') {
+                    log('已取消扫描');
+                } else {
+                    log('错误: ' + e.message);
+                }
+            }
+        }
+
+        function stopScan() {
+            if (abortController) {
+                abortController.abort();
+                abortController = null;
+                log('已发送停止信号');
+            }
+        }
+    </script>
+</body>
+</html>

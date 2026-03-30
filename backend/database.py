@@ -65,6 +65,8 @@ def init_db():
         "thumb_path": "ALTER TABLE movies ADD COLUMN thumb_path TEXT",  # Jellyfin/Kodi 缩略图
         "source": "ALTER TABLE movies ADD COLUMN source TEXT DEFAULT 'scraped'",  # 数据来源: scraped/jellyfin/manual
         "plot": "ALTER TABLE movies ADD COLUMN plot TEXT",  # 剧情简介
+        "source_type": "ALTER TABLE movies ADD COLUMN source_type TEXT DEFAULT 'web'",  # 来源类型: web/jellyfin/local
+        "video_path": "ALTER TABLE movies ADD COLUMN video_path TEXT",  # 本地视频文件路径
     }
     for col_name, sql in new_columns.items():
         if col_name not in existing_columns:
@@ -204,6 +206,17 @@ def get_movie_by_id(movie_id: int) -> Optional[dict]:
                 if key in lv_dict and lv_dict[key] is not None:
                     result[key] = lv_dict[key]
     
+    # 查询所有关联的本地视频（一对多）
+    code = result.get("code")
+    if code:
+        cursor.execute(
+            "SELECT id, path, size, duration, codec, is_scraped FROM local_videos WHERE code = ?",
+            (code,)
+        )
+        local_video_rows = cursor.fetchall()
+        if local_video_rows:
+            result['local_videos'] = [dict(r) for r in local_video_rows]
+    
     conn.close()
     return result
 
@@ -295,6 +308,7 @@ def merge_movie_data(existing: dict, new_data: dict) -> dict:
     - 如果新数据有值而旧数据为空，更新
     - 如果新旧数据都有值但不同，保留新数据（认为新数据更准确）
     - 如果新数据有旧数据没有的字段，添加
+    - 保护本地关联字段：source_type, video_path, local_video_id 不被网络刮削覆盖
     """
     merged = existing.copy()
     
@@ -303,7 +317,7 @@ def merge_movie_data(existing: dict, new_data: dict) -> dict:
         "title", "title_jp", "title_cn", "release_date", "duration",
         "studio", "maker", "director", "cover_url",
         "preview_url", "detail_url", "genres", "actors",
-        "actors_male", "local_cover_path", "local_video_id",
+        "actors_male", "local_cover_path",
         "scrape_source", "fanart_path", "poster_path", "thumb_path"
     ]
     
@@ -321,6 +335,25 @@ def merge_movie_data(existing: dict, new_data: dict) -> dict:
             # 普通字段：如果新数据有值，更新
             if new_value and new_value != old_value:
                 merged[field] = new_value
+    
+    # ========== 保护本地关联字段 ==========
+    # local_video_id: 如果已有值，不覆盖（保留本地视频关联）
+    if existing.get("local_video_id") and not new_data.get("local_video_id"):
+        merged["local_video_id"] = existing["local_video_id"]
+    elif new_data.get("local_video_id"):
+        merged["local_video_id"] = new_data["local_video_id"]
+    
+    # source_type: 如果已有值且不是 web，不覆盖（保留 Jellyfin/本地来源）
+    if existing.get("source_type") and existing["source_type"] != "web":
+        merged["source_type"] = existing["source_type"]
+    elif new_data.get("source_type"):
+        merged["source_type"] = new_data["source_type"]
+    
+    # video_path: 如果已有值，不覆盖（保留本地视频路径）
+    if existing.get("video_path") and not new_data.get("video_path"):
+        merged["video_path"] = existing["video_path"]
+    elif new_data.get("video_path"):
+        merged["video_path"] = new_data["video_path"]
     
     # 重新计算削刮状态
     merged["scrape_status"] = calculate_scrape_status(merged)
@@ -384,18 +417,23 @@ def upsert_movie(movie_data: dict) -> tuple:
 
     # 计算削刮状态
     movie_data["scrape_status"] = calculate_scrape_status(movie_data)
+    
+    # 只有新建记录时才设置默认 source_type
+    # 更新时会通过 merge_movie_data 保留原有值
 
     existing = get_movie_by_code(code)
 
     if existing:
-        # 更新，智能合并
+        # 更新，智能合并（会保护 source_type/video_path/local_video_id）
         update_movie(existing["id"], movie_data, merge=True)
         # 如果有 local_video_id，也更新关联
         if movie_data.get("local_video_id"):
             link_movie_to_local_video(existing["id"], movie_data["local_video_id"])
         return existing["id"], False
     else:
-        # 创建
+        # 创建新记录时才设置默认 source_type
+        if "source_type" not in movie_data:
+            movie_data["source_type"] = "web"
         movie_id = create_movie(movie_data)
         # 如果有 local_video_id，也建立关联
         if movie_data.get("local_video_id"):
@@ -468,11 +506,17 @@ def row_to_movie_response(row: dict) -> dict:
 def calculate_scrape_status(movie_data: dict) -> str:
     """
     计算削刮完整度状态
-    complete: 有标题 + 有发布日期 + 有制作商 + 有女演员 + 有封面文件
+    complete: 有标题 + 有发布日期 + 有制作商 + 有女演员 + 有封面
     partial: 部分字段有值
     empty: 仅番号，无其他信息
+    
+    注意：Jellyfin 视频的封面可能在远程服务器，不检查本地文件
     """
     from pathlib import Path
+    
+    # 判断是否是 Jellyfin 来源
+    source_type = movie_data.get("source_type") or movie_data.get("source")
+    is_jellyfin = source_type == "jellyfin"
     
     # 必填字段：title, release_date, maker, actors
     has_title = bool(movie_data.get("title"))
@@ -492,16 +536,30 @@ def calculate_scrape_status(movie_data: dict) -> str:
             except:
                 pass
     
-    # 检查封面文件是否存在
+    # 检查封面
     has_cover = False
     poster_path = movie_data.get("poster_path")
     if poster_path:
-        try:
-            has_cover = Path(poster_path).exists()
-        except:
-            pass
+        if is_jellyfin:
+            # Jellyfin 视频：只要有 poster_path 就认为有封面（可能是远程 URL 或本地路径）
+            has_cover = True
+        else:
+            # 网络刮削视频：检查本地文件是否存在
+            try:
+                has_cover = Path(poster_path).exists()
+            except:
+                pass
     
-    # 判断完整度：必须同时满足5个条件（增加封面检查）
+    # Jellyfin 视频：只要有标题和演员就认为是完整的（发布日期和制作商可能缺失）
+    if is_jellyfin:
+        if has_title and has_actors:
+            return "complete"
+        elif has_title or has_actors or has_cover:
+            return "partial"
+        else:
+            return "empty"
+    
+    # 网络刮削视频：判断完整度 - 必须同时满足5个条件
     if has_title and has_release_date and has_maker and has_actors and has_cover:
         return "complete"
     elif has_title or has_release_date or has_maker or has_actors or has_cover:
@@ -1042,6 +1100,10 @@ def import_jellyfin_movie(code: str, metadata: dict, video_path: str,
             # 标记来源和刮削状态
             update_fields.append("source = ?")
             update_values.append('jellyfin')
+            update_fields.append("source_type = ?")
+            update_values.append('jellyfin')
+            update_fields.append("video_path = ?")
+            update_values.append(video_path)
             update_fields.append("scrape_status = ?")
             update_values.append('complete')
             
@@ -1057,8 +1119,8 @@ def import_jellyfin_movie(code: str, metadata: dict, video_path: str,
                 INSERT INTO movies (code, title, title_jp, plot, release_date, 
                                     studio, maker, director, actors, actors_male, 
                                     genres, poster_path, fanart_path, thumb_path, 
-                                    source, scrape_status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'jellyfin', 'complete')
+                                    source, source_type, video_path, scrape_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'jellyfin', 'jellyfin', ?, 'complete')
             """, (
                 code,
                 metadata.get('title') or code,
@@ -1074,13 +1136,14 @@ def import_jellyfin_movie(code: str, metadata: dict, video_path: str,
                 poster_file,
                 fanart_file,
                 thumb_file,
+                video_path,
             ))
             movie_id = cursor.lastrowid
             
             # 同时插入 local_videos 记录
             file_size = os.path.getsize(video_path) if os.path.exists(video_path) else 0
             cursor.execute("""
-                INSERT OR IGNORE INTO local_videos (path, name, size, code, movie_id, scraped)
+                INSERT OR IGNORE INTO local_videos (path, name, file_size, code, movie_id, scraped)
                 VALUES (?, ?, ?, ?, ?, 1)
             """, (video_path, os.path.basename(video_path), file_size, code, movie_id))
         
@@ -1105,17 +1168,31 @@ def get_jellyfin_count() -> int:
     return count
 
 
-def mark_source_as_jellyfin(source_path: str) -> bool:
-    """标记本地目录为 Jellyfin 格式"""
+def mark_source_as_jellyfin(source_path: str, video_count: int = 0) -> bool:
+    """标记本地目录为 Jellyfin 格式（如果不存在则创建）"""
+    import os
+    
+    # 规范化路径（统一使用系统分隔符）
+    source_path = os.path.normpath(source_path)
+    
     conn = get_db()
     cursor = conn.cursor()
+    
+    # 先尝试更新已存在的记录（支持不同斜杠格式）
     cursor.execute("""
-        UPDATE local_sources SET is_jellyfin = 1 WHERE path = ?
-    """, (source_path,))
+        UPDATE local_sources SET is_jellyfin = 1, video_count = ? WHERE path = ?
+    """, (video_count, source_path))
+    
+    if cursor.rowcount == 0:
+        # 记录不存在，插入新记录
+        cursor.execute("""
+            INSERT INTO local_sources (path, is_jellyfin, enabled, video_count)
+            VALUES (?, 1, 1, ?)
+        """, (source_path, video_count))
+    
     conn.commit()
-    affected = cursor.rowcount
     conn.close()
-    return affected > 0
+    return True
 
 
 def get_local_sources_with_jellyfin() -> list:

@@ -33,6 +33,17 @@
 | 文件 | 功能 | 用途 |
 |------|------|------|
 | `test_poster_crop.py` | Poster 裁切测试 | 验证从 fanart 右半边裁切效果 |
+| `reorganize_covers.py` | 封面目录重组 | 调整封面存储结构（{番号}/ 文件夹） |
+
+### 🧪 Jellyfin 功能测试
+
+| 文件 | 功能 | 用途 |
+|------|------|------|
+| `test_jellyfin_import.py` | Jellyfin 导入测试 | 验证 NFO 解析、数据库导入 |
+| `test_jellyfin_scan.py` | Jellyfin 扫描测试 | 测试目录扫描逻辑 |
+| `test_fix_sse.py` | SSE 流测试 | 验证 SSE 流式响应 |
+| `test-jellyfin-sse.html` | SSE 前端测试页 | 浏览器端 SSE 测试 |
+| `test-jellyfin-stop.html` | 停止按钮测试页 | 验证 AbortController 取消 |
 
 ### 📄 数据文件
 
