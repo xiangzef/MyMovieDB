@@ -1764,6 +1764,11 @@ async def fix_scrape_results(request: FixScrapeRequest = None):
     import uuid
 
     job_id = str(uuid.uuid4())[:8]
+    
+    # 注册停止事件
+    stop_event = threading.Event()
+    with _scrape_lock:
+        _scrape_stop_flags[job_id] = stop_event
 
     covers_dir = Path(cfg.COVERS_DIR)
     covers_dir.mkdir(parents=True, exist_ok=True)
@@ -1782,15 +1787,32 @@ async def fix_scrape_results(request: FixScrapeRequest = None):
     def generate():
         fixed_count = 0
         failed_count = 0
+        
+        # 发送开始事件（包含 job_id，让前端可以停止）
+        yield _send_sse({
+            "type": "start",
+            "job_id": job_id,
+            "total": total,
+            "message": f"开始修复 {total} 部影片..."
+        })
 
         for i, m in enumerate(movies):
+            # 检查停止信号
+            if stop_event.is_set():
+                yield _send_sse({
+                    "type": "stopped",
+                    "job_id": job_id,
+                    "message": "用户已停止修复"
+                })
+                break
+            
             movie_id = m.get("id")
             code = m.get("code", "")
             fixed = False
             message = ""
 
             # 跳过 Jellyfin 来源的影片
-            if m.get("source") == "jellyfin":
+            if m.get("source") == "jellyfin" or m.get("source_type") == "jellyfin":
                 yield _send_sse({
                     "type": "skipped",
                     "job_id": job_id,
@@ -1929,6 +1951,10 @@ async def fix_scrape_results(request: FixScrapeRequest = None):
             "fail_count": failed_count,
             "message": f"修复完成：成功 {fixed_count}，失败 {failed_count}"
         })
+        
+        # 清理停止标志
+        with _scrape_lock:
+            _scrape_stop_flags.pop(job_id, None)
 
     return StreamingResponse(
         generate(),

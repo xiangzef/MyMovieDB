@@ -1492,6 +1492,9 @@ createApp({
             if (evt.title) scrapePanel.value.title = evt.title;
 
             switch (evt.type) {
+                case 'start':
+                    addScrapeLog('info', `🔄 ${evt.message || '开始处理...'}`);
+                    break;
                 case 'progress':
                     // 只更新进度和统计，不添加日志
                     scrapePanel.value.pct = evt.pct;
@@ -2046,7 +2049,6 @@ createApp({
             scrapePanel.value.pct = 0;
             scrapePanel.value.jobId = null;
             scrapePanel.value.stats = { success: 0, fail: 0, linked: 0 };
-            addScrapeLog('info', '🔄 开始修复刮削结果...');
 
             // SSE 接口
             try {
