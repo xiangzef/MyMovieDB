@@ -7,7 +7,7 @@ from typing import List, Optional
 from pathlib import Path
 import json
 
-DATABASE_PATH = Path(__file__).parent.parent / "data" / "movies.db"
+DATABASE_PATH = Path(__file__).resolve().parent.parent / "data" / "movies.db"
 
 
 def get_db():
@@ -210,12 +210,15 @@ def get_movie_by_id(movie_id: int) -> Optional[dict]:
     code = result.get("code")
     if code:
         cursor.execute(
-            "SELECT id, path, size, duration, codec, is_scraped FROM local_videos WHERE code = ?",
+            "SELECT id, path, file_size, scraped FROM local_videos WHERE code = ?",
             (code,)
         )
         local_video_rows = cursor.fetchall()
         if local_video_rows:
-            result['local_videos'] = [dict(r) for r in local_video_rows]
+            result['local_videos'] = [
+                {'id': row[0], 'path': row[1], 'size': row[2], 'is_scraped': row[3]}
+                for row in local_video_rows
+            ]
     
     conn.close()
     return result
@@ -485,6 +488,8 @@ def link_movie_to_local_video(movie_id: int, local_video_id: int) -> bool:
 
 def row_to_movie_response(row: dict) -> dict:
     """将数据库行转换为响应格式"""
+    if row is None:
+        return {}
     if row.get("genres") and isinstance(row["genres"], str):
         row["genres"] = json.loads(row["genres"])
     else:
