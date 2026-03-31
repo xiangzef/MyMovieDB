@@ -1262,10 +1262,9 @@
         </div>
     </div>
 
-    <!-- ========== 类别详情浮层（复用详情弹窗逻辑） ========== -->
-    <!-- 详情弹窗 -->
-    <div class="modal" :class="{active: showDetail}" @click.self="closeDetail">
-        <div class="modal-content" v-if="selectedMovie" @click.stop>
+    <!-- ========== 详情弹窗 ========== -->
+    <div class="modal" v-if="selectedMovie" @click.self="closeDetail">
+        <div class="modal-content" @click.stop>
             <!-- 左侧海报 -->
             <div class="modal-poster-wrap">
                 <img v-if="selectedMovie.poster_path || selectedMovie.cover_url"
