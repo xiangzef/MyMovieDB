@@ -1212,3 +1212,207 @@ def get_local_sources_with_jellyfin() -> list:
     rows = cursor.fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+# ===============================================================================
+# 类别统计相关函数
+# ===============================================================================
+
+def get_actor_stats(page: int = 1, page_size: int = 48, keyword: str = None) -> tuple:
+    """
+    获取女演员统计列表（按出现次数降序）
+    返回: (total, items=[{name, count, has_avatar}])
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # 统计每名演员的出现次数
+    cursor.execute("""
+        SELECT code, actors FROM movies
+        WHERE actors IS NOT NULL AND actors != '[]' AND actors != ''
+    """)
+    rows = cursor.fetchall()
+
+    actor_count = {}
+    for code, actors_str in rows:
+        try:
+            actors = json.loads(actors_str)
+            for a in actors:
+                if a and a.strip() and a != "佚名":
+                    actor_count[a] = actor_count.get(a, 0) + 1
+        except:
+            pass
+
+    # 过滤关键词
+    if keyword:
+        filtered = {k: v for k, v in actor_count.items() if keyword.lower() in k.lower()}
+    else:
+        filtered = actor_count
+
+    total = len(filtered)
+    sorted_actors = sorted(filtered.items(), key=lambda x: -x[1])
+
+    # 分页
+    offset = (page - 1) * page_size
+    page_actors = sorted_actors[offset:offset + page_size]
+
+    # 导入 gfriends 做头像检测（延迟导入避免循环）
+    try:
+        from gfriends import lookup_actor, get_local_avatar_url
+        has_avatar_func = lambda name: get_local_avatar_url(name) is not None
+    except ImportError:
+        has_avatar_func = lambda name: False
+
+    items = [
+        {
+            "name": name,
+            "count": cnt,
+            "has_avatar": has_avatar_func(name)
+        }
+        for name, cnt in page_actors
+    ]
+
+    conn.close()
+    return total, items
+
+
+def get_series_stats(page: int = 1, page_size: int = 48, keyword: str = None) -> tuple:
+    """
+    获取番号系列统计列表（按影片数量降序）
+    返回: (total, items=[{prefix, count}])
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT code FROM movies
+        WHERE code IS NOT NULL AND code != ''
+    """)
+    rows = cursor.fetchall()
+
+    prefixes = {}
+    for (code,) in rows:
+        if code and '-' in code:
+            # 特殊番号处理
+            if code.startswith("FC2-PPV-"):
+                prefix = "FC2-PPV"
+            elif code.startswith("HEYDOUGA-"):
+                prefix = "HEYDOUGA"
+            elif code.startswith("WEBIP-"):
+                prefix = "WEBIP"
+            elif code.startswith("ABC-"):
+                prefix = "ABC"
+            elif code.startswith("1080P-"):
+                prefix = "1080P"
+            elif code.startswith("390JNT-"):
+                prefix = "JNT"
+            else:
+                parts = code.split("-")
+                prefix = parts[0] if parts else code
+            prefixes[prefix] = prefixes.get(prefix, 0) + 1
+        else:
+            prefixes["OTHER"] = prefixes.get("OTHER", 0) + 1
+
+    # 过滤关键词
+    if keyword:
+        filtered = {k: v for k, v in prefixes.items() if keyword.upper() in k.upper()}
+    else:
+        filtered = prefixes
+
+    total = len(filtered)
+    sorted_series = sorted(filtered.items(), key=lambda x: -x[1])
+
+    # 分页
+    offset = (page - 1) * page_size
+    page_series = sorted_series[offset:offset + page_size]
+
+    items = [
+        {"prefix": prefix, "count": cnt}
+        for prefix, cnt in page_series
+    ]
+
+    conn.close()
+    return total, items
+
+
+def get_movies_by_actor(actor_name: str, page: int = 1, page_size: int = 48) -> tuple:
+    """
+    获取某女演员的所有影片
+    返回: (total, items=[MovieResponse])
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # 搜索包含该演员的影片
+    cursor.execute("""
+        SELECT m.*, lv.fanart_path, lv.poster_path, lv.thumb_path
+        FROM movies m
+        LEFT JOIN local_videos lv ON m.local_video_id = lv.id
+        WHERE m.actors IS NOT NULL AND m.actors != '[]' AND m.actors != ''
+        ORDER BY m.release_date DESC, m.id DESC
+    """)
+    rows = cursor.fetchall()
+
+    matched = []
+    for row in rows:
+        try:
+            actors = json.loads(row["actors"]) if isinstance(row["actors"], str) else row["actors"]
+            if actor_name in actors:
+                matched.append(dict(row))
+        except:
+            pass
+
+    total = len(matched)
+
+    # 分页
+    offset = (page - 1) * page_size
+    page_movies = matched[offset:offset + page_size]
+
+    # 转换为 MovieResponse
+    results = [row_to_movie_response(m) for m in page_movies]
+
+    conn.close()
+    return total, results
+
+
+def get_movies_by_series(prefix: str, page: int = 1, page_size: int = 48) -> tuple:
+    """
+    获取某番号系列的所有影片
+    返回: (total, items=[MovieResponse])
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # 构建 prefix 匹配条件（处理特殊番号）
+    if prefix == "FC2-PPV":
+        code_pattern = "FC2-PPV-%"
+    elif prefix == "HEYDOUGA":
+        code_pattern = "HEYDOUGA-%"
+    elif prefix == "WEBIP":
+        code_pattern = "WEBIP-%"
+    elif prefix == "ABC":
+        code_pattern = "ABC-%"
+    elif prefix == "1080P":
+        code_pattern = "1080P-%"
+    elif prefix == "JNT":
+        code_pattern = "JNT-%"
+    else:
+        code_pattern = f"{prefix}-%"
+
+    cursor.execute(f"""
+        SELECT m.*, lv.fanart_path, lv.poster_path, lv.thumb_path
+        FROM movies m
+        LEFT JOIN local_videos lv ON m.local_video_id = lv.id
+        WHERE m.code LIKE ?
+        ORDER BY m.release_date DESC, m.id DESC
+    """, (code_pattern,))
+
+    rows = cursor.fetchall()
+
+    total = len(rows)
+    offset = (page - 1) * page_size
+    page_rows = rows[offset:offset + page_size]
+    results = [row_to_movie_response(dict(r)) for r in page_rows]
+
+    conn.close()
+    return total, results

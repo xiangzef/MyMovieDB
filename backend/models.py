@@ -121,3 +121,40 @@ class LocalVideoListResponse(BaseModel):
     page: int
     page_size: int
     items: List[dict]
+
+
+class ActorItem(BaseModel):
+    """女演员统计项"""
+    name: str
+    count: int
+    has_avatar: bool = False
+
+
+class SeriesItem(BaseModel):
+    """番号系列统计项"""
+    prefix: str
+    count: int
+
+
+class ActorListResponse(BaseModel):
+    """女演员列表响应"""
+    total: int
+    page: int
+    page_size: int
+    items: List[ActorItem]
+
+
+class SeriesListResponse(BaseModel):
+    """番号系列列表响应"""
+    total: int
+    page: int
+    page_size: int
+    items: List[SeriesItem]
+
+
+class CategoryMoviesResponse(BaseModel):
+    """类别详情页影片列表"""
+    total: int
+    page: int
+    page_size: int
+    items: List[MovieResponse]

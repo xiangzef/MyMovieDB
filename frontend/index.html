@@ -727,6 +727,108 @@
             text-align: right;
         }
 
+        /* ========== 类别页样式 ========== */
+        .category-tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 15px;
+            align-items: center;
+        }
+        .category-tabs .tab {
+            padding: 6px 16px;
+            font-size: 13px;
+        }
+        /* 女演员网格 */
+        .actor-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+            gap: 12px;
+            margin-bottom: 15px;
+        }
+        .actor-card {
+            text-align: center;
+            cursor: pointer;
+            transition: transform 0.15s;
+        }
+        .actor-card:hover {
+            transform: translateY(-2px);
+        }
+        .actor-avatar-wrap {
+            position: relative;
+            width: 80px;
+            height: 120px;
+            margin: 0 auto 8px;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .actor-avatar {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            border-radius: 8px;
+        }
+        .actor-avatar-placeholder {
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(135deg, #2a2a4e 0%, #1a1a2e 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 28px;
+            color: #555;
+        }
+        .actor-overlay {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: linear-gradient(transparent, rgba(0,0,0,0.85));
+            color: #fff;
+            font-size: 10px;
+            padding: 4px 4px 4px;
+            text-align: center;
+            opacity: 0;
+            transition: opacity 0.2s;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .actor-card:hover .actor-overlay {
+            opacity: 1;
+        }
+        .actor-name {
+            font-size: 12px;
+            color: #ccc;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            max-width: 96px;
+            margin: 0 auto;
+        }
+        .actor-count {
+            font-size: 11px;
+            color: #666;
+            margin-top: 2px;
+        }
+        /* 类别详情弹窗 */
+        .category-detail-modal {
+            max-width: 900px;
+            max-height: 85vh;
+            overflow-y: auto;
+        }
+        .category-detail-header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid #2a2a3e;
+        }
+        .category-detail-header h3 {
+            margin: 0;
+            font-size: 16px;
+            color: #fff;
+        }
+
         @media (max-width: 768px) {
             .modal-content { flex-direction: column; }
             .modal-poster-wrap { width: 100%; }
@@ -771,6 +873,9 @@
             </button>
             <button class="tab" :class="{active: currentTab === 'videos'}" @click="switchTab('videos')">
                 本地视频库<span class="tab-count">{{ videoStats.total || 0 }}</span>
+            </button>
+            <button class="tab" :class="{active: currentTab === 'categories'}" @click="switchTab('categories')">
+                类别
             </button>
         </div>
 
@@ -1056,6 +1161,235 @@
                 <button @click="videoPrevPage" :disabled="videoPage === 1">上一页</button>
                 <button v-for="p in videoVisiblePages" :key="p" :class="{active: p === videoPage}" @click="videoGoToPage(p)">{{ p }}</button>
                 <button @click="videoNextPage" :disabled="videoPage === videoTotalPages">下一页</button>
+            </div>
+        </div>
+
+        <!-- ========== 类别 Tab ========== -->
+        <div class="tab-panel" :class="{active: currentTab === 'categories'}">
+            <!-- 统计概览 -->
+            <div class="stats-row" style="margin-bottom:15px;">
+                <div class="stat-card blue">
+                    <div class="num">{{ categoryStats.actors ? categoryStats.actors.total : 0 }}</div>
+                    <div class="label">女演员</div>
+                </div>
+                <div class="stat-card green">
+                    <div class="num">{{ categoryStats.series ? categoryStats.series.total : 0 }}</div>
+                    <div class="label">番号系列</div>
+                </div>
+                <div class="stat-card orange">
+                    <div class="num">{{ categoryStats.avatars ? categoryStats.avatars.cached : 0 }}</div>
+                    <div class="label">已下载头像</div>
+                </div>
+                <div style="flex:1;"></div>
+                <button class="btn btn-sm btn-warning" @click="downloadAllAvatars" :disabled="downloadingAvatars">
+                    ⬇ {{ downloadingAvatars ? '下载中...' : '批量下载头像' }}
+                </button>
+            </div>
+
+            <!-- 子Tab：女演员 / 番号系列 -->
+            <div class="category-tabs" style="display:flex;gap:8px;margin-bottom:15px;align-items:center;">
+                <button class="tab" :class="{active: categorySubTab === 'actors'}" @click="switchCategorySubTab('actors')">
+                    👩 女演员 <span class="tab-count">{{ categoryStats.actors ? categoryStats.actors.total : 0 }}</span>
+                </button>
+                <button class="tab" :class="{active: categorySubTab === 'series'}" @click="switchCategorySubTab('series')">
+                    🏷️ 番号系列 <span class="tab-count">{{ categoryStats.series ? categoryStats.series.total : 0 }}</span>
+                </button>
+                <div style="flex:1;"></div>
+                <!-- 搜索框 -->
+                <input v-model="categoryKeyword" @input="onCategoryKeywordChange" 
+                       :placeholder="categorySubTab === 'actors' ? '搜索女演员...' : '搜索番号系列...'"
+                       style="padding:6px 12px;border-radius:6px;border:1px solid #333;background:#1a1a2e;color:#fff;width:180px;" />
+            </div>
+
+            <!-- ========== 女演员列表 ========== -->
+            <div v-if="categorySubTab === 'actors'">
+                <div v-if="categoryLoading" style="text-align:center;padding:60px;color:#666;">加载中...</div>
+                <div v-else-if="categoryItems.length === 0" class="empty-state">
+                    <p>暂无女演员数据</p>
+                </div>
+                <div v-else class="actor-grid">
+                    <div v-for="actor in categoryItems" :key="actor.name"
+                         class="actor-card"
+                         @click="openCategoryDetail('actor', actor.name)">
+                        <div class="actor-avatar-wrap">
+                            <img v-if="actor.has_avatar"
+                                 :src="getActorAvatarUrl(actor.name)"
+                                 :alt="actor.name"
+                                 class="actor-avatar"
+                                 @error="handleImgError" />
+                            <div v-else class="actor-avatar actor-avatar-placeholder">
+                                {{ actor.name.slice(0, 1) }}
+                            </div>
+                            <div class="actor-overlay">
+                                <span>{{ actor.name }}</span>
+                            </div>
+                        </div>
+                        <div class="actor-name">{{ actor.name }}</div>
+                        <div class="actor-count">{{ actor.count }} 部</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ========== 番号系列列表 ========== -->
+            <div v-if="categorySubTab === 'series'">
+                <div v-if="categoryLoading" style="text-align:center;padding:60px;color:#666;">加载中...</div>
+                <div v-else-if="categoryItems.length === 0" class="empty-state">
+                    <p>暂无番号系列数据</p>
+                </div>
+                <div v-else class="source-list">
+                    <div v-for="s in categoryItems" :key="s.prefix"
+                         class="source-item"
+                         style="cursor:pointer;"
+                         @click="openCategoryDetail('series', s.prefix)">
+                        <div class="source-icon">🏷️</div>
+                        <div class="source-info">
+                            <div class="source-path">{{ s.prefix }}</div>
+                            <div class="source-meta">{{ s.count }} 部影片</div>
+                        </div>
+                        <div class="source-actions">
+                            <button class="btn btn-sm btn-primary">查看 &rarr;</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 分页 -->
+            <div class="pagination" v-if="categoryTotalPages > 1">
+                <button @click="categoryPrevPage" :disabled="categoryPage === 1">&lt; 上一页</button>
+                <button v-for="p in categoryVisiblePages" :key="p" :class="{active: p === categoryPage}" @click="categoryGoToPage(p)">{{ p }}</button>
+                <button @click="categoryNextPage" :disabled="categoryPage === categoryTotalPages">下一页 &gt;</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== 类别详情浮层（复用详情弹窗逻辑） ========== -->
+    <!-- 详情弹窗 -->
+    <div class="modal" :class="{active: showDetail}" @click.self="closeDetail">
+        <div class="modal-content" v-if="selectedMovie" @click.stop>
+            <!-- 左侧海报 -->
+            <div class="modal-poster-wrap">
+                <img v-if="selectedMovie.poster_path || selectedMovie.cover_url"
+                     :src="getCoverUrl(selectedMovie)" class="modal-poster" @error="handleImgError" />
+                <div v-else class="modal-poster-placeholder">无封面</div>
+            </div>
+            <!-- 右侧信息 -->
+            <div class="modal-info">
+                <!-- 关闭按钮 -->
+                <button class="modal-close" @click="closeDetail">&times;</button>
+                <!-- 标题 -->
+                <div class="modal-title">{{ selectedMovie.code }}</div>
+                <div class="modal-subtitle">{{ selectedMovie.title || selectedMovie.title_jp || '未命名' }}</div>
+
+                <!-- 演员 -->
+                <div v-if="selectedMovie.actors && selectedMovie.actors.length" class="modal-row">
+                    <span class="modal-label">演员：</span>
+                    <span class="modal-actors">
+                        <span v-for="a in selectedMovie.actors" :key="a" class="actor-tag" @click.stop="openCategoryActorPage(a)">
+                            {{ a }}
+                        </span>
+                    </span>
+                </div>
+
+                <!-- 基本信息 -->
+                <div class="modal-row">
+                    <span class="modal-label">发布日期：</span>{{ selectedMovie.release_date || '-' }}
+                </div>
+                <div class="modal-row" v-if="selectedMovie.maker">
+                    <span class="modal-label">制作商：</span>{{ selectedMovie.maker }}
+                </div>
+                <div class="modal-row" v-if="selectedMovie.studio">
+                    <span class="modal-label">发行商：</span>{{ selectedMovie.studio }}
+                </div>
+                <div class="modal-row" v-if="selectedMovie.director">
+                    <span class="modal-label">导演：</span>{{ selectedMovie.director }}
+                </div>
+
+                <!-- 类别标签 -->
+                <div class="modal-row" v-if="selectedMovie.genres && selectedMovie.genres.length">
+                    <span class="modal-label">类别：</span>
+                    <span class="genre-tags">
+                        <span v-for="g in selectedMovie.genres" :key="g" class="genre-tag">{{ g }}</span>
+                    </span>
+                </div>
+
+                <!-- 本地视频 -->
+                <div class="modal-row" v-if="selectedMovie.local_videos && selectedMovie.local_videos.length">
+                    <span class="modal-label">本地视频：</span>
+                    <div class="modal-local-videos">
+                        <div v-for="v in selectedMovie.local_videos" :key="v.id" class="local-video-item" @click.stop="playLocalVideo(v.path)">
+                            <span class="local-video-name">{{ v.path.split(/[/\\]/).pop() }}</span>
+                            <span class="local-video-play">▶️ 播放</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 剧照 -->
+                <div v-if="selectedMovie.preview_url || selectedMovie.fanart_path" class="modal-row">
+                    <span class="modal-label">预览：</span>
+                    <button class="btn btn-sm btn-secondary" @click.stop="openPreview(selectedMovie.preview_url || selectedMovie.fanart_path)"
+                            style="margin-left:10px;padding:3px 10px;font-size:11px;">
+                        ▶️ 播放
+                    </button>
+                </div>
+                <!-- 二次刮削按钮（无刮削按钮，只有检查和查看信息） -->
+                <div class="modal-actions">
+                    <button class="btn btn-secondary" @click="checkMovieScrape(selectedMovie.id)" :disabled="checking">
+                        🔍 检查刮削
+                    </button>
+                </div>
+                <!-- 单个影片检查结果 -->
+                <div v-if="movieCheckResult" class="modal-row" style="background:rgba(0,0,0,0.2);padding:10px;border-radius:8px;margin-top:10px;">
+                    <div style="font-size:13px;">
+                        <strong>{{ movieCheckResult.is_complete ? '✅ 刮削完整' : '⚠️ 存在问题' }}</strong>
+                        <span v-if="movieCheckResult.issues.length" style="color:#ffc107;margin-left:8px;">{{ movieCheckResult.issues.join(', ') }}</span>
+                    </div>
+                    <div style="font-size:11px;color:#666;margin-top:4px;">
+                        poster: {{ movieCheckResult.has_poster ? '✅' : '❌' }} ·
+                        fanart: {{ movieCheckResult.has_fanart ? '✅' : '❌' }} ·
+                        thumb: {{ movieCheckResult.has_thumb ? '✅' : '❌' }} ·
+                        NFO: {{ movieCheckResult.has_nfo ? '✅' : '❌' }}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== 类别详情列表浮层 ========== -->
+    <div class="modal" :class="{active: showCategoryDetail}" @click.self="closeCategoryDetail">
+        <div class="modal-content category-detail-modal" @click.stop>
+            <button class="modal-close" @click="closeCategoryDetail">&times;</button>
+            <div class="category-detail-header">
+                <button class="btn btn-sm btn-secondary" @click="closeCategoryDetail" style="margin-right:12px;">
+                    &larr; 返回
+                </button>
+                <h3 v-if="categoryDetailType === 'actor'">👩 {{ categoryDetailName }}</h3>
+                <h3 v-else>🏷️ {{ categoryDetailName }}</h3>
+                <span style="color:#888;margin-left:12px;">{{ categoryDetailTotal }} 部影片</span>
+            </div>
+
+            <!-- 影片网格 -->
+            <div v-if="categoryDetailLoading" style="text-align:center;padding:40px;color:#666;">加载中...</div>
+            <div v-else class="movie-grid">
+                <div v-for="m in categoryDetailMovies" :key="m.id"
+                     class="movie-card"
+                     @click="showMovieDetail(m.id)">
+                    <div class="movie-cover-wrap">
+                        <img v-if="m.poster_path || m.cover_url"
+                             :src="getCoverUrl(m)" class="movie-cover" @error="handleImgError" />
+                        <div v-else class="movie-cover-placeholder">{{ m.code }}</div>
+                        <div class="movie-overlay">
+                            <div class="movie-code">{{ m.code }}</div>
+                            <div class="movie-title">{{ m.title || m.title_jp || '未命名' }}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 分页 -->
+            <div class="pagination" v-if="categoryDetailTotalPages > 1" style="margin-top:15px;">
+                <button @click="categoryDetailPrevPage" :disabled="categoryDetailPage === 1">&lt; 上一页</button>
+                <button v-for="p in categoryDetailVisiblePages" :key="p" :class="{active: p === categoryDetailPage}" @click="categoryDetailGoToPage(p)">{{ p }}</button>
+                <button @click="categoryDetailNextPage" :disabled="categoryDetailPage === categoryDetailTotalPages">下一页 &gt;</button>
             </div>
         </div>
     </div>
@@ -2161,14 +2495,6 @@ createApp({
             return null;
         };
 
-        // ========== Tab Switch ==========
-        const switchTab = (tab) => {
-            currentTab.value = tab;
-            if (tab === 'movies') loadMovies();
-            if (tab === 'sources') loadSources();
-            if (tab === 'videos') { loadSources(); loadVideoStats(); loadLocalVideos(); }
-        };
-
         // ========== Init ==========
         onMounted(async () => {
             // 检查登录状态
@@ -2385,6 +2711,171 @@ createApp({
             }
         };
 
+        // ========== 类别页状态 ==========
+        const categoryStats = ref({});
+        const categorySubTab = ref('actors');
+        const categoryPage = ref(1);
+        const categoryPageSize = ref(48);
+        const categoryTotal = ref(0);
+        const categoryTotalPages = computed(() => Math.ceil(categoryTotal.value / categoryPageSize.value));
+        const categoryVisiblePages = computed(() => calcVisiblePages(categoryPage.value, categoryTotalPages.value));
+        const categoryItems = ref([]);
+        const categoryLoading = ref(false);
+        const categoryKeyword = ref('');
+        const categoryDetailName = ref('');
+        const categoryDetailType = ref('');  // 'actor' | 'series'
+        const categoryDetailTotal = ref(0);
+        const categoryDetailPage = ref(1);
+        const categoryDetailTotalPages = computed(() => Math.ceil(categoryDetailTotal.value / 48));
+        const categoryDetailVisiblePages = computed(() => calcVisiblePages(categoryDetailPage.value, categoryDetailTotalPages.value));
+        const categoryDetailMovies = ref([]);
+        const categoryDetailLoading = ref(false);
+        const showCategoryDetail = ref(false);
+        const downloadingAvatars = ref(false);
+        let categoryKeywordTimer = null;
+
+        // 加载类别统计
+        const loadCategoryStats = async () => {
+            try {
+                const res = await fetch(`${API}/categories/stats`);
+                categoryStats.value = await res.json();
+            } catch (e) { console.error(e); }
+        };
+
+        // 加载类别列表
+        const loadCategoryList = async () => {
+            categoryLoading.value = true;
+            try {
+                const params = new URLSearchParams({
+                    page: categoryPage.value,
+                    page_size: categoryPageSize.value,
+                });
+                if (categoryKeyword.value) params.set('keyword', categoryKeyword.value);
+                const endpoint = categorySubTab.value === 'actors'
+                    ? `${API}/categories/actors`
+                    : `${API}/categories/series`;
+                const res = await fetch(`${endpoint}?${params}`);
+                const data = await res.json();
+                categoryTotal.value = data.total;
+                categoryItems.value = data.items;
+            } catch (e) { console.error(e); }
+            categoryLoading.value = false;
+        };
+
+        const switchCategorySubTab = (tab) => {
+            categorySubTab.value = tab;
+            categoryPage.value = 1;
+            categoryKeyword.value = '';
+            loadCategoryList();
+        };
+
+        const onCategoryKeywordChange = () => {
+            clearTimeout(categoryKeywordTimer);
+            categoryKeywordTimer = setTimeout(() => {
+                categoryPage.value = 1;
+                loadCategoryList();
+            }, 400);
+        };
+
+        const categoryPrevPage = () => { if (categoryPage.value > 1) { categoryPage.value--; loadCategoryList(); }};
+        const categoryNextPage = () => { categoryPage.value++; loadCategoryList(); };
+        const categoryGoToPage = (p) => { categoryPage.value = p; loadCategoryList(); };
+
+        // 打开类别详情
+        const openCategoryDetail = async (type, name) => {
+            categoryDetailType.value = type;
+            categoryDetailName.value = name;
+            categoryDetailPage.value = 1;
+            showCategoryDetail.value = true;
+            await loadCategoryDetailList();
+        };
+
+        const loadCategoryDetailList = async () => {
+            categoryDetailLoading.value = true;
+            try {
+                const name = encodeURIComponent(categoryDetailName.value);
+                const endpoint = categoryDetailType.value === 'actor'
+                    ? `${API}/categories/actors/${name}/movies`
+                    : `${API}/categories/series/${categoryDetailName.value}/movies`;
+                const res = await fetch(`${endpoint}?page=${categoryDetailPage.value}&page_size=48`);
+                const data = await res.json();
+                categoryDetailTotal.value = data.total;
+                categoryDetailMovies.value = data.items;
+            } catch (e) { console.error(e); }
+            categoryDetailLoading.value = false;
+        };
+
+        const closeCategoryDetail = () => { showCategoryDetail.value = false; };
+        const categoryDetailPrevPage = () => {
+            if (categoryDetailPage.value > 1) {
+                categoryDetailPage.value--;
+                loadCategoryDetailList();
+            }
+        };
+        const categoryDetailNextPage = () => {
+            categoryDetailPage.value++;
+            loadCategoryDetailList();
+        };
+        const categoryDetailGoToPage = (p) => {
+            categoryDetailPage.value = p;
+            loadCategoryDetailList();
+        };
+
+        // 点击详情页的演员标签 → 跳转到类别详情
+        const openCategoryActorPage = (name) => {
+            closeDetail();
+            nextTick(() => {
+                categorySubTab.value = 'actors';
+                openCategoryDetail('actor', name);
+            });
+        };
+
+        // 从演员名获取本地头像 URL
+        const getActorAvatarUrl = (name) => {
+            // 前端通过 md5 猜测头像路径（后端按 md5 命名）
+            // 实际路径由后端 gfriends.py 按 md5(name)[12:-12] 命名
+            // 前端直接用 /avatars/{md5}.jpg
+            const hash = md5(name).slice(12, -12);
+            return `${API}/avatars/${hash}.jpg`;
+        };
+
+        // md5 辅助
+        const md5 = (str) => {
+            // 简化版，实际使用 crypto
+            let h = '00000000';
+            const l = str.length;
+            for (let i = 0; i < l; i++) {
+                h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+            }
+            h = Math.abs(h).toString(16).padStart(8, '0');
+            // 模拟 md5 的 hex 输出（16字符）
+            return h + h.slice(-8);
+        };
+
+        // 批量下载所有已知女优头像
+        const downloadAllAvatars = async () => {
+            if (!confirm('确定下载所有已知女优头像？这会批量从 gfriends 仓库下载图片，可能需要较长时间。')) return;
+            downloadingAvatars.value = true;
+            try {
+                const res = await fetch(`${API}/actors/download-avatars?keyword=all`, { method: 'POST' });
+                const data = await res.json();
+                showToast(data.message || '下载完成', 'success');
+                loadCategoryStats();
+            } catch (e) {
+                showToast('下载失败', 'error');
+            }
+            downloadingAvatars.value = false;
+        };
+
+        // Tab 切换
+        const switchTab = (tab) => {
+            currentTab.value = tab;
+            if (tab === 'movies') loadMovies();
+            if (tab === 'sources') loadSources();
+            if (tab === 'videos') { loadSources(); loadVideoStats(); loadLocalVideos(); }
+            if (tab === 'categories') { loadCategoryStats(); loadCategoryList(); }
+        };
+
         return {
             currentTab, backendStatus, currentUser, logout, getRoleName,
             // Movies
@@ -2413,7 +2904,20 @@ createApp({
             // Rescrape
             rescrapeMovie, openLocalVideo, getFolderPath,
             // Misc
-            switchTab, toasts
+            switchTab, toasts,
+            // ========== 类别页 ==========
+            categoryStats, categorySubTab, categoryPage, categoryPageSize,
+            categoryTotal, categoryTotalPages, categoryVisiblePages,
+            categoryItems, categoryLoading, categoryKeyword,
+            categoryDetailName, categoryDetailType, categoryDetailTotal,
+            categoryDetailPage, categoryDetailTotalPages, categoryDetailVisiblePages,
+            categoryDetailMovies, categoryDetailLoading, showCategoryDetail,
+            downloadingAvatars,
+            loadCategoryStats, loadCategoryList, switchCategorySubTab,
+            onCategoryKeywordChange, categoryPrevPage, categoryNextPage, categoryGoToPage,
+            openCategoryDetail, closeCategoryDetail,
+            categoryDetailPrevPage, categoryDetailNextPage, categoryDetailGoToPage,
+            openCategoryActorPage, getActorAvatarUrl, downloadAllAvatars
         };
     }
 }).mount('#app');

@@ -25,7 +25,8 @@ from datetime import datetime, timedelta
 from models import (
     MovieResponse, MovieListResponse,
     ScrapeRequest, ScrapeResponse,
-    UserLogin, UserRegister, UserResponse, LoginResponse
+    UserLogin, UserRegister, UserResponse, LoginResponse,
+    ActorListResponse, SeriesListResponse, CategoryMoviesResponse
 )
 from pydantic import BaseModel, Field
 import database as db
@@ -2369,6 +2370,13 @@ async def get_local_image(path: str = Query(..., description="本地图片路径
 if cfg.FRONTEND_DIR.exists():
     app.mount("/", StaticFiles(directory=str(cfg.FRONTEND_DIR), html=True), name="static")
 
+# 挂载头像静态文件（gfriends 缓存头像）
+from gfriends import get_avatar_dir
+AVATAR_DIR = get_avatar_dir()
+if AVATAR_DIR.exists():
+    app.mount("/avatars", StaticFiles(directory=str(AVATAR_DIR), html=False), name="avatars")
+
+
 
 @app.get("/local-sources/stats", tags=["本地目录"])
 async def get_local_sources_stats():
@@ -2382,6 +2390,186 @@ async def get_local_sources_stats():
         "pending": stats.get("unscraped", 0),
         "jellyfin_imported": jellyfin_count
     }
+
+
+# ===============================================================================
+# 类别展示 API
+# ===============================================================================
+
+@app.get("/categories/actors", response_model=ActorListResponse, tags=["类别"])
+async def get_actors(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(48, ge=1, le=200),
+    keyword: str = Query(None)
+):
+    """
+    获取女演员列表（按作品数量降序）
+    - keyword: 可选，模糊搜索女演员名字
+    - has_avatar: 是否已下载头像
+    """
+    total, items = db.get_actor_stats(page=page, page_size=page_size, keyword=keyword)
+    return ActorListResponse(
+        total=total,
+        page=page,
+        page_size=page_size,
+        items=items
+    )
+
+
+@app.get("/categories/series", response_model=SeriesListResponse, tags=["类别"])
+async def get_series(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(48, ge=1, le=200),
+    keyword: str = Query(None)
+):
+    """
+    获取番号系列列表（按影片数量降序）
+    - keyword: 可选，模糊搜索系列前缀
+    """
+    total, items = db.get_series_stats(page=page, page_size=page_size, keyword=keyword)
+    return SeriesListResponse(
+        total=total,
+        page=page,
+        page_size=page_size,
+        items=items
+    )
+
+
+@app.get("/categories/actors/{actor_name}/movies", response_model=CategoryMoviesResponse, tags=["类别"])
+async def get_movies_by_actor(
+    actor_name: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(48, ge=1, le=200)
+):
+    """
+    获取某女演员的所有影片
+    演员名需 URL 编码（如 %E6%A1%83%E8%B0%B7%E3%82%A8%E3%83%AA%E3%82%AB）
+    """
+    from urllib.parse import unquote
+    actor_name = unquote(actor_name)
+    total, items = db.get_movies_by_actor(actor_name=actor_name, page=page, page_size=page_size)
+    return CategoryMoviesResponse(
+        total=total,
+        page=page,
+        page_size=page_size,
+        items=items
+    )
+
+
+@app.get("/categories/series/{prefix}/movies", response_model=CategoryMoviesResponse, tags=["类别"])
+async def get_movies_by_series(
+    prefix: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(48, ge=1, le=200)
+):
+    """
+    获取某番号系列的所有影片
+    如 /categories/series/SSIS/movies
+    """
+    total, items = db.get_movies_by_series(prefix=prefix, page=page, page_size=page_size)
+    return CategoryMoviesResponse(
+        total=total,
+        page=page,
+        page_size=page_size,
+        items=items
+    )
+
+
+@app.get("/categories/stats", tags=["类别"])
+async def get_categories_stats():
+    """
+    获取类别统计概览
+    - 女演员总数、已知真实女优（有头像）、佚名
+    - 番号系列总数
+    """
+    from gfriends import get_filetree, AVATAR_DIR
+    import os
+
+    # 女演员统计
+    _, all_actors = db.get_actor_stats(page=1, page_size=10000)
+    total_actors = len(all_actors)
+    total_known = sum(1 for a in all_actors if a["has_avatar"])
+    total_unknown = total_actors - total_known
+
+    # 番号系列统计
+    total_series, _ = db.get_series_stats(page=1, page_size=10000)
+
+    # gfriends 仓库信息
+    gfriends_total = 0
+    try:
+        ft = get_filetree()
+        if ft:
+            gfriends_total = ft.get("Information", {}).get("TotalNum", 0)
+    except:
+        pass
+
+    # 本地头像缓存数量
+    cached_avatars = 0
+    if AVATAR_DIR.exists():
+        cached_avatars = len(list(AVATAR_DIR.glob("*.jpg"))) + len(list(AVATAR_DIR.glob("*.png")))
+
+    return {
+        "actors": {
+            "total": total_actors,
+            "known": total_known,  # 有头像 = gfriends 收录的真实女优
+            "anonymous": total_unknown,  # 佚名 = 未收录
+            "ghub_total": gfriends_total  # gfriends 仓库总数
+        },
+        "series": {
+            "total": total_series
+        },
+        "avatars": {
+            "cached": cached_avatars
+        }
+    }
+
+
+# ===============================================================================
+# 女演员头像 API
+# ===============================================================================
+
+@app.get("/actors/lookup/{actor_name}", tags=["女演员"])
+async def lookup_actor(actor_name: str):
+    """
+    查询女演员是否为真实 AV 女优（gfriends 收录）
+    并返回头像信息
+    """
+    from urllib.parse import unquote
+    actor_name = unquote(actor_name)
+    from gfriends import lookup_actor as gfriends_lookup, get_local_avatar_url
+    result = gfriends_lookup(actor_name)
+    result["local_url"] = get_local_avatar_url(actor_name)
+    return result
+
+
+@app.post("/actors/download-avatars", tags=["女演员"])
+async def download_actor_avatars(keyword: str = Query(...)):
+    """
+    批量下载女演员头像
+    - keyword: 逗号分隔的演员名字列表，或 'all'（下载所有已知女优）
+    - 返回下载结果统计
+    """
+    from gfriends import batch_download_avatars
+    import asyncio
+
+    if keyword == "all":
+        # 下载所有已知女优的头像
+        _, all_actors = db.get_actor_stats(page=1, page_size=10000)
+        names = [a["name"] for a in all_actors if a["has_avatar"] is False]
+    else:
+        names = [n.strip() for n in keyword.replace(",", " ").split() if n.strip()]
+
+    if not names:
+        return {"message": "没有需要下载的演员", "total": 0}
+
+    # 在线程池中执行（避免阻塞事件循环）
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        lambda: batch_download_avatars(names, max_workers=3, delay=0.5)
+    )
+    result["message"] = f"下载完成，成功 {result['success']}/{result['total']}"
+    return result
 
 
 if __name__ == "__main__":
