@@ -870,23 +870,21 @@
             </div>
 
             <!-- 目录列表 -->
-            <div v-if="localSources.length === 0" class="empty-state">
+            <div v-if="localSources.filter(s => !s.is_jellyfin).length === 0" class="empty-state">
                 <p>还没有添加目录，添加一个开始扫描吧！</p>
             </div>
             <div class="source-list">
-                <div v-for="s in localSources" :key="s.id" class="source-item">
+                <div v-for="s in localSources.filter(s => !s.is_jellyfin)" :key="s.id" class="source-item">
                     <div class="source-icon">📁</div>
                     <div class="source-info">
-                        <div class="source-path">
-                            {{ s.path }}
-                            <span v-if="s.is_jellyfin" class="jellyfin-badge" title="Jellyfin 格式目录">Jellyfin</span>
-                        </div>
+                        <div class="source-path">{{ s.path }}</div>
                         <div class="source-meta">
                             {{ s.video_count || 0 }} 个视频
                             <span v-if="s.last_scan_at"> · 最后扫描: {{ s.last_scan_at }}</span>
                         </div>
                     </div>
                     <div class="source-actions">
+                        <button class="btn btn-sm btn-primary" @click="rescanSource(s)" :disabled="scanning">🔄 重新扫描</button>
                         <button class="btn btn-sm btn-danger" @click="removeSource(s.id)">删除</button>
                     </div>
                 </div>
@@ -908,16 +906,18 @@
                     <div v-for="s in jellyfinSources" :key="s.id" class="source-item" style="background: #1a1a1a; margin-bottom: 8px;">
                         <div class="source-icon">📁</div>
                         <div class="source-info">
-                            <div class="source-path">{{ s.path }}</div>
+                            <div class="source-path">
+                                {{ s.path }}
+                                <span class="jellyfin-badge" title="Jellyfin 格式目录">Jellyfin</span>
+                            </div>
                             <div class="source-meta">
                                 {{ s.video_count || 0 }} 个影片
                                 <span v-if="s.last_scan_at"> · 最后扫描: {{ s.last_scan_at }}</span>
                             </div>
                         </div>
                         <div class="source-actions">
-                            <button class="btn btn-sm btn-primary" @click="rescanJellyfin(s.path)" :disabled="scraping">
-                                🔄 重新扫描
-                            </button>
+                            <button class="btn btn-sm btn-primary" @click="rescanJellyfin(s.path)" :disabled="scraping">🔄 重新扫描</button>
+                            <button class="btn btn-sm btn-danger" @click="removeSource(s.id)">删除</button>
                         </div>
                     </div>
                 </div>
@@ -1793,14 +1793,25 @@ createApp({
             } catch (e) { showToast('删除失败', 'error'); }
         };
 
+        // 普通目录重新扫描（复用 scanSources 逻辑，但只扫该目录）
+        const rescanSource = async (source) => {
+            if (scanning.value) return;
+            // 直接触发全量扫描（后端会扫所有已注册目录）
+            await scanSources();
+        };
+
         const scanSources = async () => {
             if (scanning.value) return;
             scanning.value = true;
             scanResult.value = null;
             
             // 打开进度浮窗
-            showScrapePanel.value = true;
-            scrapePanel.value = { pct: 0, stats: { success: 0, skipped: 0, failed: 0 }, logs: [] };
+            scrapePanel.value.show = true;
+            scrapePanel.value.title = '扫描本地目录';
+            scrapePanel.value.logs = [];
+            scrapePanel.value.pct = 0;
+            scrapePanel.value.jobId = '_pending_';
+            scrapePanel.value.stats = { success: 0, fail: 0, linked: 0 };
             addScrapeLog('info', '🔍 开始扫描目录...');
             
             try {
@@ -1835,7 +1846,8 @@ createApp({
             } catch (e) {
                 addScrapeLog('error', `扫描失败: ${e.message}`);
             } finally {
-                scraping.value = false;
+                scanning.value = false;
+                scrapePanel.value.jobId = null;
             }
         };
         
@@ -1849,18 +1861,24 @@ createApp({
                     addScrapeLog('info', `📂 [${evt.source_index}/${evt.total_sources}] ${evt.path}`);
                     break;
                 case 'progress':
-                    scrapePanel.value.pct = Math.round(((evt.source_index - 1) / evt.total_sources + (evt.processed / evt.total_files / evt.total_sources)) * 100);
-                    if (evt.processed % 50 === 0 || evt.processed === evt.total_files) {
-                        addScrapeLog('scraping', `→ ${evt.processed}/${evt.total_files} 文件 (${evt.pct}%) - 已找到 ${evt.found} 个`);
+                    // 只更新进度条，不加日志，防止高频推送导致前端卡顿
+                    scrapePanel.value.pct = Math.round(
+                        ((evt.source_index - 1) / evt.total_sources +
+                        (evt.processed / (evt.total_files || 1)) / evt.total_sources) * 100
+                    );
+                    // 每 100 个文件或扫描完成时才加一条日志
+                    if (evt.processed % 100 === 0 || evt.processed === evt.total_files) {
+                        addScrapeLog('scraping', `→ [${evt.source_index}/${evt.total_sources}] ${evt.processed}/${evt.total_files} 文件 · 已找到 ${evt.found} 个`);
                     }
                     break;
                 case 'source_done':
-                    addScrapeLog('success', `✅ ${evt.message}`);
+                    scrapePanel.value.pct = Math.round(evt.source_index / evt.total_sources * 100);
+                    addScrapeLog('success', `✅ [${evt.source_index}/${evt.total_sources}] 完成 · 找到 ${evt.found} 个视频`);
                     break;
                 case 'done':
+                    scrapePanel.value.pct = 100;
                     scanResult.value = { total_found: evt.total_found, results: evt.results };
                     addScrapeLog('success', `🎉 扫描完成！共找到 ${evt.total_found} 个视频`);
-                    // 刷新数据
                     loadSources();
                     loadVideoStats();
                     if (currentTab.value === 'videos') loadLocalVideos();
@@ -2380,7 +2398,7 @@ createApp({
             formatArray, ensureArray, getFolderPath,
             // Local Sources
             localSources, localStats, newSourcePath, addingSource, scanning, scanResult,
-            addSource, removeSource, scanSources, scrapeAll,
+            addSource, removeSource, rescanSource, scanSources, scrapeAll,
             // Local Videos
             localVideos, videoStats, localVideosLoading, videoPage, videoPageSize, videoFilter,
             videoTotalPages, videoVisiblePages,

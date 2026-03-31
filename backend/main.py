@@ -1207,8 +1207,8 @@ async def scan_local_sources():
                         name_without_ext = os.path.splitext(filename)[0]
                         code = _extract_code_from_filename(name_without_ext)
                         
-                        # 每 10 个文件推送一次进度
-                        if processed_files % 10 == 0 or processed_files == file_count:
+                        # 每 50 个文件推送一次进度（降低频率防止前端卡顿）
+                        if processed_files % 50 == 0 or processed_files == file_count:
                             yield _send_sse({
                                 "type": "progress",
                                 "source_index": s_idx,
