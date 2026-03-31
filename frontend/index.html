@@ -1169,15 +1169,15 @@
             <!-- 统计概览 -->
             <div class="stats-row" style="margin-bottom:15px;">
                 <div class="stat-card blue">
-                    <div class="num">{{ categoryStats.actors ? categoryStats.actors.total : 0 }}</div>
+                    <div class="num">{{ categoryStats.actors?.total || 0 }}</div>
                     <div class="label">女演员</div>
                 </div>
                 <div class="stat-card green">
-                    <div class="num">{{ categoryStats.series ? categoryStats.series.total : 0 }}</div>
+                    <div class="num">{{ categoryStats.series?.total || 0 }}</div>
                     <div class="label">番号系列</div>
                 </div>
                 <div class="stat-card orange">
-                    <div class="num">{{ categoryStats.avatars ? categoryStats.avatars.cached : 0 }}</div>
+                    <div class="num">{{ categoryStats.avatars?.cached || 0 }}</div>
                     <div class="label">已下载头像</div>
                 </div>
                 <div style="flex:1;"></div>
@@ -1189,10 +1189,10 @@
             <!-- 子Tab：女演员 / 番号系列 -->
             <div class="category-tabs" style="display:flex;gap:8px;margin-bottom:15px;align-items:center;">
                 <button class="tab" :class="{active: categorySubTab === 'actors'}" @click="switchCategorySubTab('actors')">
-                    👩 女演员 <span class="tab-count">{{ categoryStats.actors ? categoryStats.actors.total : 0 }}</span>
+                    👩 女演员 <span class="tab-count">{{ categoryStats.actors?.total || 0 }}</span>
                 </button>
                 <button class="tab" :class="{active: categorySubTab === 'series'}" @click="switchCategorySubTab('series')">
-                    🏷️ 番号系列 <span class="tab-count">{{ categoryStats.series ? categoryStats.series.total : 0 }}</span>
+                    🏷️ 番号系列 <span class="tab-count">{{ categoryStats.series?.total || 0 }}</span>
                 </button>
                 <div style="flex:1;"></div>
                 <!-- 搜索框 -->
@@ -2880,6 +2880,7 @@ createApp({
             currentTab, backendStatus, currentUser, logout, getRoleName,
             // Movies
             movies, total, currentPage, pageSize, loading, searchKeyword, scrapeKeyword, scraping, selectedMovie,
+            showDetail, scrapeCheckResult,
             totalPages, visiblePages,
             fetchMovies, searchMovies, loadMovies, prevPage, nextPage, goToPage,
             scrapeByCode, scrapeBatch, stopScrape, closeDetail, showMovieDetail, getCoverUrl, handleImgError,
