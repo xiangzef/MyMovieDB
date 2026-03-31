@@ -1443,7 +1443,7 @@ createApp({
             scrapePanel.value.title = '';
             scrapePanel.value.logs = [];
             scrapePanel.value.pct = 0;
-            scrapePanel.value.jobId = null;
+            scrapePanel.value.jobId = '_pending_';
             scrapePanel.value.stats = { success: 0, fail: 0, linked: 0 };
 
             try {
@@ -1572,20 +1572,8 @@ createApp({
 
         // 停止刮削
         const stopScrape = async () => {
-            console.log('[stopScrape] jobId:', scrapePanel.value.jobId);
-            console.log('[stopScrape] jellyfinAbortController:', jellyfinAbortController);
-            
-            if (!scrapePanel.value.jobId) {
-                console.log('[stopScrape] 没有 jobId，直接返回');
-                return;
-            }
-
-            const jobId = scrapePanel.value.jobId;
-            scrapePanel.value.jobId = null;
-
             // 如果是 Jellyfin 扫描，使用 AbortController 取消
-            if (jobId.startsWith('jellyfin-') && jellyfinAbortController) {
-                console.log('[stopScrape] 调用 abort()');
+            if (jellyfinAbortController) {
                 jellyfinAbortController.abort();
                 jellyfinAbortController = null;
                 addScrapeLog('info', '⏹ 已取消扫描');
@@ -1594,17 +1582,32 @@ createApp({
                 return;
             }
 
-            // 其他刮削任务，调用后端 API 停止
+            const jobId = scrapePanel.value.jobId;
+
+            // 没有 jobId 或任务还在初始化中，直接关闭浮层
+            if (!jobId) {
+                scraping.value = false;
+                scrapePanel.value.show = false;
+                return;
+            }
+
+            // 标记已发送停止，防止重复点击
+            scrapePanel.value.jobId = null;
+
+            // _pending_ 表示任务刚启动还未拿到 jobId，停止所有任务
+            const stopPayload = jobId === '_pending_' ? {} : { job_id: jobId };
+
             try {
                 const res = await fetch(`${API}/scrape/stop`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ job_id: jobId })
+                    body: JSON.stringify(stopPayload)
                 });
                 const data = await res.json();
                 addScrapeLog('info', '⏹ 已发送停止信号');
             } catch (e) {
                 console.error('[stopScrape] error:', e);
+                addScrapeLog('error', '⏹ 停止信号发送失败');
             }
         };
 
@@ -1893,7 +1896,7 @@ createApp({
             scrapePanel.value.title = '本地视频库刮削';
             scrapePanel.value.logs = [];
             scrapePanel.value.pct = 0;
-            scrapePanel.value.jobId = null;
+            scrapePanel.value.jobId = '_pending_';
             scrapePanel.value.stats = { success: 0, fail: 0, linked: 0 };
             addScrapeLog('info', '🔄 开始本地视频刮削...');
 
@@ -2047,7 +2050,7 @@ createApp({
             scrapePanel.value.title = '修复刮削结果';
             scrapePanel.value.logs = [];
             scrapePanel.value.pct = 0;
-            scrapePanel.value.jobId = null;
+            scrapePanel.value.jobId = '_pending_';
             scrapePanel.value.stats = { success: 0, fail: 0, linked: 0 };
 
             // SSE 接口
