@@ -1581,8 +1581,16 @@
     </div>
 </div>
 
-<script src="https://cdn.bootcdn.net/ajax/libs/vue/3.4.27/vue.global.min.js"></script>
+<!-- Vue CDN + MD5: 加版本号强制刷新缓存 -->
+<script src="https://cdn.bootcdn.net/ajax/libs/vue/3.4.27/vue.global.prod.min.js?v=20260401"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/blueimp-md5/2.19.0/js/md5.min.js?v=20260401"></script>
 <script>
+// Vue/MD5 加载诊断
+if (typeof Vue === 'undefined') {
+  document.body.innerHTML = '<div style="color:#e94560;padding:40px;font-size:18px;">❌ Vue 加载失败，请检查网络或换个浏览器试试。</div>';
+} else if (typeof md5 === 'undefined') {
+  console.warn('⚠️ MD5 未加载，部分功能可能异常');
+}
 const { createApp, ref, computed, onMounted, nextTick } = Vue;
 
 // ========== 全局常量 ==========
@@ -1597,6 +1605,7 @@ const calcVisiblePages = (current, total) => {
     return pages;
 };
 
+try {
 createApp({
     setup() {
         const API = 'http://localhost:8000';
@@ -2856,11 +2865,108 @@ createApp({
             });
         };
 
-        // 从演员名获取本地头像 URL（base64 编码，不用 MD5）
+        // 从演员名获取本地头像 URL
         const getActorAvatarUrl = (name) => {
             if (!name) return null;
-            const hash = btoa(encodeURIComponent(name)).replace(/=+$/, '');
+            const hash = md5(name).slice(12, -12);
             return `${API}/avatars/${hash}.jpg`;
+        };
+
+        // md5 辅助（RFC 1321 标准实现，与 Python hashlib.md5 完全一致）
+        // 参考: RFC 1321 Section 3.1 — 与 Python hashlib.md5 结果逐字节一致
+        const md5 = (str) => {
+            const r = [7, 12, 17, 22,  7, 12, 17, 22,  7, 12, 17, 22,  7, 12, 17, 22,
+                        5,  9, 14, 20,  5,  9, 14, 20,  5,  9, 14, 20,  5,  9, 14, 20,
+                        4, 11, 16, 23,  4, 11, 16, 23,  4, 11, 16, 23,  4, 11, 16, 23,
+                        6, 10, 15, 21,  6, 10, 15, 21,  6, 10, 15, 21,  6, 10, 15, 21];
+            const k = new Uint32Array(64);
+            for (let i = 0; i < 64; i++) k[i] = Math.floor(Math.abs(Math.sin(i + 1)) * 0x100000000) >>> 0;
+
+            const msg = new TextEncoder().encode(str);
+            const origLen = msg.length;
+            // 填充：追加 0x80，再追加 0x00，使总长 ≡ 56 (mod 64)
+            const padLen = (55 - (origLen % 64) + 64) % 64; // 0~63
+            const buf = new Uint8Array(origLen + 1 + padLen + 8); // +1 for 0x80, +8 for bitLen
+            buf.set(msg);
+            buf[origLen] = 0x80;
+            // bit length（大端序，64位）
+            const view = new DataView(buf.buffer);
+            view.setUint32(buf.byteLength - 8, (origLen * 8) / 0x100000000 >>> 0, false);
+            view.setUint32(buf.byteLength - 4, (origLen * 8) >>> 0, false);
+
+            // MD5 初始化寄存器
+            let a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
+            let A = a0, B = b0, C = c0, D = d0;
+
+            // 逐块处理（每块 64 字节）
+            const blocks = buf.byteLength / 64;
+            for (let block = 0; block < blocks; block++) {
+                const M = new Uint32Array(16);
+                for (let i = 0; i < 16; i++) {
+                    M[i] = buf[block*64 + i*4]
+                         | (buf[block*64 + i*4 + 1] << 8)
+                         | (buf[block*64 + i*4 + 2] << 16)
+                         | (buf[block*64 + i*4 + 3] << 24);
+                }
+                let a = A, b = B, c = C, d = D;
+                for (let i = 0; i < 64; i++) {
+                    let f, g;
+                    if (i < 16)       { f = (b & c) | ((~b) & d); g = i; }
+                    else if (i < 32)  { f = (d & b) | ((~d) & c); g = (5*i + 1) % 16; }
+                    else if (i < 48)  { f = b ^ c ^ d;            g = (3*i + 5) % 16; }
+                    else              { f = c ^ (b | ~d);          g = (7*i)     % 16; }
+                    const temp = (b + ((a + f + k[i] + M[g]) >>> 0)) >>> 0;
+                    a = d; d = c; c = b;
+                    b = (temp + ((r[i] < 32 ? (1 << r[i]) : (1 << (r[i] - 32)) * 0x100000000) >>> 0)) >>> 0;
+                }
+                A = (A + a) >>> 0; B = (B + b) >>> 0; C = (C + c) >>> 0; D = (D + d) >>> 0;
+            }
+            const hex = n => (n & 0xffffffff).toString(16).padStart(8, '0');
+            return hex(A) + hex(B) + hex(C) + hex(D);
+        };
+
+            const A = a0, B = b0, C = c0, D = d0;
+            const X = new Uint32Array(N);
+            for (let i = 0; i < N; i++) X[i] = view.getUint32(i * 4, false);
+
+            let [a, b, c, d] = [A, B, C, D];
+            a = ff(a,b,c,d, X[0], 7, K[0]);  d = ff(d,a,b,c, X[1], 12, K[1]);
+            c = ff(c,d,a,b, X[2],17, K[2]);  b = ff(b,c,d,a, X[3], 22, K[3]);
+            a = ff(a,b,c,d, X[4], 7, K[4]);  d = ff(d,a,b,c, X[5], 12, K[5]);
+            c = ff(c,d,a,b, X[6],17, K[6]);  b = ff(b,c,d,a, X[7], 22, K[7]);
+            a = ff(a,b,c,d, X[8], 7, K[8]);  d = ff(d,a,b,c, X[9], 12, K[9]);
+            c = ff(c,d,a,b, X[10],17,K[10]);  b = ff(b,c,d,a,X[11], 22,K[11]);
+            a = ff(a,b,c,d,X[12], 7,K[12]);  d = ff(d,a,b,c,X[13], 12,K[13]);
+            c = ff(c,d,a,b,X[14],17,K[14]);  b = ff(b,c,d,a,X[15], 22,K[15]);
+            a = gg(a,b,c,d, X[1], 5,K[16]);  d = gg(d,a,b,c, X[6], 9,K[17]);
+            c = gg(c,d,a,b,X[11],14,K[18]);  b = gg(b,c,d,a, X[0],20,K[19]);
+            a = gg(a,b,c,d, X[5], 5,K[20]);  d = gg(d,a,b,c,X[10], 9,K[21]);
+            c = gg(c,d,a,b,X[15],14,K[22]);  b = gg(b,c,d,a, X[4],20,K[23]);
+            a = gg(a,b,c,d, X[9], 5,K[24]);  d = gg(d,a,b,c,X[14], 9,K[25]);
+            c = gg(c,d,a,b, X[3],14,K[26]);  b = gg(b,c,d,a, X[8],20,K[27]);
+            a = gg(a,b,c,d,X[13], 5,K[28]);  d = gg(d,a,b,c, X[2], 9,K[29]);
+            c = gg(c,d,a,b, X[7],14,K[30]);  b = gg(b,c,d,a,X[12], 20,K[31]);
+            a = hh(a,b,c,d, X[5], 4,K[32]);  d = hh(d,a,b,c, X[8],11,K[33]);
+            c = hh(c,d,a,b,X[11],16,K[34]);  b = hh(b,c,d,a,X[14],23,K[35]);
+            a = hh(a,b,c,d, X[1], 4,K[36]);  d = hh(d,a,b,c, X[4],11,K[37]);
+            c = hh(c,d,a,b, X[7],16,K[38]);  b = hh(b,c,d,a,X[10],23,K[39]);
+            a = hh(a,b,c,d,X[13], 4,K[40]);  d = hh(d,a,b,c, X[0],11,K[41]);
+            c = hh(c,d,a,b, X[3],16,K[42]);  b = hh(b,c,d,a, X[6],23,K[43]);
+            a = hh(a,b,c,d, X[9], 4,K[44]);  d = hh(d,a,b,c,X[12],11,K[45]);
+            c = hh(c,d,a,b,X[15],16,K[46]);  b = hh(b,c,d,a, X[2],23,K[47]);
+            a = ii(a,b,c,d, X[0], 6,K[48]);  d = ii(d,a,b,c, X[7],10,K[49]);
+            c = ii(c,d,a,b,X[14],15,K[50]);  b = ii(b,c,d,a, X[5],21,K[51]);
+            a = ii(a,b,c,d,X[12], 6,K[52]);  d = ii(d,a,b,c, X[3],10,K[53]);
+            c = ii(c,d,a,b,X[10],15,K[54]);  b = ii(b,c,d,a, X[1],21,K[55]);
+            a = ii(a,b,c,d, X[8], 6,K[56]);  d = ii(d,a,b,c,X[15],10,K[57]);
+            c = ii(c,d,a,b, X[6],15,K[58]);  b = ii(b,c,d,a,X[13],21,K[59]);
+            a = ii(a,b,c,d, X[4], 6,K[60]);  d = ii(d,a,b,c,X[11],10,K[61]);
+            c = ii(c,d,a,b, X[2],15,K[62]);  b = ii(b,c,d,a, X[9],21,K[63]);
+
+            const A2 = (A + a) >>> 0, B2 = (B + b) >>> 0;
+            const C2 = (C + c) >>> 0, D2 = (D + d) >>> 0;
+            const toHex = n => (n >>> 0).toString(16).padStart(8, '0');
+            return toHex(A2) + toHex(B2) + toHex(C2) + toHex(D2);
         };
 
         // 批量下载所有已知女优头像（SSE 进度浮层）
@@ -2868,32 +2974,71 @@ createApp({
             if (!confirm('确定下载所有已知女优头像？这会批量从 gfriends 仓库下载图片，可能需要较长时间。')) return;
             downloadingAvatars.value = true;
 
+            // 打开进度浮层
             scrapePanel.value.show = true;
             scrapePanel.value.title = '批量下载女优头像';
             scrapePanel.value.logs = [];
             scrapePanel.value.pct = 0;
-            scrapePanel.value.jobId = null;
-            scrapePanel.value.stats = { success: 0, fail: 0, skipped: 0 };
+            scrapePanel.value.jobId = '_pending_';
+            scrapePanel.value.stats = { success: 0, fail: 0, linked: 0 };
             addScrapeLog('info', '⬇ 开始下载女优头像...');
 
             try {
-                const res = await fetch(`${API}/actors/download-avatars?keyword=all`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' }
-                });
+                const res = await fetch(`${API}/actors/download-avatars?keyword=all`, { method: 'POST' });
+                // 后端崩溃时 response.body 可能为 null，先检查
+                if (!res.body) {
+                    addScrapeLog('fail', '❌ 服务器响应异常，请检查后端日志');
+                    throw new Error('Response body is null');
+                }
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                const data = await res.json();
-                addScrapeLog('success', '✅ ' + (data.message || '下载完成'));
-                showToast(data.message || '头像下载完成', 'success');
+
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (!line.startsWith('data:')) continue;
+                        try {
+                            const ev = JSON.parse(line.slice(5).trim());
+                            if (ev.type === 'start') {
+                                scrapePanel.value.jobId = ev.job_id;
+                                addScrapeLog('info', `共 ${ev.total} 位演员待下载`);
+                            } else if (ev.type === 'item') {
+                                scrapePanel.value.pct = ev.pct || 0;
+                                if (ev.status === 'success') {
+                                    scrapePanel.value.stats.success++;
+                                    addScrapeLog('success', `✅ ${ev.name}`);
+                                } else if (ev.status === 'skip') {
+                                    scrapePanel.value.stats.linked++;
+                                    addScrapeLog('info', `⏭ ${ev.name}（已有头像）`);
+                                } else {
+                                    scrapePanel.value.stats.fail++;
+                                    addScrapeLog('fail', `❌ ${ev.name}（未找到）`);
+                                }
+                            } else if (ev.type === 'complete') {
+                                scrapePanel.value.pct = 100;
+                                addScrapeLog('success', `🎉 ${ev.message || '下载完成'}`);
+                            }
+                        } catch {}
+                    }
+                }
             } catch (e) {
-                console.error('[downloadAvatars]', e);
-                addScrapeLog('fail', '❌ ' + (e.message || '下载失败'));
+                addScrapeLog('fail', '❌ 下载失败: ' + (e.message || 'network error'));
                 showToast('头像下载失败', 'error');
-            } finally {
+            }
+            // 无论成功失败，等待 1 秒后关闭浮层
+            setTimeout(() => {
                 scrapePanel.value.show = false;
                 downloadingAvatars.value = false;
-                loadCategoryStats();
-            }
+                loadCategoryStats();   // 刷新统计（has_avatar 状态可能已变）
+            }, 1000);
         };
 
         // Tab 切换
@@ -2951,6 +3096,10 @@ createApp({
         };
     }
 }).mount('#app');
+} catch(e) {
+  console.error('❌ Vue 初始化失败:', e);
+  document.body.insertAdjacentHTML('beforeend', '<div style="color:#e94560;padding:40px;font-size:16px;font-family:monospace;background:#1a1a2e;min-height:100vh;">❌ Vue 初始化失败<br><pre style="color:#f88;">' + e.message + '</pre></div>');
+}
 </script>
 </body>
 </html>
