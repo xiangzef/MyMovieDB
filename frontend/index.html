@@ -641,7 +641,7 @@
             font-style: italic;
         }
 
-        /* 进度浮层 */
+        /* 进度浮层（刮削进度，最高层级） */
         .scrape-overlay {
             display: none;
             position: fixed;
@@ -652,6 +652,20 @@
             justify-content: center;
         }
         .scrape-overlay.active { display: flex; }
+
+        /* 类别详情弹窗覆盖层（低于影片详情弹窗，但高于普通内容） */
+        .category-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.75);
+            z-index: 150;
+            align-items: flex-start;
+            justify-content: center;
+            padding: 40px 20px;
+            overflow-y: auto;
+        }
+        .category-overlay.active { display: flex; }
         .scrape-panel {
             background: #16213e;
             border-radius: 16px;
@@ -812,9 +826,12 @@
         }
         /* 类别详情弹窗 */
         .category-detail-modal {
-            max-width: 900px;
+            max-width: 1100px;
+            width: 95vw;
             max-height: 85vh;
             overflow-y: auto;
+            display: block !important;  /* 覆盖 .modal-content 的 flex */
+            padding: 24px;
         }
         .category-detail-header {
             display: flex;
@@ -1354,8 +1371,8 @@
     </div>
 
     <!-- ========== 类别详情列表浮层 ========== -->
-    <div class="scrape-overlay" :class="{active: showCategoryDetail}" @click.self="closeCategoryDetail">
-        <div class="modal-content category-detail-modal" @click.stop style="display:block;">
+    <div class="category-overlay" :class="{active: showCategoryDetail}" @click.self="closeCategoryDetail">
+        <div class="modal-content category-detail-modal" @click.stop>
             <button class="modal-close" @click="closeCategoryDetail">&times;</button>
             <div class="category-detail-header">
                 <button class="btn btn-sm btn-secondary" @click="closeCategoryDetail" style="margin-right:12px;">
@@ -1372,14 +1389,14 @@
                 <div v-for="m in categoryDetailMovies" :key="m.id"
                      class="movie-card"
                      @click="showMovieDetail(m.id)">
-                    <div class="movie-cover-wrap">
-                        <img v-if="m.poster_path || m.cover_url"
-                             :src="getCoverUrl(m)" class="movie-cover" @error="handleImgError" />
-                        <div v-else class="movie-cover-placeholder">{{ m.code }}</div>
-                        <div class="movie-overlay">
-                            <div class="movie-code">{{ m.code }}</div>
-                            <div class="movie-title">{{ m.title || m.title_jp || '未命名' }}</div>
-                        </div>
+                    <img v-if="m.poster_path || m.cover_url"
+                         :src="getCoverUrl(m)" class="movie-poster" @error="handleImgError" />
+                    <div v-else class="movie-poster" style="background:#0f3460;display:flex;align-items:center;justify-content:center;color:#e94560;font-size:13px;font-weight:bold;">
+                        {{ m.code }}
+                    </div>
+                    <div class="movie-info">
+                        <div class="movie-code">{{ m.code }}</div>
+                        <div class="movie-title">{{ m.title || m.title_jp || '未命名' }}</div>
                     </div>
                 </div>
             </div>
