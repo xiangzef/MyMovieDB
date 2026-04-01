@@ -15,6 +15,7 @@ import threading
 from pathlib import Path
 from PIL import Image
 from hashlib import md5
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -232,51 +233,114 @@ def lookup_actor(actor_name: str) -> dict:
     }
 
 
-def get_local_avatar_path(actor_name: str) -> Path:
-    """获取本地缓存的头像路径（按 md5(名字) 存储）"""
+def _get_avatar_filename(actor_name: str) -> str:
+    """
+    将演员姓名转换为文件名（URL-safe 编码）。
+    保留中文、日文、emoji 等原始字符，确保前端 URL 路径与后端文件名完全一致。
+    """
     if not actor_name or actor_name == "佚名":
         return None
+    # URL 编码：空格→%20，中文→%E4%B8%AD%E6%96%87，日文→%E3%81%82
+    # max length 80 防止文件系统问题
+    encoded = quote(str(actor_name), safe='')
+    if len(encoded) > 80:
+        # 截断后附 8 位 hash 保持唯一性
+        hash_suffix = md5(actor_name.encode("utf-8")).hexdigest()[:8]
+        encoded = encoded[:72] + "_" + hash_suffix
+    return encoded
+
+
+def get_local_avatar_path(actor_name: str) -> Path:
+    """
+    获取本地缓存的头像路径。
+    优先查 URL 编码格式（兼容现有大部分文件），再查 MD5 格式（早期下载的文件）。
+    """
+    if not actor_name or actor_name == "佚名":
+        return None
+
+    # 🔽 优先查 URL 编码格式（现有大部分文件用此格式）
+    filename = _get_avatar_filename(actor_name)
+    if filename:
+        path = AVATAR_DIR / f"{filename}.jpg"
+        if path.exists():
+            return path
+        path_png = AVATAR_DIR / f"{filename}.png"
+        if path_png.exists():
+            return path_png
+
+    # ✅ 备查 MD5 格式（早期文件）
     hash_name = md5(actor_name.encode("utf-8")).hexdigest()[12:-12]
     path = AVATAR_DIR / f"{hash_name}.jpg"
     if path.exists():
         return path
-    # 也尝试 png
     path_png = AVATAR_DIR / f"{hash_name}.png"
     if path_png.exists():
         return path_png
+
     return None
 
 
 def get_local_avatar_url(actor_name: str) -> str:
     """
-    获取本地头像的 HTTP URL 路径（供前端使用）
-    返回: /avatars/{hash}.jpg 或 None
+    获取本地头像的 HTTP URL 路径（供前端使用）。
+    优先查 URL 编码格式（兼容现有大部分文件），再查 MD5 格式（早期文件）。
+    返回: /avatars/{文件名}.jpg 或 None
     """
-    path = get_local_avatar_path(actor_name)
-    if path and path.exists():
-        hash_name = path.stem  # 不含扩展名
+    if not actor_name or actor_name == "佚名":
+        return None
+
+    # 🔽 优先查 URL 编码格式（现有大部分文件用此格式）
+    filename = _get_avatar_filename(actor_name)
+    if filename:
+        path_jpg = AVATAR_DIR / f"{filename}.jpg"
+        if path_jpg.exists():
+            return f"/avatars/{filename}.jpg"
+        path_png = AVATAR_DIR / f"{filename}.png"
+        if path_png.exists():
+            return f"/avatars/{filename}.png"
+
+    # ✅ 备查 MD5 格式（早期文件）
+    hash_name = md5(actor_name.encode("utf-8")).hexdigest()[12:-12]
+    path_jpg = AVATAR_DIR / f"{hash_name}.jpg"
+    if path_jpg.exists():
         return f"/avatars/{hash_name}.jpg"
+    path_png = AVATAR_DIR / f"{hash_name}.png"
+    if path_png.exists():
+        return f"/avatars/{hash_name}.png"
+
     return None
 
 
 def download_avatar(actor_name: str, url: str, prefer_aifix=True) -> bool:
     """
-    下载单个头像到本地缓存
+    下载单个头像到本地缓存（按姓名 URL 编码存储）。
     prefer_aifix: 优先选择 AI-Fix 版本（更高质量）
     """
     if not actor_name or actor_name == "佚名":
         return False
 
-    hash_name = md5(actor_name.encode("utf-8")).hexdigest()[12:-12]
-    local_path = AVATAR_DIR / f"{hash_name}.jpg"
+    filename = _get_avatar_filename(actor_name)
+    if not filename:
+        return False
 
-    # 已存在则跳过（除非文件损坏）
+    # 已存在（URL 编码格式）则跳过（除非文件损坏）
+    local_path = AVATAR_DIR / f"{filename}.jpg"
     if local_path.exists():
         try:
             Image.open(local_path).verify()
             return True  # 已缓存
         except:
             pass  # 文件损坏，重新下载
+
+    # 备查：旧文件用 MD5 命名，已存在则标记为成功
+    hash_name = md5(actor_name.encode("utf-8")).hexdigest()[12:-12]
+    old_path = AVATAR_DIR / f"{hash_name}.jpg"
+    if old_path.exists():
+        try:
+            Image.open(old_path).verify()
+            return True  # 旧文件已存在
+        except:
+            pass
 
     try:
         session = _get_session()
@@ -294,7 +358,7 @@ def download_avatar(actor_name: str, url: str, prefer_aifix=True) -> bool:
         with open(local_path, "wb") as f:
             f.write(resp.content)
 
-        logger.debug(f"头像下载成功: {actor_name}")
+        logger.debug(f"头像下载成功: {actor_name} → {filename}.jpg")
         return True
     except Exception as e:
         logger.warning(f"头像下载失败: {actor_name} <- {url}: {e}")

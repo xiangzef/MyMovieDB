@@ -128,6 +128,7 @@ class ActorItem(BaseModel):
     name: str
     count: int
     has_avatar: bool = False
+    local_url: Optional[str] = None  # 头像 URL，直接返回给前端
 
 
 class SeriesItem(BaseModel):

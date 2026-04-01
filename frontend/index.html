@@ -791,6 +791,11 @@
             font-size: 28px;
             color: #555;
         }
+        .actor-avatar-placeholder.unknown-actress {
+            background: linear-gradient(135deg, #3a2a1e 0%, #1a1510 100%) !important;
+            color: #c09060 !important;
+            border: 2px dashed #c09060;
+        }
         .actor-overlay {
             position: absolute;
             bottom: 0;
@@ -1212,25 +1217,25 @@
                     🏷️ 番号系列 <span class="tab-count">{{ categoryStats.series?.total || 0 }}</span>
                 </button>
                 <div style="flex:1;"></div>
-                <!-- 搜索框 -->
-                <input v-model="categoryKeyword" @input="onCategoryKeywordChange" 
+                <input v-model="categoryKeyword" @input="onCategoryKeywordChange"
                        :placeholder="categorySubTab === 'actors' ? '搜索女演员...' : '搜索番号系列...'"
                        style="padding:6px 12px;border-radius:6px;border:1px solid #333;background:#1a1a2e;color:#fff;width:180px;" />
             </div>
 
-            <!-- ========== 女演员列表 ========== -->
+            <!-- ========== 女演员列表（有头像 + 佚名聚合） ========== -->
             <div v-if="categorySubTab === 'actors'">
                 <div v-if="categoryLoading" style="text-align:center;padding:60px;color:#666;">加载中...</div>
                 <div v-else-if="categoryItems.length === 0" class="empty-state">
                     <p>暂无女演员数据</p>
                 </div>
                 <div v-else class="actor-grid">
-                    <div v-for="actor in categoryItems" :key="actor.name"
+                    <!-- 有头像的女演员 -->
+                    <div v-for="actor in categoryItems.filter(a => a.has_avatar)" :key="actor.name"
                          class="actor-card"
                          @click="openCategoryDetail('actor', actor.name)">
                         <div class="actor-avatar-wrap">
-                            <img v-if="actor.has_avatar"
-                                 :src="getActorAvatarUrl(actor.name)"
+                            <img v-if="actor.local_url"
+                                 :src="actor.local_url"
                                  :alt="actor.name"
                                  class="actor-avatar"
                                  loading="lazy"
@@ -1244,6 +1249,24 @@
                         </div>
                         <div class="actor-name">{{ actor.name }}</div>
                         <div class="actor-count">{{ actor.count }} 部</div>
+                    </div>
+
+                    <!-- 佚名聚合卡片：无头像的女演员归入此卡 -->
+                    <div v-if="categoryItems.filter(a => !a.has_avatar).length > 0"
+                         class="actor-card"
+                         @click="openCategoryDetail('yiming', '佚名')">
+                        <div class="actor-avatar-wrap">
+                            <div class="actor-avatar actor-avatar-placeholder unknown-actress">
+                                佚名
+                            </div>
+                            <div class="actor-overlay">
+                                <span>佚名</span>
+                            </div>
+                        </div>
+                        <div class="actor-name">佚名</div>
+                        <div class="actor-count">
+                            {{ categoryItems.filter(a => !a.has_avatar).length }} 位女演员
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1380,13 +1403,17 @@
                     &larr; 返回
                 </button>
                 <h3 v-if="categoryDetailType === 'actor'">👩 {{ categoryDetailName }}</h3>
+                <h3 v-else-if="categoryDetailType === 'yiming'">❓ 佚女演员</h3>
                 <h3 v-else>🏷️ {{ categoryDetailName }}</h3>
-                <span style="color:#888;margin-left:12px;">{{ categoryDetailTotal }} 部影片</span>
+                <span style="color:#888;margin-left:12px;">
+                    <span v-if="categoryDetailType === 'yiming'">{{ categoryDetailTotal }} 位女演员</span>
+                    <span v-else>{{ categoryDetailTotal }} 部影片</span>
+                </span>
             </div>
 
-            <!-- 影片网格 -->
+            <!-- 影片网格（有头像的女演员详情） -->
             <div v-if="categoryDetailLoading" style="text-align:center;padding:40px;color:#666;">加载中...</div>
-            <div v-else class="movie-grid">
+            <div v-else-if="categoryDetailType !== 'yiming'" class="movie-grid">
                 <div v-for="m in categoryDetailMovies" :key="m.id"
                      class="movie-card"
                      @click="showMovieDetail(m.id)">
@@ -1400,6 +1427,33 @@
                         <div class="movie-title">{{ m.title || m.title_jp || '未命名' }}</div>
                     </div>
                 </div>
+            </div>
+
+            <!-- 佚女演员网格（点击"佚名"聚合卡后展示） -->
+            <div v-else-if="namelessActors.length > 0" class="actor-grid">
+                <div v-for="actor in namelessActors" :key="actor.name"
+                     class="actor-card"
+                     @click="openCategoryDetail('actor', actor.name)">
+                    <div class="actor-avatar-wrap">
+                        <img v-if="actor.local_url"
+                             :src="actor.local_url"
+                             :alt="actor.name"
+                             class="actor-avatar"
+                             loading="lazy"
+                             @error="handleImgError" />
+                        <div v-else class="actor-avatar actor-avatar-placeholder unknown-actress">
+                            {{ actor.name.slice(0, 1) }}
+                        </div>
+                        <div class="actor-overlay">
+                            <span>{{ actor.name }}</span>
+                        </div>
+                    </div>
+                    <div class="actor-name">{{ actor.name }}</div>
+                    <div class="actor-count">{{ actor.count }} 部</div>
+                </div>
+            </div>
+            <div v-else-if="categoryDetailType === 'yiming'" style="text-align:center;padding:40px;color:#666;">
+                所有女演员头像均已收录 🎉
             </div>
 
             <!-- 分页 -->
@@ -1582,8 +1636,13 @@
 </div>
 
 <script src="/vue.global.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
 <script>
 const { createApp, ref, computed, onMounted, nextTick } = Vue;
+
+// ========== MD5（匹配 Python hashlib.md5） ==========
+// 使用 CryptoJS 库（从 CDN 加载），toString() 输出标准 hex
+function md5String(s) { return CryptoJS.MD5(s).toString(); }
 
 // ========== 全局常量 ==========
 const SAMPLE_IMG = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect fill="%230f3460" width="100" height="100"/><text x="50" y="55" text-anchor="middle" fill="%23666" font-size="12">No Cover</text></svg>';
@@ -1846,8 +1905,16 @@ createApp({
                 case 'start':
                     addScrapeLog('info', `🔄 ${evt.message || '开始处理...'}`);
                     break;
+                case 'source_start':
+                    // 扫描单个目录时显示目录路径
+                    if (evt.path) addScrapeLog('info', `📁 ${evt.message || evt.path}`);
+                    break;
+                case 'source_done':
+                    // 单目录扫描完成
+                    addScrapeLog('info', `✅ ${evt.message || '目录扫描完成'} (找到 ${evt.found} 个)`);
+                    break;
                 case 'progress':
-                    // 只更新进度和统计，不添加日志
+                    // 只更新进度和统计，不添加日志（防止高频日志刷屏）
                     scrapePanel.value.pct = evt.pct;
                     if (evt.stats) {
                         scrapePanel.value.stats.success = evt.stats.success || 0;
@@ -1890,7 +1957,9 @@ createApp({
                     break;
                 case 'done':
                     scrapePanel.value.pct = 100;
-                    addScrapeLog('info', `🎉 完成！成功 ${evt.success_count}，失败 ${evt.fail_count}`);
+                    const sc = evt.success_count ?? (evt.results ? evt.results.reduce((a, r) => a + (r.status === '完成' ? r.count : 0), 0) : 0);
+                    const fc = evt.fail_count ?? 0;
+                    addScrapeLog('info', `🎉 ${evt.message || '完成'}！共找到 ${sc + fc} 个`);
                     // 3秒后关闭浮层
                     setTimeout(() => {
                         scrapePanel.value.show = false;
@@ -2153,11 +2222,53 @@ createApp({
             } catch (e) { showToast('删除失败', 'error'); }
         };
 
-        // 普通目录重新扫描（复用 scanSources 逻辑，但只扫该目录）
+        // 普通目录重新扫描（调用单目录专用 API，只扫描该目录）
         const rescanSource = async (source) => {
             if (scanning.value) return;
-            // 直接触发全量扫描（后端会扫所有已注册目录）
-            await scanSources();
+            scanning.value = true;
+
+            scrapePanel.value.show = true;
+            scrapePanel.value.title = `重新扫描: ${source.path}`;
+            scrapePanel.value.logs = [];
+            scrapePanel.value.pct = 0;
+            scrapePanel.value.jobId = `scan-${source.id}`;
+            scrapePanel.value.stats = { success: 0, fail: 0, linked: 0 };
+            addScrapeLog('info', `🔍 重新扫描: ${source.path}`);
+
+            try {
+                const res = await fetch(`${API}/local-sources/${source.id}/scan`, { method: 'POST' });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        try {
+                            const evt = JSON.parse(line.slice(6));
+                            handleScrapeEvent(evt, 'scan');
+                        } catch (e) { /* ignore */ }
+                    }
+                }
+                if (buffer.startsWith('data: ')) {
+                    try {
+                        const evt = JSON.parse(buffer.slice(6));
+                        handleScrapeEvent(evt, 'scan');
+                    } catch (e) { /* ignore */ }
+                }
+            } catch (e) {
+                addScrapeLog('error', `连接失败: ${e.message}`);
+            }
+            scanning.value = false;
+            loadSources();
+            loadVideoStats();
+            if (currentTab.value === 'videos') loadLocalVideos();
         };
 
         const scanSources = async () => {
@@ -2749,7 +2860,7 @@ createApp({
         const categoryLoading = ref(false);
         const categoryKeyword = ref('');
         const categoryDetailName = ref('');
-        const categoryDetailType = ref('');  // 'actor' | 'series'
+        const categoryDetailType = ref('');  // 'actor' | 'series' | 'yiming'
         const categoryDetailTotal = ref(0);
         const categoryDetailPage = ref(1);
         const categoryDetailTotalPages = computed(() => Math.ceil(categoryDetailTotal.value / 48));
@@ -2757,6 +2868,7 @@ createApp({
         const categoryDetailMovies = ref([]);
         const categoryDetailLoading = ref(false);
         const showCategoryDetail = ref(false);
+        const namelessActors = ref([]);  // 佚女演员列表（详情弹窗用）
         const downloadingAvatars = ref(false);
         let categoryKeywordTimer = null;
 
@@ -2819,19 +2931,33 @@ createApp({
         const loadCategoryDetailList = async () => {
             categoryDetailLoading.value = true;
             try {
-                const name = encodeURIComponent(categoryDetailName.value);
-                const endpoint = categoryDetailType.value === 'actor'
-                    ? `${API}/categories/actors/${name}/movies`
-                    : `${API}/categories/series/${categoryDetailName.value}/movies`;
-                const res = await fetch(`${endpoint}?page=${categoryDetailPage.value}&page_size=48`);
-                const data = await res.json();
-                categoryDetailTotal.value = data.total;
-                categoryDetailMovies.value = data.items;
+                // 佚名聚合卡：加载无头像的女演员列表
+                if (categoryDetailType.value === 'yiming') {
+                    const params = new URLSearchParams({
+                        page: categoryDetailPage.value,
+                        page_size: 48,
+                    });
+                    const res = await fetch(`${API}/actors/not-in-repo?${params}`);
+                    const data = await res.json();
+                    categoryDetailTotal.value = data.total;
+                    namelessActors.value = data.items;
+                    categoryDetailMovies.value = [];
+                } else {
+                    const name = encodeURIComponent(categoryDetailName.value);
+                    const endpoint = categoryDetailType.value === 'actor'
+                        ? `${API}/categories/actors/${name}/movies`
+                        : `${API}/categories/series/${categoryDetailName.value}/movies`;
+                    const res = await fetch(`${endpoint}?page=${categoryDetailPage.value}&page_size=48`);
+                    const data = await res.json();
+                    categoryDetailTotal.value = data.total;
+                    categoryDetailMovies.value = data.items;
+                    namelessActors.value = [];
+                }
             } catch (e) { console.error(e); }
             categoryDetailLoading.value = false;
         };
 
-        const closeCategoryDetail = () => { showCategoryDetail.value = false; };
+        const closeCategoryDetail = () => { showCategoryDetail.value = false; namelessActors.value = []; };
         const categoryDetailPrevPage = () => {
             if (categoryDetailPage.value > 1) {
                 categoryDetailPage.value--;
@@ -2856,14 +2982,15 @@ createApp({
             });
         };
 
-        // 从演员名获取本地头像 URL（base64 编码，不用 MD5）
+        // 从演员名获取本地头像 URL（与后端 _get_avatar_filename 逻辑一致：URL 编码姓名）
+        // "张三" → /avatars/%E5%BC%A0%E4%B8%89.jpg
+        // 与 Python urllib.parse.quote(name, safe='') 完全对齐，不再有 MD5/Base64 编码对齐问题
         const getActorAvatarUrl = (name) => {
             if (!name) return null;
-            const hash = btoa(encodeURIComponent(name)).replace(/=+$/, '');
-            return `${API}/avatars/${hash}.jpg`;
+            return `${API}/avatars/${encodeURIComponent(name)}.jpg`;
         };
 
-        // 批量下载所有已知女优头像（SSE 进度浮层）
+        // 批量下载所有已知女优头像（SSE 实时进度）
         const downloadAllAvatars = async () => {
             if (!confirm('确定下载所有已知女优头像？这会批量从 gfriends 仓库下载图片，可能需要较长时间。')) return;
             downloadingAvatars.value = true;
@@ -2878,19 +3005,63 @@ createApp({
 
             try {
                 const res = await fetch(`${API}/actors/download-avatars?keyword=all`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' }
+                    method: 'POST'
+                    // 注意：不带 Content-Type 避免触发 CORS preflight
+                    // keyword 是 Query 参数，不是 body
                 });
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                const data = await res.json();
-                addScrapeLog('success', '✅ ' + (data.message || '下载完成'));
-                showToast(data.message || '头像下载完成', 'success');
+
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        try {
+                            const evt = JSON.parse(line.slice(6));
+                            // 处理头像下载事件
+                            if (evt.type === 'start') {
+                                scrapePanel.value.jobId = evt.job_id;
+                                scrapePanel.value.stats = { success: 0, fail: 0, skipped: 0 };
+                                addScrapeLog('info', `🔄 共 ${evt.total} 个女优，开始下载...`);
+                            } else if (evt.type === 'progress') {
+                                scrapePanel.value.pct = evt.pct;
+                            } else if (evt.type === 'item') {
+                                scrapePanel.value.pct = evt.pct;
+                                scrapePanel.value.stats[evt.status === 'skip' ? 'skipped' : evt.status === 'success' ? 'success' : 'fail']++;
+                                const icon = evt.status === 'skip' ? '⏭' : evt.status === 'success' ? '✅' : '❌';
+                                addScrapeLog(evt.status === 'skip' ? 'skipped' : evt.status === 'success' ? 'success' : 'fail',
+                                    `${icon} ${evt.name} ${evt.status === 'skip' ? '已缓存' : evt.status === 'success' ? '下载成功' : '失败'}`);
+                            } else if (evt.type === 'complete') {
+                                scrapePanel.value.pct = 100;
+                                addScrapeLog('success', `🎉 头像下载完成！成功 ${evt.success}，失败 ${evt.fail}，跳过 ${evt.total - evt.success - evt.fail}`);
+                                showToast(`头像下载完成：${evt.success} 成功`, 'success');
+                            }
+                        } catch (e) { /* ignore parse error */ }
+                    }
+                }
+                // 处理剩余 buffer
+                if (buffer.startsWith('data: ')) {
+                    try {
+                        const evt = JSON.parse(buffer.slice(6));
+                        if (evt.type === 'complete') {
+                            addScrapeLog('success', `🎉 完成！成功 ${evt.success}，失败 ${evt.fail}`);
+                            showToast(`头像下载完成：${evt.success} 成功`, 'success');
+                        }
+                    } catch (e) { /* ignore */ }
+                }
             } catch (e) {
                 console.error('[downloadAvatars]', e);
                 addScrapeLog('fail', '❌ ' + (e.message || '下载失败'));
                 showToast('头像下载失败', 'error');
             } finally {
-                scrapePanel.value.show = false;
+                setTimeout(() => { scrapePanel.value.show = false; }, 3000);
                 downloadingAvatars.value = false;
                 loadCategoryStats();
             }

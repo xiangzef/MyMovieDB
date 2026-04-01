@@ -705,6 +705,19 @@ def get_local_sources() -> list:
     return [dict(row) for row in rows]
 
 
+def get_local_source_by_id(source_id: int) -> Optional[dict]:
+    """根据 ID 获取单个本地视频源"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, path, name, enabled, video_count, last_scan_at, created_at
+        FROM local_sources WHERE id = ?
+    """, (source_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
 def delete_local_source(source_id: int) -> bool:
     """删除本地视频源（级联删除视频记录）"""
     conn = get_db()
@@ -1260,19 +1273,112 @@ def get_actor_stats(page: int = 1, page_size: int = 48, keyword: str = None) -> 
     try:
         from gfriends import lookup_actor, get_local_avatar_url
         has_avatar_func = lambda name: get_local_avatar_url(name) is not None
+        local_url_func = lambda name: get_local_avatar_url(name)
     except ImportError:
         has_avatar_func = lambda name: False
+        local_url_func = lambda name: None
 
     items = [
         {
             "name": name,
             "count": cnt,
-            "has_avatar": has_avatar_func(name)
+            "has_avatar": has_avatar_func(name),
+            "local_url": local_url_func(name),
         }
         for name, cnt in page_actors
     ]
 
     conn.close()
+    return total, items
+
+
+def get_actors_without_avatars(page: int = 1, page_size: int = None) -> tuple:
+    """
+    高效获取无头像女演员列表。
+    一次性扫描头像目录构建索引，再批量判断（避免逐个演员查磁盘）。
+    page_size=None 时返回全部无头像演员（用于批量下载）。
+    返回: (total, items=[{name, count, has_avatar, local_url}])
+    """
+    import hashlib
+    from pathlib import Path
+    from urllib.parse import quote
+
+    # ── 1. 一次性扫描所有已缓存的头像文件名，构建索引集合 ──
+    try:
+        avatar_dir = Path(__file__).resolve().parent.parent / "data" / "avatars"
+        if avatar_dir.exists():
+            cached_files = {p.stem for p in avatar_dir.iterdir() if p.suffix.lower() in (".jpg", ".png")}
+        else:
+            cached_files = set()
+    except Exception:
+        cached_files = set()
+
+    def _compute_filename(name: str):
+        """计算演员姓名的头像文件名（与 gfriends._get_avatar_filename 逻辑一致）"""
+        if not name or name == "佚名":
+            return None
+        # URL 编码格式
+        enc = quote(name, safe="")
+        if enc:
+            return enc
+        return None
+
+    def _has_avatar(name: str):
+        """O(1) 判断演员是否有本地头像"""
+        filename = _compute_filename(name)
+        if filename and filename in cached_files:
+            return True
+        # MD5 兜底
+        h = hashlib.md5(name.encode("utf-8")).hexdigest()[12:-12]
+        if h in cached_files:
+            return True
+        return False
+
+    def _local_url(name: str):
+        """返回头像 URL（无则为 None）"""
+        filename = _compute_filename(name)
+        if filename and filename in cached_files:
+            return f"/avatars/{filename}.jpg"
+        h = hashlib.md5(name.encode("utf-8")).hexdigest()[12:-12]
+        if h in cached_files:
+            return f"/avatars/{h}.jpg"
+        return None
+
+    # ── 2. 从数据库获取所有演员（无头像过滤，最小化数据传输） ──
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT code, actors FROM movies
+        WHERE actors IS NOT NULL AND actors != '[]' AND actors != ''
+    """)
+    rows = cursor.fetchall()
+
+    actor_count = {}
+    for code, actors_str in rows:
+        try:
+            actors = json.loads(actors_str)
+            for a in actors:
+                if a and a.strip() and a != "佚名":
+                    actor_count[a] = actor_count.get(a, 0) + 1
+        except Exception:
+            pass
+    conn.close()
+
+    # ── 3. 过滤无头像演员 ──
+    no_avatar_actors = [(name, cnt) for name, cnt in actor_count.items() if not _has_avatar(name)]
+    total = len(no_avatar_actors)
+    no_avatar_actors.sort(key=lambda x: -x[1])  # 按出现次数降序
+
+    # ── 4. 分页（page_size=None 时返回全部） ──
+    if page_size is not None:
+        offset = (page - 1) * page_size
+        page_actors = no_avatar_actors[offset:offset + page_size]
+    else:
+        page_actors = no_avatar_actors
+    items = [
+        {"name": name, "count": cnt, "has_avatar": False, "local_url": _local_url(name)}
+        for name, cnt in page_actors
+    ]
     return total, items
 
 

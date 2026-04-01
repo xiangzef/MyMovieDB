@@ -20,6 +20,7 @@ import time
 import asyncio
 from hashlib import sha256
 import secrets
+import json
 from datetime import datetime, timedelta
 
 from models import (
@@ -1288,6 +1289,148 @@ async def scan_local_sources():
     return StreamingResponse(generate(), media_type="text/event-stream", headers=headers)
 
 
+@app.post("/local-sources/{source_id}/scan", tags=["本地视频"])
+async def scan_single_source(source_id: int):
+    """
+    扫描指定目录，查找视频文件（单个目录的重新扫描）
+    SSE 流: 实时扫描进度
+    """
+    import os
+    import time
+
+    def _send_sse(data: dict):
+        return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    def generate():
+        VIDEO_EXTENSIONS = {
+            '.mp4', '.mkv', '.avi', '.wmv', '.mov',
+            '.flv', '.webm', '.m4v', '.mpg', '.mpeg',
+            '.ts', '.mts', '.m2ts', '.vob', '.ogv'
+        }
+
+        source = db.get_local_source_by_id(source_id)
+        if not source:
+            yield _send_sse({"type": "error", "message": f"目录不存在 (id={source_id})"})
+            return
+
+        base_path = source["path"]
+
+        # 阶段1: 开始
+        yield _send_sse({
+            "type": "start",
+            "total_sources": 1,
+            "message": f"重新扫描: {base_path}"
+        })
+
+        yield _send_sse({
+            "type": "source_start",
+            "source_index": 1,
+            "total_sources": 1,
+            "path": base_path,
+            "message": f"扫描: {base_path}"
+        })
+
+        if not os.path.isdir(base_path):
+            yield _send_sse({
+                "type": "source_done",
+                "source_index": 1,
+                "total_sources": 1,
+                "found": 0,
+                "status": "目录不存在"
+            })
+            yield _send_sse({
+                "type": "done",
+                "total_found": 0,
+                "results": [{"source_id": source_id, "path": base_path, "status": "目录不存在", "count": 0}]
+            })
+            return
+
+        # 统计文件数
+        file_count = 0
+        try:
+            for root, dirs, files in os.walk(base_path):
+                file_count += len([f for f in files if os.path.splitext(f)[1].lower() in VIDEO_EXTENSIONS])
+        except PermissionError:
+            pass
+
+        processed_files = 0
+        found_count = 0
+
+        try:
+            for root, dirs, files in os.walk(base_path):
+                for filename in files:
+                    ext = os.path.splitext(filename)[1].lower()
+                    if ext not in VIDEO_EXTENSIONS:
+                        continue
+
+                    processed_files += 1
+                    name_without_ext = os.path.splitext(filename)[0]
+                    code = _extract_code_from_filename(name_without_ext)
+
+                    # 每 50 个文件推送一次进度
+                    if processed_files % 50 == 0 or processed_files == file_count:
+                        yield _send_sse({
+                            "type": "progress",
+                            "source_index": 1,
+                            "total_sources": 1,
+                            "processed": processed_files,
+                            "total_files": file_count,
+                            "pct": int((processed_files / file_count) * 100) if file_count > 0 else 0,
+                            "found": found_count,
+                            "current_file": filename
+                        })
+
+                    if not code:
+                        continue
+
+                    file_path = os.path.join(root, filename)
+                    try:
+                        file_size = os.path.getsize(file_path)
+                    except OSError:
+                        file_size = 0
+
+                    video_data = {
+                        "source_id": source_id,
+                        "name": filename,
+                        "path": file_path,
+                        "code": code,
+                        "extension": ext,
+                        "file_size": file_size,
+                        "fanart_path": _find_image_path(root, code, "fanart"),
+                        "poster_path": _find_image_path(root, code, "poster"),
+                        "thumb_path": _find_image_path(root, code, "thumb"),
+                    }
+                    vid_id, is_new = db.upsert_local_video(video_data)
+                    found_count += 1
+
+        except PermissionError:
+            pass
+
+        db.update_local_source_scan(source_id, found_count)
+
+        yield _send_sse({
+            "type": "source_done",
+            "source_index": 1,
+            "total_sources": 1,
+            "found": found_count,
+            "status": "完成",
+            "message": f"完成 - 找到 {found_count} 个视频"
+        })
+
+        yield _send_sse({
+            "type": "done",
+            "total_found": found_count,
+            "results": [{"source_id": source_id, "path": base_path, "status": "完成", "count": found_count}]
+        })
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no"
+    }
+    return StreamingResponse(generate(), media_type="text/event-stream", headers=headers)
+
+
 @app.post("/local-sources/scrape", tags=["本地视频"])
 async def scrape_local_videos():
     """
@@ -2425,6 +2568,7 @@ async def get_categories_stats():
     _, all_actors = db.get_actor_stats(page=1, page_size=10000)
     total_actors = len(all_actors)
     total_known = sum(1 for a in all_actors if a["has_avatar"])
+
     total_series, _ = db.get_series_stats(page=1, page_size=10000)
 
     cached_avatars = 0
@@ -2432,9 +2576,31 @@ async def get_categories_stats():
         cached_avatars = len(list(AVATAR_DIR.glob("*.jpg"))) + len(list(AVATAR_DIR.glob("*.png")))
 
     return {
-        "actors": {"total": total_actors, "known": total_known, "anonymous": total_actors - total_known},
+        "actors": {
+            "total": total_actors,
+            "known": total_known,
+            "anonymous": total_actors - total_known,
+        },
         "series": {"total": total_series},
         "avatars": {"cached": cached_avatars}
+    }
+
+
+@app.get("/actors/not-in-repo", tags=["女演员"])
+async def get_actors_not_in_repo(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(48, ge=1, le=200)
+):
+    """
+    获取佚女演员列表（本地无头像的女演员，用于点击"佚名"聚合卡后展示）。
+    使用高效批量头像索引，避免逐演员查磁盘。
+    """
+    total, items = db.get_actors_without_avatars(page=page, page_size=page_size)
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "items": items
     }
 
 
@@ -2456,12 +2622,15 @@ async def download_actor_avatars(keyword: str = Query(...)):
     import asyncio
 
     if keyword == "all":
-        _, all_actors = db.get_actor_stats(page=1, page_size=10000)
-        names = [a["name"] for a in all_actors if not a["has_avatar"]]
+        _, nameless_actors = db.get_actors_without_avatars()
+        names = [a["name"] for a in nameless_actors]
     else:
         names = [n.strip() for n in keyword.replace(",", " ").split() if n.strip()]
 
     async def generate():
+        # 先 yield 一次空行，确保 headers 尽早发送（解决 CORS StreamingResponse 问题）
+        await asyncio.sleep(0)
+
         if not names:
             yield f"data: {json.dumps({'type': 'complete', 'message': '没有需要下载的演员', 'total': 0, 'success': 0, 'fail': 0})}\n\n"
             return
@@ -2478,7 +2647,7 @@ async def download_actor_avatars(keyword: str = Query(...)):
             pct = int((i / total) * 100)
             yield f"data: {json.dumps({'type': 'progress', 'current': i+1, 'total': total, 'pct': pct, 'name': name})}\n\n"
 
-            # 在线程池中执行下载
+            # 在线程池中执行下载（网络请求可能较慢，不阻塞主线程）
             def do_download(n=name):
                 local = get_local_avatar_path(n)
                 if local and local.exists():
@@ -2505,7 +2674,12 @@ async def download_actor_avatars(keyword: str = Query(...)):
 
         yield f"data: {json.dumps({'type': 'complete', 'total': total, 'success': success_count, 'fail': fail_count, 'pct': 100, 'message': f'下载完成：{success_count}/{total} 成功'})}\n\n"
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    # SSE 专用 headers，防止代理/浏览器缓冲导致流式推送失效
+    headers = {
+        "X-Accel-Buffering": "no",
+        "Cache-Control": "no-cache",
+    }
+    return StreamingResponse(generate(), media_type="text/event-stream", headers=headers)
 
 
 # ===============================================================================
