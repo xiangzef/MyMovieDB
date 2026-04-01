@@ -31,6 +31,9 @@ data/*.db-journal
 data/covers/*
 !data/covers/.gitkeep
 
+data/avatars/*
+!data/avatars/.gitkeep
+
 data\avatars
 
 # Logs

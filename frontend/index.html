@@ -1354,8 +1354,8 @@
     </div>
 
     <!-- ========== 类别详情列表浮层 ========== -->
-    <div class="modal" :class="{active: showCategoryDetail}" @click.self="closeCategoryDetail">
-        <div class="modal-content category-detail-modal" @click.stop>
+    <div class="scrape-overlay" :class="{active: showCategoryDetail}" @click.self="closeCategoryDetail">
+        <div class="modal-content category-detail-modal" @click.stop style="display:block;">
             <button class="modal-close" @click="closeCategoryDetail">&times;</button>
             <div class="category-detail-header">
                 <button class="btn btn-sm btn-secondary" @click="closeCategoryDetail" style="margin-right:12px;">
@@ -2851,17 +2851,65 @@ createApp({
             return h + h.slice(-8);
         };
 
-        // 批量下载所有已知女优头像
+        // 批量下载所有已知女优头像（SSE 进度浮层）
         const downloadAllAvatars = async () => {
             if (!confirm('确定下载所有已知女优头像？这会批量从 gfriends 仓库下载图片，可能需要较长时间。')) return;
             downloadingAvatars.value = true;
+
+            // 打开进度浮层
+            scrapePanel.value.show = true;
+            scrapePanel.value.title = '批量下载女优头像';
+            scrapePanel.value.logs = [];
+            scrapePanel.value.pct = 0;
+            scrapePanel.value.jobId = '_pending_';
+            scrapePanel.value.stats = { success: 0, fail: 0, linked: 0 };
+            addScrapeLog('info', '⬇ 开始下载女优头像...');
+
             try {
                 const res = await fetch(`${API}/actors/download-avatars?keyword=all`, { method: 'POST' });
-                const data = await res.json();
-                showToast(data.message || '下载完成', 'success');
-                loadCategoryStats();
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (!line.startsWith('data:')) continue;
+                        try {
+                            const ev = JSON.parse(line.slice(5).trim());
+                            if (ev.type === 'start') {
+                                scrapePanel.value.jobId = ev.job_id;
+                                addScrapeLog('info', `共 ${ev.total} 位演员待下载`);
+                            } else if (ev.type === 'item') {
+                                scrapePanel.value.pct = ev.pct || 0;
+                                if (ev.status === 'success') {
+                                    scrapePanel.value.stats.success++;
+                                    addScrapeLog('success', `✅ ${ev.name}`);
+                                } else if (ev.status === 'skip') {
+                                    scrapePanel.value.stats.linked++;
+                                    addScrapeLog('info', `⏭ ${ev.name}（已有头像）`);
+                                } else {
+                                    scrapePanel.value.stats.fail++;
+                                    addScrapeLog('fail', `❌ ${ev.name}（未找到）`);
+                                }
+                            } else if (ev.type === 'complete') {
+                                scrapePanel.value.pct = 100;
+                                addScrapeLog('success', `🎉 ${ev.message || '下载完成'}`);
+                                loadCategoryStats();
+                            }
+                        } catch {}
+                    }
+                }
             } catch (e) {
-                showToast('下载失败', 'error');
+                addScrapeLog('fail', '❌ 下载失败: ' + e.message);
+                showToast('头像下载失败', 'error');
             }
             downloadingAvatars.value = false;
         };

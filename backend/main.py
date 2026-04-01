@@ -2451,8 +2451,8 @@ async def lookup_actor(actor_name: str):
 
 @app.post("/actors/download-avatars", tags=["女演员"])
 async def download_actor_avatars(keyword: str = Query(...)):
-    """批量下载女演员头像"""
-    from gfriends import batch_download_avatars
+    """批量下载女演员头像（SSE 实时进度流）"""
+    from gfriends import search_avatar_url, download_avatar, get_local_avatar_path
     import asyncio
 
     if keyword == "all":
@@ -2461,16 +2461,51 @@ async def download_actor_avatars(keyword: str = Query(...)):
     else:
         names = [n.strip() for n in keyword.replace(",", " ").split() if n.strip()]
 
-    if not names:
-        return {"message": "没有需要下载的演员", "total": 0}
+    async def generate():
+        if not names:
+            yield f"data: {json.dumps({'type': 'complete', 'message': '没有需要下载的演员', 'total': 0, 'success': 0, 'fail': 0})}\n\n"
+            return
 
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None,
-        lambda: batch_download_avatars(names, max_workers=3, delay=0.5)
-    )
-    result["message"] = "下载完成，成功 {}/{}".format(len(result.get("success", [])), result.get("total", 0))
-    return result
+        total = len(names)
+        success_count = 0
+        fail_count = 0
+
+        # 发送开始事件
+        job_id = f"avatar-{int(__import__('time').time())}"
+        yield f"data: {json.dumps({'type': 'start', 'job_id': job_id, 'total': total})}\n\n"
+
+        for i, name in enumerate(names):
+            pct = int((i / total) * 100)
+            yield f"data: {json.dumps({'type': 'progress', 'current': i+1, 'total': total, 'pct': pct, 'name': name})}\n\n"
+
+            # 在线程池中执行下载
+            def do_download(n=name):
+                local = get_local_avatar_path(n)
+                if local and local.exists():
+                    return ("skip", n)
+                urls = search_avatar_url(n)
+                if not urls:
+                    return ("fail", n)
+                url = urls[0]["url"]
+                ok = download_avatar(n, url)
+                return ("success" if ok else "fail", n)
+
+            loop = asyncio.get_event_loop()
+            status, _ = await loop.run_in_executor(None, do_download)
+
+            if status == "success":
+                success_count += 1
+                yield f"data: {json.dumps({'type': 'item', 'status': 'success', 'name': name, 'pct': pct})}\n\n"
+            elif status == "skip":
+                success_count += 1
+                yield f"data: {json.dumps({'type': 'item', 'status': 'skip', 'name': name, 'pct': pct})}\n\n"
+            else:
+                fail_count += 1
+                yield f"data: {json.dumps({'type': 'item', 'status': 'fail', 'name': name, 'pct': pct})}\n\n"
+
+        yield f"data: {json.dumps({'type': 'complete', 'total': total, 'success': success_count, 'fail': fail_count, 'pct': 100, 'message': f'下载完成：{success_count}/{total} 成功'})}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 # ===============================================================================
