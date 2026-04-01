@@ -1580,6 +1580,7 @@
     </div>
 </div>
 
+<script src="https://cdn.bootcdn.net/ajax/libs/spark-md5/3.2.2/spark-md5.min.js"></script>
 <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
 <script>
 const { createApp, ref, computed, onMounted, nextTick } = Vue;
@@ -1959,6 +1960,9 @@ createApp({
                 console.error('[stopScrape] error:', e);
                 addScrapeLog('error', '⏹ 停止信号发送失败');
             }
+            // 无论成功失败，都关闭浮层
+            scraping.value = false;
+            scrapePanel.value.show = false;
         };
 
         // ========== 详情弹窗辅助函数 ==========
@@ -2855,78 +2859,8 @@ createApp({
             return `${API}/avatars/${hash}.jpg`;
         };
 
-        // md5 辅助（RFC 1321 标准实现，与 Python hashlib.md5 一致）
-        const md5 = (str) => {
-            const rotateLeft = (x, n) => (x << n) | (x >>> (32 - n));
-            const ff = (a, b, c, d, x, s, t) => (a + (b & c | ~b & d) + x + t) >>> 0;
-            const gg = (a, b, c, d, x, s, t) => (a + (b & d | c & ~d) + x + t) >>> 0;
-            const hh = (a, b, c, d, x, s, t) => (a + (b ^ c ^ d) + x + t) >>> 0;
-            const ii = (a, b, c, d, x, s, t) => (a + (c ^ (b | ~d)) + x + t) >>> 0;
-
-            const bytes = unescape(encodeURIComponent(str));
-            const msg = new Uint8Array(bytes.length);
-            for (let i = 0; i < bytes.length; i++) msg[i] = bytes.charCodeAt(i);
-
-            const M = 64, N = 16;
-            const a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
-            const K = new Uint32Array(64);
-            for (let i = 0; i < 64; i++) K[i] = Math.floor(Math.abs(Math.sin(i + 1)) * 0x100000000);
-
-            const padLen = (M - (msg.length % M)) % M + M;
-            const padded = new Uint8Array(msg.length + padLen);
-            padded.set(msg);
-            padded[msg.length] = 0x80;
-            const bitLen = msg.length * 8;
-            const view = new DataView(padded.buffer);
-            view.setUint32(padded.length - 4, bitLen >>> 32, false);
-            view.setUint32(padded.length, bitLen & 0xffffffff, false);
-
-            const A = a0, B = b0, C = c0, D = d0;
-            const X = new Uint32Array(N);
-            for (let i = 0; i < N; i++) X[i] = view.getUint32(i * 4, false);
-
-            let [a, b, c, d] = [A, B, C, D];
-            // Round 1
-            a = ff(a,b,c,d, X[0], 7, K[0]);  d = ff(d,a,b,c, X[1], 12, K[1]);
-            c = ff(c,d,a,b, X[2], 17, K[2]);  b = ff(b,c,d,a, X[3], 22, K[3]);
-            a = ff(a,b,c,d, X[4], 7, K[4]);   d = ff(d,a,b,c, X[5], 12, K[5]);
-            c = ff(c,d,a,b, X[6], 17, K[6]);  b = ff(b,c,d,a, X[7], 22, K[7]);
-            a = ff(a,b,c,d, X[8], 7, K[8]);   d = ff(d,a,b,c, X[9], 12, K[9]);
-            c = ff(c,d,a,b, X[10],17, K[10]); b = ff(b,c,d,a, X[11],22, K[11]);
-            a = ff(a,b,c,d, X[12],7, K[12]);  d = ff(d,a,b,c, X[13],12, K[13]);
-            c = ff(c,d,a,b, X[14],17, K[14]); b = ff(b,c,d,a, X[15],22, K[15]);
-            // Round 2
-            a = gg(a,b,c,d, X[1], 5, K[16]);  d = gg(d,a,b,c, X[6], 9, K[17]);
-            c = gg(c,d,a,b, X[11],14, K[18]); b = gg(b,c,d,a, X[0], 20, K[19]);
-            a = gg(a,b,c,d, X[5], 5, K[20]);  d = gg(d,a,b,c, X[10],9, K[21]);
-            c = gg(c,d,a,b, X[15],14, K[22]); b = gg(b,c,d,a, X[4], 20, K[23]);
-            a = gg(a,b,c,d, X[9], 5, K[24]);  d = gg(d,a,b,c, X[14],9, K[25]);
-            c = gg(c,d,a,b, X[3], 14, K[26]); b = gg(b,c,d,a, X[8], 20, K[27]);
-            a = gg(a,b,c,d, X[13],5, K[28]);  d = gg(d,a,b,c, X[2], 9, K[29]);
-            c = gg(c,d,a,b, X[7], 14, K[30]); b = gg(b,c,d,a, X[12],20, K[31]);
-            // Round 3
-            a = hh(a,b,c,d, X[5], 4, K[32]);  d = hh(d,a,b,c, X[8], 11, K[33]);
-            c = hh(c,d,a,b, X[11],16, K[34]);  b = hh(b,c,d,a, X[14],23, K[35]);
-            a = hh(a,b,c,d, X[1], 4, K[36]);   d = hh(d,a,b,c, X[4], 11, K[37]);
-            c = hh(c,d,a,b, X[7], 16, K[38]);  b = hh(b,c,d,a, X[10],23, K[39]);
-            a = hh(a,b,c,d, X[13],4, K[40]);   d = hh(d,a,b,c, X[0], 11, K[41]);
-            c = hh(c,d,a,b, X[3], 16, K[42]);  b = hh(b,c,d,a, X[6], 23, K[43]);
-            a = hh(a,b,c,d, X[9], 4, K[44]);   d = hh(d,a,b,c, X[12],11, K[45]);
-            c = hh(c,d,a,b, X[15],16, K[46]);  b = hh(b,c,d,a, X[2], 23, K[47]);
-            // Round 4
-            a = ii(a,b,c,d, X[0], 6, K[48]);  d = ii(d,a,b,c, X[7], 10, K[49]);
-            c = ii(c,d,a,b, X[14],15, K[50]); b = ii(b,c,d,a, X[5], 21, K[51]);
-            a = ii(a,b,c,d, X[12],6, K[52]);  d = ii(d,a,b,c, X[3], 10, K[53]);
-            c = ii(c,d,a,b, X[10],15, K[54]); b = ii(b,c,d,a, X[1], 21, K[55]);
-            a = ii(a,b,c,d, X[8], 6, K[56]);   d = ii(d,a,b,c, X[15],10, K[57]);
-            c = ii(c,d,a,b, X[6], 15, K[58]); b = ii(b,c,d,a, X[13],21, K[59]);
-            a = ii(a,b,c,d, X[4], 6, K[60]);   d = ii(d,a,b,c, X[11],10, K[61]);
-            c = ii(c,d,a,b, X[2], 15, K[62]); b = ii(b,c,d,a, X[9], 21, K[63]);
-
-            A += a; B += b; C += c; D += d;
-            const toHex = n => ((n >>> 0) & 0xffffffff).toString(16).padStart(8, '0');
-            return toHex(A) + toHex(B) + toHex(C) + toHex(D);
-        };
+        // md5 辅助（使用 spark-md5 库，RFC 1321 标准，与 Python hashlib.md5 完全一致）
+        const md5 = (str) => SparkMD5.hash(str);
 
         // 批量下载所有已知女优头像（SSE 进度浮层）
         const downloadAllAvatars = async () => {
@@ -2984,16 +2918,20 @@ createApp({
                             } else if (ev.type === 'complete') {
                                 scrapePanel.value.pct = 100;
                                 addScrapeLog('success', `🎉 ${ev.message || '下载完成'}`);
-                                loadCategoryStats();
                             }
                         } catch {}
                     }
                 }
             } catch (e) {
-                addScrapeLog('fail', '❌ 下载失败: ' + e.message);
+                addScrapeLog('fail', '❌ 下载失败: ' + (e.message || 'network error'));
                 showToast('头像下载失败', 'error');
             }
-            downloadingAvatars.value = false;
+            // 无论成功失败，等待 1 秒后关闭浮层
+            setTimeout(() => {
+                scrapePanel.value.show = false;
+                downloadingAvatars.value = false;
+                loadCategoryStats();   // 刷新统计（has_avatar 状态可能已变）
+            }, 1000);
         };
 
         // Tab 切换
