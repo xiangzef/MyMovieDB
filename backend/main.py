@@ -2699,4 +2699,47 @@ if cfg.FRONTEND_DIR.exists():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+    import socket
+
+    # 从 config.ini 读取端口
+    server_port = cfg.PORT
+    host = cfg.HOST
+
+    # 预检查端口是否可用
+    def is_port_available(port: int) -> bool:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("0.0.0.0", port))
+                return True
+        except OSError:
+            return False
+
+    # 如果首选端口不可用，尝试递增端口
+    actual_port = server_port
+    if not is_port_available(actual_port):
+        print(f"[WARNING] 端口 {actual_port} 已被占用，尝试其他端口...")
+        for port in range(actual_port + 1, actual_port + 20):
+            if is_port_available(port):
+                actual_port = port
+                print(f"[INFO] 找到可用端口: {port}")
+                break
+        else:
+            print(f"[ERROR] 无法找到可用端口（{actual_port}~{actual_port+19} 均被占用），请先关闭占用进程。")
+            exit(1)
+
+    print(f"=" * 50)
+    print(f"启动 MyMovieDB 后端服务")
+    print(f"端口: {actual_port}")
+    print(f"API文档: http://localhost:{actual_port}/docs")
+    print(f"前端页面: http://localhost:{actual_port}/")
+    print(f"=" * 50)
+
+    try:
+        uvicorn.run("main:app", host=host, port=actual_port, reload=False)
+    except OSError as e:
+        if e.errno == 10013:
+            print(f"[ERROR] 端口 {actual_port} 被占用（权限不足或端口已被占用）。")
+            print(f"[ERROR] 请关闭占用该端口的进程后重试，或修改 config.ini 中的 port 值。")
+        else:
+            print(f"[ERROR] 启动失败: {e}")
+        exit(1)

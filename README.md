@@ -18,7 +18,7 @@
 | 📂 **本地视频管理** | 扫描本地目录，批量刮削视频文件 |
 | 🔍 **智能搜索** | 支持编号、标题搜索 |
 | 🖼️ **封面管理** | 自动下载和本地存储封面图 |
-| 👩 **女演员分类** | gfriends 头像引擎，按女演员浏览作品 |
+| 👩 **女演员分类** | gfriends 头像引擎，按女演员浏览作品；佚女演员可点击展开独立列表 |
 | 🏷️ **番号系列分类** | 按番号前缀分类浏览作品 |
 | 🌐 **Web 界面** | 响应式设计，支持移动端 |
 | 📦 **一键打包** | 可编译成 exe，系统托盘运行 |
@@ -178,7 +178,11 @@ https://raw.githubusercontent.com/gfriends/gfriends/master/
 
 ### 本地缓存
 
-头像图片保存在 `data/avatars/` 目录，按 `md5(演员名)[12:-12].jpg` 命名，避免文件名冲突。
+头像图片保存在 `data/avatars/` 目录，按**真实演员名字**命名（如 `三上悠亜.jpg`、`JULIA.jpg`），去除 Windows 文件名非法字符（`\\/:*?"<>|`）后存储。
+
+**URL 匹配原理：** FastAPI（Starlette）在收到头像请求时会自动对 URL 做 decode（如 `%E4%B8%89%E4%B8%8A` → `三上`），从而匹配文件系统中以真实字符命名的文件。
+
+**兼容性：** 同时保留 MD5 格式兜底（`data/avatars/` 中极少数早期文件），新下载的头像均使用真实名字格式。
 
 ---
 
@@ -285,8 +289,9 @@ https://raw.githubusercontent.com/gfriends/gfriends/master/
 | 接口 | 方法 | 说明 |
 |------|------|------|
 | `/actors/lookup/{name}` | GET | 查询演员是否为真实女优 |
+| `/actors/not-in-repo` | GET | 佚女演员列表（无头像女演员，含分页） |
 | `/actors/download-avatars` | POST | 批量下载头像 |
-| `/avatars/{hash}.jpg` | GET | 头像图片 |
+| `/avatars/{name}.jpg` | GET | 头像图片 |
 
 ### 封面与文件
 
@@ -317,8 +322,8 @@ https://raw.githubusercontent.com/gfriends/gfriends/master/
 | 目录 | 说明 |
 |------|------|
 | `data/movies.db` | SQLite 数据库 |
-| `data/covers/` | 封面图（按 md5 命名） |
-| `data/avatars/` | gfriends 头像缓存 |
+| `data/covers/` | 封面图（按番号目录存储） |
+| `data/avatars/` | gfriends 头像缓存（按真实名字命名，如 `三上悠亜.jpg`） |
 | `data/nfo/` | NFO 元数据文件 |
 | `data/backup/` | 数据库自动备份 |
 

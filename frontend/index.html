@@ -1252,7 +1252,7 @@
                     </div>
 
                     <!-- 佚名聚合卡片：无头像的女演员归入此卡 -->
-                    <div v-if="categoryItems.filter(a => !a.has_avatar).length > 0"
+                    <div v-if="(categoryStats.actors?.anonymous || 0) > 0"
                          class="actor-card"
                          @click="openCategoryDetail('yiming', '佚名')">
                         <div class="actor-avatar-wrap">
@@ -1265,7 +1265,7 @@
                         </div>
                         <div class="actor-name">佚名</div>
                         <div class="actor-count">
-                            {{ categoryItems.filter(a => !a.has_avatar).length }} 位女演员
+                            {{ categoryStats.actors?.anonymous || 0 }} 位女演员
                         </div>
                     </div>
                 </div>
@@ -3113,7 +3113,7 @@ createApp({
             categoryDetailName, categoryDetailType, categoryDetailTotal,
             categoryDetailPage, categoryDetailTotalPages, categoryDetailVisiblePages,
             categoryDetailMovies, categoryDetailLoading, showCategoryDetail,
-            downloadingAvatars,
+            namelessActors, downloadingAvatars,
             loadCategoryStats, loadCategoryList, switchCategorySubTab,
             onCategoryKeywordChange, categoryPrevPage, categoryNextPage, categoryGoToPage,
             openCategoryDetail, closeCategoryDetail,

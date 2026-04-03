@@ -233,48 +233,68 @@ def lookup_actor(actor_name: str) -> dict:
     }
 
 
-def _get_avatar_filename(actor_name: str) -> str:
+def _safe_filename(name: str) -> str:
     """
-    将演员姓名转换为文件名（URL-safe 编码）。
-    保留中文、日文、emoji 等原始字符，确保前端 URL 路径与后端文件名完全一致。
+    将演员姓名转换为安全的文件名（直接用真实名字，去除非法字符）。
+    Windows 文件名非法字符: \\ / : * ? " < > |
+    """
+    if not name:
+        return None
+    # 替换非法字符为全角或下划线
+    illegal = r'\/:*?"<>|'
+    result = name
+    for ch in illegal:
+        result = result.replace(ch, '_')
+    return result.strip()
+
+
+def _get_avatar_filename(actor_name: str, for_lookup: bool = False) -> str:
+    """
+    将演员姓名转换为文件名（使用真实名字，不做 URL 编码）。
+    Starlette StaticFiles 会对 URL 做 decode，所以文件名必须是真实字符。
     """
     if not actor_name or actor_name == "佚名":
         return None
-    # URL 编码：空格→%20，中文→%E4%B8%AD%E6%96%87，日文→%E3%81%82
-    # max length 80 防止文件系统问题
-    encoded = quote(str(actor_name), safe='')
-    if len(encoded) > 80:
-        # 截断后附 8 位 hash 保持唯一性
-        hash_suffix = md5(actor_name.encode("utf-8")).hexdigest()[:8]
-        encoded = encoded[:72] + "_" + hash_suffix
-    return encoded
+    return _safe_filename(actor_name)
+
+
+def _safe_exists(path):
+    """安全检查文件是否存在（处理非法路径名/超长路径错误）"""
+    try:
+        return path.exists()
+    except OSError:
+        return False
 
 
 def get_local_avatar_path(actor_name: str) -> Path:
     """
     获取本地缓存的头像路径。
-    优先查 URL 编码格式（兼容现有大部分文件），再查 MD5 格式（早期下载的文件）。
+    查找顺序：
+      1. 真实名字格式（当前格式，如 三上悠亜.jpg）
+      2. MD5 兜底格式（最早期文件）
     """
     if not actor_name or actor_name == "佚名":
         return None
 
-    # 🔽 优先查 URL 编码格式（现有大部分文件用此格式）
-    filename = _get_avatar_filename(actor_name)
-    if filename:
-        path = AVATAR_DIR / f"{filename}.jpg"
-        if path.exists():
-            return path
-        path_png = AVATAR_DIR / f"{filename}.png"
-        if path_png.exists():
-            return path_png
+    safe_name = _safe_filename(actor_name)
+    if not safe_name:
+        return None
 
-    # ✅ 备查 MD5 格式（早期文件）
+    # 1) 真实名字格式（当前逻辑）
+    path = AVATAR_DIR / f"{safe_name}.jpg"
+    if _safe_exists(path):
+        return path
+    path_png = AVATAR_DIR / f"{safe_name}.png"
+    if _safe_exists(path_png):
+        return path_png
+
+    # 2) MD5 兜底（早期文件）
     hash_name = md5(actor_name.encode("utf-8")).hexdigest()[12:-12]
     path = AVATAR_DIR / f"{hash_name}.jpg"
-    if path.exists():
+    if _safe_exists(path):
         return path
     path_png = AVATAR_DIR / f"{hash_name}.png"
-    if path_png.exists():
+    if _safe_exists(path_png):
         return path_png
 
     return None
@@ -283,29 +303,32 @@ def get_local_avatar_path(actor_name: str) -> Path:
 def get_local_avatar_url(actor_name: str) -> str:
     """
     获取本地头像的 HTTP URL 路径（供前端使用）。
-    优先查 URL 编码格式（兼容现有大部分文件），再查 MD5 格式（早期文件）。
-    返回: /avatars/{文件名}.jpg 或 None
+    返回: /avatars/{URL编码名字}.jpg 或 None
+    注意：URL 中用 quote 编码，文件系统中用真实名字，Starlette 自动 decode 匹配。
     """
     if not actor_name or actor_name == "佚名":
         return None
 
-    # 🔽 优先查 URL 编码格式（现有大部分文件用此格式）
-    filename = _get_avatar_filename(actor_name)
-    if filename:
-        path_jpg = AVATAR_DIR / f"{filename}.jpg"
-        if path_jpg.exists():
-            return f"/avatars/{filename}.jpg"
-        path_png = AVATAR_DIR / f"{filename}.png"
-        if path_png.exists():
-            return f"/avatars/{filename}.png"
+    safe_name = _safe_filename(actor_name)
+    if not safe_name:
+        return None
 
-    # ✅ 备查 MD5 格式（早期文件）
+    # 1) 真实名字格式（当前逻辑）
+    path_jpg = AVATAR_DIR / f"{safe_name}.jpg"
+    if _safe_exists(path_jpg):
+        # URL 中对名字做编码，Starlette decode 后找到真实文件
+        return f"/avatars/{quote(safe_name, safe='')}.jpg"
+    path_png = AVATAR_DIR / f"{safe_name}.png"
+    if _safe_exists(path_png):
+        return f"/avatars/{quote(safe_name, safe='')}.png"
+
+    # 2) MD5 兜底（早期文件）
     hash_name = md5(actor_name.encode("utf-8")).hexdigest()[12:-12]
     path_jpg = AVATAR_DIR / f"{hash_name}.jpg"
-    if path_jpg.exists():
+    if _safe_exists(path_jpg):
         return f"/avatars/{hash_name}.jpg"
     path_png = AVATAR_DIR / f"{hash_name}.png"
-    if path_png.exists():
+    if _safe_exists(path_png):
         return f"/avatars/{hash_name}.png"
 
     return None
@@ -313,18 +336,18 @@ def get_local_avatar_url(actor_name: str) -> str:
 
 def download_avatar(actor_name: str, url: str, prefer_aifix=True) -> bool:
     """
-    下载单个头像到本地缓存（按姓名 URL 编码存储）。
+    下载单个头像到本地缓存（用真实名字存储，如 三上悠亜.jpg）。
     prefer_aifix: 优先选择 AI-Fix 版本（更高质量）
     """
     if not actor_name or actor_name == "佚名":
         return False
 
-    filename = _get_avatar_filename(actor_name)
-    if not filename:
+    safe_name = _safe_filename(actor_name)
+    if not safe_name:
         return False
 
-    # 已存在（URL 编码格式）则跳过（除非文件损坏）
-    local_path = AVATAR_DIR / f"{filename}.jpg"
+    local_path = AVATAR_DIR / f"{safe_name}.jpg"
+    # 已存在则跳过（除非文件损坏）
     if local_path.exists():
         try:
             Image.open(local_path).verify()
@@ -332,13 +355,13 @@ def download_avatar(actor_name: str, url: str, prefer_aifix=True) -> bool:
         except:
             pass  # 文件损坏，重新下载
 
-    # 备查：旧文件用 MD5 命名，已存在则标记为成功
+    # 备查：MD5 格式（早期文件）
     hash_name = md5(actor_name.encode("utf-8")).hexdigest()[12:-12]
     old_path = AVATAR_DIR / f"{hash_name}.jpg"
     if old_path.exists():
         try:
             Image.open(old_path).verify()
-            return True  # 旧文件已存在
+            return True  # 旧文件已存在（不迁移，保留兼容）
         except:
             pass
 

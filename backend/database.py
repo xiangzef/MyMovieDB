@@ -1235,7 +1235,53 @@ def get_actor_stats(page: int = 1, page_size: int = 48, keyword: str = None) -> 
     """
     获取女演员统计列表（按出现次数降序）
     返回: (total, items=[{name, count, has_avatar}])
+    与 get_actors_without_avatars() 使用相同的批量头像索引逻辑，保证一致性。
     """
+    import hashlib
+    from pathlib import Path
+    from urllib.parse import quote
+
+    # ── 1. 一次性扫描头像目录构建索引（O(1) 查询） ──
+    try:
+        avatar_dir = Path(__file__).resolve().parent.parent / "data" / "avatars"
+        if avatar_dir.exists():
+            cached_files = {p.stem for p in avatar_dir.iterdir() if p.suffix.lower() in (".jpg", ".png")}
+        else:
+            cached_files = set()
+    except Exception:
+        cached_files = set()
+
+    def _safe_filename(name: str):
+        """将演员姓名转换为安全文件名（直接用真实名字，去除非法字符）"""
+        if not name or name == "佚名":
+            return None
+        illegal = r'\/:*?"<>|'
+        result = name
+        for ch in illegal:
+            result = result.replace(ch, '_')
+        return result.strip() or None
+
+    def _has_avatar(name: str):
+        """O(1) 判断演员是否有本地头像"""
+        # 1) 真实名字格式（当前格式）
+        safe_name = _safe_filename(name)
+        if safe_name and safe_name in cached_files:
+            return True
+        # 2) MD5 兜底（早期文件兼容）
+        h = hashlib.md5(name.encode("utf-8")).hexdigest()[12:-12]
+        return h in cached_files
+
+    def _local_url(name: str):
+        """返回头像 URL（无则为 None）"""
+        safe_name = _safe_filename(name)
+        if safe_name and safe_name in cached_files:
+            return f"/avatars/{quote(safe_name, safe='')}.jpg"
+        # MD5 兜底（早期文件）
+        h = hashlib.md5(name.encode("utf-8")).hexdigest()[12:-12]
+        if h in cached_files:
+            return f"/avatars/{h}.jpg"
+        return None
+
     conn = get_db()
     cursor = conn.cursor()
 
@@ -1253,7 +1299,7 @@ def get_actor_stats(page: int = 1, page_size: int = 48, keyword: str = None) -> 
             for a in actors:
                 if a and a.strip() and a != "佚名":
                     actor_count[a] = actor_count.get(a, 0) + 1
-        except:
+        except Exception:
             pass
 
     # 过滤关键词
@@ -1269,21 +1315,12 @@ def get_actor_stats(page: int = 1, page_size: int = 48, keyword: str = None) -> 
     offset = (page - 1) * page_size
     page_actors = sorted_actors[offset:offset + page_size]
 
-    # 导入 gfriends 做头像检测（延迟导入避免循环）
-    try:
-        from gfriends import lookup_actor, get_local_avatar_url
-        has_avatar_func = lambda name: get_local_avatar_url(name) is not None
-        local_url_func = lambda name: get_local_avatar_url(name)
-    except ImportError:
-        has_avatar_func = lambda name: False
-        local_url_func = lambda name: None
-
     items = [
         {
             "name": name,
             "count": cnt,
-            "has_avatar": has_avatar_func(name),
-            "local_url": local_url_func(name),
+            "has_avatar": _has_avatar(name),
+            "local_url": _local_url(name),
         }
         for name, cnt in page_actors
     ]
@@ -1313,22 +1350,23 @@ def get_actors_without_avatars(page: int = 1, page_size: int = None) -> tuple:
     except Exception:
         cached_files = set()
 
-    def _compute_filename(name: str):
-        """计算演员姓名的头像文件名（与 gfriends._get_avatar_filename 逻辑一致）"""
+    def _safe_filename(name: str):
+        """将演员姓名转换为安全文件名（直接用真实名字，去除非法字符）"""
         if not name or name == "佚名":
             return None
-        # URL 编码格式
-        enc = quote(name, safe="")
-        if enc:
-            return enc
-        return None
+        illegal = r'\/:*?"<>|'
+        result = name
+        for ch in illegal:
+            result = result.replace(ch, '_')
+        return result.strip() or None
 
     def _has_avatar(name: str):
         """O(1) 判断演员是否有本地头像"""
-        filename = _compute_filename(name)
-        if filename and filename in cached_files:
+        # 1) 真实名字格式（当前格式）
+        safe_name = _safe_filename(name)
+        if safe_name and safe_name in cached_files:
             return True
-        # MD5 兜底
+        # 2) MD5 兜底（早期文件兼容）
         h = hashlib.md5(name.encode("utf-8")).hexdigest()[12:-12]
         if h in cached_files:
             return True
@@ -1336,9 +1374,9 @@ def get_actors_without_avatars(page: int = 1, page_size: int = None) -> tuple:
 
     def _local_url(name: str):
         """返回头像 URL（无则为 None）"""
-        filename = _compute_filename(name)
-        if filename and filename in cached_files:
-            return f"/avatars/{filename}.jpg"
+        safe_name = _safe_filename(name)
+        if safe_name and safe_name in cached_files:
+            return f"/avatars/{quote(safe_name, safe='')}.jpg"
         h = hashlib.md5(name.encode("utf-8")).hexdigest()[12:-12]
         if h in cached_files:
             return f"/avatars/{h}.jpg"
