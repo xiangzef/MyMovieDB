@@ -72,19 +72,20 @@ def parse_jellyfin_nfo(nfo_path: str) -> Optional[Dict]:
         actors_male = []
         for actor in root.findall('actor'):
             name = actor.findtext('name', '').strip()
-            if name:
-                # 通过 role 或 type 判断性别（部分 NFO 有标记）
-                role = actor.findtext('role', '').lower()
-                actor_type = actor.findtext('type', '').lower()
-                if 'male' in role or 'male' in actor_type or '男' in role or 'actress' not in actor_type.lower():
-                    # 如果明确标记为男优，或没有标记为 actress
-                    if 'male' in role or 'male' in actor_type or '男' in role:
-                        actors_male.append(name)
-                    else:
-                        # 默认为女演员
-                        actors.append(name)
+            if not name:
+                continue
+            role = actor.findtext('role', '').lower()
+            actor_type = actor.findtext('type', '').lower()
+            is_male = 'male' in role or 'male' in actor_type or '男' in role
+            is_not_actress = 'actress' not in actor_type
+            if is_male or is_not_actress:
+                # 明确标记为男优，或未标记为女演员
+                if is_male:
+                    actors_male.append(name)
                 else:
                     actors.append(name)
+            else:
+                actors.append(name)
         
         # 提取标签
         genres = [g.text.strip() for g in root.findall('genre') if g.text]

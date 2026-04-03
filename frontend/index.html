@@ -160,6 +160,26 @@
         .tab-panel { display: none; padding-top: 25px; }
         .tab-panel.active { display: block; }
 
+        /* 字幕徽章（Phase 0.5 整理功能） */
+        .subtitle-badge {
+            display: inline-block;
+            font-weight: 600;
+            border-radius: 4px;
+        }
+        .subtitle-chinese  { background: #14532d; color: #4ade80; }
+        .subtitle-english  { background: #1e3a5f; color: #60a5fa; }
+        .subtitle-bilingual { background: #3b0764; color: #c084fc; }
+
+        /* 整理功能 spinner */
+        .spinner {
+            border: 2px solid #333;
+            border-top-color: #e94560;
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+            display: inline-block;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
         /* 统计卡片 */
         .stats-row {
             display: flex;
@@ -899,6 +919,9 @@
             <button class="tab" :class="{active: currentTab === 'categories'}" @click="switchTab('categories')">
                 类别
             </button>
+            <button class="tab" :class="{active: currentTab === 'organize'}" @click="switchTab('organize')">
+                📁 整理
+            </button>
         </div>
 
         <!-- ========== 影片库 Tab ========== -->
@@ -1303,6 +1326,133 @@
         </div>
     </div>
 
+        <!-- ========== 整理功能 Tab ========== -->
+        <!-- 整理 tab（appMounted 防止初始化时整块闪现） -->
+        <div v-if="appMounted" class="tab-panel" :class="{active: currentTab === 'organize'}">
+            <h3 style="color:#e94560;margin-bottom:15px;">📁 Jellyfin 文件夹整理</h3>
+            <p style="color:#888;font-size:13px;margin-bottom:20px;">
+                扫描本地视频目录，按 Jellyfin 标准结构整理文件。<br>
+                目标结构: <code>{根}/jellyfin/{女演员}/{番号}/{番号}[-C|-U|-UC].mp4</code>
+            </p>
+
+            <!-- 源目录配置 -->
+            <div class="add-source-form" style="margin-bottom:20px;">
+                <h4>📂 源目录</h4>
+                <div style="display:flex;gap:8px;margin-bottom:8px;">
+                    <input v-model="organizeSourceInput" placeholder="输入视频目录路径，如 D:\Videos（支持网络路径）" style="flex:1;padding:8px 12px;border:1px solid #333;border-radius:6px;background:#1a1a2e;color:#fff;" @keyup.enter="addOrganizeSource" />
+                    <button class="btn btn-primary" @click="addOrganizeSource">添加</button>
+                </div>
+                <div v-if="organizeSources.length" style="margin-top:8px;">
+                    <span v-for="(src, i) in organizeSources" :key="i"
+                          style="display:inline-block;background:#16213e;padding:4px 10px;border-radius:4px;margin:2px;font-size:12px;color:#aaa;">
+                        {{ src }}
+                        <span @click="removeOrganizeSource(i)" style="color:#e94560;cursor:pointer;margin-left:6px;">×</span>
+                    </span>
+                </div>
+                <div v-else style="color:#666;font-size:12px;margin-top:4px;">尚未添加源目录</div>
+            </div>
+
+            <!-- 目标目录配置 -->
+            <div class="add-source-form" style="margin-bottom:20px;">
+                <h4>🎯 目标目录</h4>
+                <div style="display:flex;gap:8px;">
+                    <input v-model="organizeTargetRoot" placeholder="输入整理目标根目录，如 E:\jellyfin" style="flex:1;padding:8px 12px;border:1px solid #333;border-radius:6px;background:#1a1a2e;color:#fff;" />
+                    <button class="btn btn-secondary" @click="browseOrganizeTarget">浏览</button>
+                </div>
+                <div style="margin-top:6px;font-size:12px;color:#666;">
+                    整理后文件将放在: <code>{{ organizeTargetRoot }}/jellyfin/{女演员}/{番号}/</code>
+                </div>
+            </div>
+
+            <!-- 字幕后缀说明 -->
+            <div class="add-source-form" style="margin-bottom:20px;background:#0f3460;border-radius:8px;padding:12px 16px;">
+                <h4 style="margin:0 0 8px 0;font-size:13px;">🎌 字幕后缀识别规则</h4>
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:6px;font-size:12px;">
+                    <div><span style="color:#888;">无后缀</span> → 无字幕 <span style="color:#666;">(none)</span></div>
+                    <div><span style="color:#4ade80;">-C</span> → 中文字幕 <span style="color:#666;">(chinese)</span></div>
+                    <div><span style="color:#60a5fa;">-U</span> → 英文字幕 <span style="color:#666;">(english)</span></div>
+                    <div><span style="color:#c084fc;">-UC</span> → 双语字幕 <span style="color:#666;">(bilingual)</span></div>
+                </div>
+            </div>
+
+            <!-- 操作按钮 -->
+            <div style="display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap;">
+                <button class="btn btn-secondary" @click="organizePreview" :disabled="!organizeSources.length || !organizeTargetRoot || organizeRunning">
+                    🔍 预览
+                </button>
+                <button class="btn btn-primary" @click="organizeExecute('copy')" :disabled="!organizeSources.length || !organizeTargetRoot || organizeRunning">
+                    📋 复制
+                </button>
+                <button class="btn" style="background:#c0392b;color:#fff;border:none;" @click="organizeExecute('move')" :disabled="!organizeSources.length || !organizeTargetRoot || organizeRunning">
+                    ✂️ 移动
+                </button>
+                <button class="btn btn-secondary" @click="stopOrganize" :disabled="!organizeRunning">
+                    ⏹ 停止
+                </button>
+            </div>
+
+            <!-- 进度指示 -->
+            <div v-if="organizeRunning" style="margin-bottom:16px;">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+                    <div class="spinner" style="width:14px;height:14px;"></div>
+                    <span style="color:#e94560;font-size:13px;">{{ organizeStatusText }}</span>
+                </div>
+                <div style="background:#1a1a2e;border-radius:4px;height:6px;overflow:hidden;">
+                    <div style="background:#e94560;height:100%;transition:width 0.3s;"
+                         :style="{width: organizeProgressPct + '%'}"></div>
+                </div>
+            </div>
+
+            <!-- 结果列表 -->
+            <div v-if="organizeItems.length" style="max-height:400px;overflow-y:auto;border:1px solid #333;border-radius:8px;">
+                <div style="padding:10px 14px;background:#16213e;border-radius:8px 8px 0 0;font-size:12px;color:#888;">
+                    找到 {{ organizeItems.length }} 个文件
+                    <span v-if="organizeNewCount > 0" style="color:#4ade80;">，{{ organizeNewCount }} 个新增</span>
+                    <span v-if="organizeExistsCount > 0" style="color:#fbbf24;">，{{ organizeExistsCount }} 个已存在</span>
+                    <span v-if="organizeErrorCount > 0" style="color:#f87171;">，{{ organizeErrorCount }} 个错误</span>
+                </div>
+                <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                    <thead>
+                        <tr style="background:#1a1a2e;">
+                            <th style="padding:6px 12px;text-align:left;color:#666;">原始文件</th>
+                            <th style="padding:6px 12px;text-align:left;color:#666;">番号</th>
+                            <th style="padding:6px 12px;text-align:left;color:#666;">字幕</th>
+                            <th style="padding:6px 12px;text-align:left;color:#666;">目标目录</th>
+                            <th style="padding:6px 12px;text-align:left;color:#666;">状态</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr v-for="(item, i) in organizeItems.slice(0, 200)" :key="i"
+                            style="border-bottom:1px solid #1a1a2e;">
+                            <td style="padding:5px 12px;color:#aaa;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                                :title="item.source_path">{{ item.source_path.split(/[/\\]/).pop() }}</td>
+                            <td style="padding:5px 12px;color:#e94560;font-family:monospace;">{{ item.code }}</td>
+                            <td style="padding:5px 12px;">
+                                <span v-if="item.subtitle_type && item.subtitle_type !== 'none'"
+                                      :class="'subtitle-badge subtitle-' + item.subtitle_type"
+                                      style="font-size:11px;">{{ item.subtitle_label }}</span>
+                                <span v-else style="color:#555;">—</span>
+                            </td>
+                            <td style="padding:5px 12px;color:#888;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                                :title="item.target_dir">{{ item.actor_name }} / {{ item.target_dir.split(/[/\\]/).pop() }}</td>
+                            <td style="padding:5px 12px;">
+                                <span v-if="item.status === 'new'" style="color:#4ade80;">🆕 新增</span>
+                                <span v-else-if="item.status === 'exists'" style="color:#fbbf24;">⏳ 已存在</span>
+                                <span v-else-if="item.status === 'error'" style="color:#f87171;">❌ {{ item.reason }}</span>
+                                <span v-else-if="item.status === 'copied'" style="color:#4ade80;">✅ 已复制</span>
+                                <span v-else-if="item.status === 'moved'" style="color:#4ade80;">✅ 已移动</span>
+                                <span v-else style="color:#888;">{{ item.status }}</span>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div v-if="organizeItems.length > 200" style="padding:10px;text-align:center;color:#666;font-size:12px;">
+                    仅显示前 200 条，完整结果请查看控制台日志
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- ========== 详情弹窗 ========== -->
     <div class="modal" v-if="selectedMovie" @click.self="closeDetail">
         <div class="modal-content" @click.stop>
@@ -1465,8 +1615,8 @@
         </div>
     </div>
 
-    <!-- 刮削进度浮层（v-if 确保 Vue 未挂载时完全不渲染） -->
-    <div v-if="scrapePanel.show" class="scrape-overlay active">
+    <!-- 刮削进度浮层（v-if + appMounted 确保初始化期间不闪现） -->
+    <div v-if="appMounted && scrapePanel.show" class="scrape-overlay">
         <div class="scrape-panel">
             <div class="scrape-panel-header">
                 <h3>🔄 刮削进度 <span style="color:#666;font-weight:normal;font-size:12px;margin-left:8px;">{{ scrapePanel.title }}</span></h3>
@@ -1494,9 +1644,9 @@
         </div>
     </div>
 
-    <!-- 详情弹窗 -->
-    <div class="modal-overlay" :class="{show: selectedMovie}" @click.self="closeDetail">
-        <div class="modal-content" v-if="selectedMovie">
+    <!-- 详情弹窗（appMounted 防止初始化闪现） -->
+    <div class="modal-overlay" :class="{show: appMounted && selectedMovie}" @click.self="closeDetail">
+        <div class="modal-content" v-if="appMounted && selectedMovie">
             <!-- Fanart 背景 -->
             <div class="modal-fanart"
                 :style="selectedMovie.fanart_path ? {backgroundImage: `url(${getCoverUrl(selectedMovie, 'fanart')})`} : {}">
@@ -1537,6 +1687,16 @@
                 <div class="modal-row"><span class="modal-label">制作商</span><span class="modal-value">{{ selectedMovie.studio || '-' }}</span></div>
                 <div class="modal-row"><span class="modal-label">片商</span><span class="modal-value">{{ selectedMovie.maker || '-' }}</span></div>
                 <div class="modal-row"><span class="modal-label">导演</span><span class="modal-value">{{ selectedMovie.director || '-' }}</span></div>
+                <!-- 字幕信息（整理功能 Phase 0.5） -->
+                <div class="modal-row" v-if="selectedMovie.subtitle_type && selectedMovie.subtitle_type !== 'none'">
+                    <span class="modal-label">字幕</span>
+                    <span class="subtitle-badge" :class="'subtitle-' + selectedMovie.subtitle_type"
+                          style="font-size:12px;padding:2px 8px;border-radius:4px;">
+                        {{ selectedMovie.subtitle_type === 'chinese' ? '中文字幕 🇨🇳' :
+                           selectedMovie.subtitle_type === 'english' ? '英文字幕 🇺🇸' :
+                           selectedMovie.subtitle_type === 'bilingual' ? '双语字幕 🌐' : '无字幕' }}
+                    </span>
+                </div>
                 <div class="modal-row"><span class="modal-label">女演员</span>
                     <span class="modal-value">{{ formatArray(selectedMovie.actors) }}</span>
                 </div>
@@ -1659,7 +1819,11 @@ const calcVisiblePages = (current, total) => {
 createApp({
     setup() {
         const API = 'http://localhost:8000';
-        
+
+        // 防止 Vue 初始化期间 DOM 闪现（闪烁问题修复）
+        const appMounted = ref(false);
+        onMounted(() => { appMounted.value = true; });
+
         // 用户管理
         const currentUser = ref(null);
         const token = ref(localStorage.getItem('token') || '');
@@ -2633,7 +2797,11 @@ createApp({
         };
 
         // ========== Init ==========
-        onMounted(async () => {
+        onMounted(async () =&gt; {
+            // 确保刮削面板关闭（修复初始化时卡住的问题）
+            scrapePanel.value.show = false;
+            scrapePanel.value.logs = [];
+            
             // 检查登录状态
             await checkAuth();
             
@@ -2689,14 +2857,12 @@ createApp({
             const jobId = 'jellyfin-' + Date.now();
             jellyfinAbortController = new AbortController();
             
-            scrapePanel.value = {
-                show: true,
-                title: '扫描 Jellyfin 影视库',
-                pct: 0,
-                logs: [],
-                jobId: jobId,
-                stats: { success: 0, failed: 0, skipped: 0 }
-            };
+            scrapePanel.value.show = true;
+            scrapePanel.value.title = '扫描 Jellyfin 影视库';
+            scrapePanel.value.pct = 0;
+            scrapePanel.value.logs = [];
+            scrapePanel.value.jobId = jobId;
+            scrapePanel.value.stats = { success: 0, fail: 0, linked: 0, failed: 0, skipped: 0 };
             
             addScrapeLog('info', `📁 重新扫描: ${path}`);
             
@@ -2755,14 +2921,12 @@ createApp({
             const jobId = 'jellyfin-' + Date.now();
             jellyfinAbortController = new AbortController();  // 保存到全局变量
 
-            scrapePanel.value = {
-                show: true,
-                title: '扫描 Jellyfin 影视库',
-                pct: 0,
-                logs: [],
-                jobId: jobId,
-                stats: { success: 0, failed: 0, skipped: 0 }
-            };
+            scrapePanel.value.show = true;
+            scrapePanel.value.title = '扫描 Jellyfin 影视库';
+            scrapePanel.value.pct = 0;
+            scrapePanel.value.logs = [];
+            scrapePanel.value.jobId = jobId;
+            scrapePanel.value.stats = { success: 0, fail: 0, linked: 0, failed: 0, skipped: 0 };
 
             addScrapeLog('info', `📁 开始扫描: ${dir}`);
 
@@ -3068,6 +3232,232 @@ createApp({
         };
 
         // Tab 切换
+        // ── 整理功能（Phase 0.5）──────────────────────────────────────────────
+        const organizeSources = ref([]);
+        const organizeSourceInput = ref('');
+        const organizeTargetRoot = ref('');
+        const organizeItems = ref([]);
+        const organizeRunning = ref(false);
+        const organizeAbortController = ref(null);
+        const organizeNewCount = ref(0);
+        const organizeExistsCount = ref(0);
+        const organizeErrorCount = ref(0);
+        const organizeProgressPct = ref(0);
+        const organizeStatusText = ref('');
+
+        const addOrganizeSource = () => {
+            const path = organizeSourceInput.value.trim();
+            if (path && !organizeSources.value.includes(path)) {
+                organizeSources.value.push(path);
+            }
+            organizeSourceInput.value = '';
+        };
+
+        const removeOrganizeSource = (i) => {
+            organizeSources.value.splice(i, 1);
+        };
+
+        const browseOrganizeTarget = async () => {
+            // 通过 open-folder 选择目录（复用现有接口）
+            const folder = prompt('输入目标目录路径（如 E:\\jellyfin）:');
+            if (folder && folder.trim()) {
+                organizeTargetRoot.value = folder.trim();
+            }
+        };
+
+        const parseOrganizeSSE = (text) => {
+            // 解析 SSE 事件格式: "event: found\ndata: {...}\n\n"
+            const lines = text.split('\n');
+            let event = 'message';
+            let dataStr = '';
+            for (const line of lines) {
+                if (line.startsWith('event:')) event = line.slice(6).trim();
+                if (line.startsWith('data:')) dataStr = line.slice(5).trim();
+            }
+            if (!dataStr) return null;
+            try { return { event, data: JSON.parse(dataStr) }; }
+            catch { return null; }
+        };
+
+        const organizePreview = async () => {
+            if (!organizeSources.value.length || !organizeTargetRoot.value) return;
+            organizeItems.value = [];
+            organizeNewCount.value = 0;
+            organizeExistsCount.value = 0;
+            organizeErrorCount.value = 0;
+            organizeRunning.value = true;
+            organizeProgressPct.value = 0;
+            organizeStatusText.value = '正在扫描目录...';
+
+            const controller = new AbortController();
+            organizeAbortController.value = controller;
+            // 5 分钟超时兜底，防止后端异常导致 fetch 永久挂起
+            const timeoutId = setTimeout(() => {
+                controller.abort();
+                organizeStatusText.value = '⏱ 预览超时，请检查目录路径或网络';
+            }, 5 * 60 * 1000);
+
+            try {
+                const res = await fetch(`${API}/organize/preview`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        source_paths: organizeSources.value,
+                        target_root: organizeTargetRoot.value,
+                        mode: 'preview'
+                    }),
+                    signal: controller.signal,
+                });
+
+                if (!res.ok) {
+                    throw new Error(`服务器返回错误: ${res.status} ${res.statusText}`);
+                }
+
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+                    for (const line of lines) {
+                        const msg = parseOrganizeSSE(line);
+                        if (!msg) continue;
+                        if (msg.event === 'found') {
+                            organizeItems.value.push(msg.data);
+                            if (msg.data.status === 'new') organizeNewCount.value++;
+                            else if (msg.data.status === 'exists') organizeExistsCount.value++;
+                            else if (msg.data.status === 'error') organizeErrorCount.value++;
+                            organizeProgressPct.value = Math.min(95, organizeProgressPct.value + 1);
+                        }
+                        if (msg.event === 'summary') {
+                            organizeStatusText.value = `扫描完成：共 ${msg.data.total} 个文件`;
+                            organizeProgressPct.value = 100;
+                        }
+                        if (msg.event === 'error') {
+                            organizeStatusText.value = `❌ 预览失败: ${msg.data.message || '未知错误'}`;
+                            organizeRunning.value = false;
+                            organizeProgressPct.value = 0;
+                        }
+                    }
+                }
+            } catch (e) {
+                if (e.name === 'AbortError') {
+                    // 可能是超时或用户取消，不显示额外提示
+                } else {
+                    console.error('[Organize] 预览失败:', e);
+                    organizeStatusText.value = `预览失败: ${e.message}`;
+                }
+            } finally {
+                clearTimeout(timeoutId);
+                organizeAbortController.value = null;
+                organizeRunning.value = false;
+                if (!organizeStatusText.value.includes('完成') && !organizeStatusText.value.includes('失败') && !organizeStatusText.value.includes('超时') && !organizeStatusText.value.includes('错误')) {
+                    organizeStatusText.value = '预览完成';
+                }
+            }
+        };
+
+        const organizeExecute = async (mode) => {
+            if (!organizeSources.value.length || !organizeTargetRoot.value) return;
+            const label = mode === 'copy' ? '复制' : '移动';
+            if (!confirm(`确定以【${label}】模式整理文件到 ${organizeTargetRoot.value}？\n\n建议先使用"预览"确认无误后再执行。`)) return;
+
+            organizeItems.value = [];
+            organizeNewCount.value = 0;
+            organizeExistsCount.value = 0;
+            organizeErrorCount.value = 0;
+            organizeRunning.value = true;
+            organizeProgressPct.value = 0;
+            organizeStatusText.value = `正在${label}文件...`;
+
+            const controller = new AbortController();
+            organizeAbortController.value = controller;
+            // 10 分钟超时（复制/移动大文件需要更长时间）
+            const timeoutId = setTimeout(() => {
+                controller.abort();
+                organizeStatusText.value = '⏱ 操作超时，请稍后重试';
+            }, 10 * 60 * 1000);
+
+            try {
+                const res = await fetch(`${API}/organize/execute`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        source_paths: organizeSources.value,
+                        target_root: organizeTargetRoot.value,
+                        mode: mode,
+                    }),
+                    signal: controller.signal,
+                });
+
+                if (!res.ok) {
+                    throw new Error(`服务器返回错误: ${res.status} ${res.statusText}`);
+                }
+
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let processed = 0;
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+                    for (const line of lines) {
+                        const msg = parseOrganizeSSE(line);
+                        if (!msg) continue;
+                        if (msg.event === 'found') {
+                            organizeItems.value.push(msg.data);
+                        }
+                        if (['copied', 'moved', 'skipped', 'error'].includes(msg.event)) {
+                            processed++;
+                            organizeItems.value.push(msg.data);
+                            if (msg.event === 'copied' || msg.event === 'moved') organizeNewCount.value++;
+                            else if (msg.event === 'skipped') organizeExistsCount.value++;
+                            else if (msg.event === 'error') organizeErrorCount.value++;
+                            organizeStatusText.value = `${label}中: ${processed} 个`;
+                        }
+                        if (msg.event === 'done') {
+                            organizeProgressPct.value = 100;
+                            organizeStatusText.value = msg.data.message || `${label}完成`;
+                        }
+                        if (msg.event === 'error') {
+                            organizeStatusText.value = `❌ ${label}失败: ${msg.data.message || '未知错误'}`;
+                            organizeRunning.value = false;
+                            organizeProgressPct.value = 0;
+                        }
+                    }
+                }
+            } catch (e) {
+                if (e.name === 'AbortError') {
+                    // timeout 或 stopOrganize 触发，不做额外处理
+                } else {
+                    console.error('[Organize] 执行失败:', e);
+                    organizeStatusText.value = `执行失败: ${e.message}`;
+                }
+            } finally {
+                clearTimeout(timeoutId);
+                organizeAbortController.value = null;
+                organizeRunning.value = false;
+            }
+        };
+
+        const stopOrganize = async () => {
+            if (!organizeAbortController.value) return;
+            organizeAbortController.value.abort();
+            try {
+                await fetch(`${API}/organize/stop`, { method: 'POST' });
+            } catch (e) { /* ignore */ }
+            organizeRunning.value = false;
+            organizeStatusText.value = '已停止';
+        };
+
         const switchTab = (tab) => {
             currentTab.value = tab;
             if (tab === 'movies') loadMovies();
@@ -3077,7 +3467,13 @@ createApp({
         };
 
         return {
-            currentTab, backendStatus, currentUser, logout, getRoleName,
+            currentTab, backendStatus, currentUser, logout, getRoleName, appMounted,
+            // Organize (Phase 0.5)
+            organizeSources, organizeSourceInput, organizeTargetRoot,
+            organizeItems, organizeRunning, organizeNewCount, organizeExistsCount,
+            organizeErrorCount, organizeProgressPct, organizeStatusText,
+            addOrganizeSource, removeOrganizeSource, browseOrganizeTarget,
+            organizePreview, organizeExecute, stopOrganize,
             // Movies
             movies, total, currentPage, pageSize, loading, searchKeyword, scrapeKeyword, scraping, selectedMovie,
             showDetail, scrapeCheckResult,

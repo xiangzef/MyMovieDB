@@ -381,14 +381,14 @@ def download_avatar(actor_name: str, url: str, prefer_aifix=True) -> bool:
         with open(local_path, "wb") as f:
             f.write(resp.content)
 
-        logger.debug(f"头像下载成功: {actor_name} → {filename}.jpg")
+        logger.debug(f"头像下载成功: {actor_name} → {safe_name}.jpg")
         return True
     except Exception as e:
         logger.warning(f"头像下载失败: {actor_name} <- {url}: {e}")
         return False
 
 
-def batch_download_avatars(actor_names: list, max_workers=5, delay=0.3) -> dict:
+def batch_download_avatars(actor_names: list, max_workers=5, delay=0.3, prefer_aifix=True) -> dict:
     """
     批量下载演员头像（多线程）
     actor_names: 演员名列表

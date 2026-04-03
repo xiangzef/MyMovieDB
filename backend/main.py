@@ -27,7 +27,8 @@ from models import (
     MovieResponse, MovieListResponse,
     ScrapeRequest, ScrapeResponse,
     UserLogin, UserRegister, UserResponse, LoginResponse,
-    ActorListResponse, SeriesListResponse, CategoryMoviesResponse
+    ActorListResponse, SeriesListResponse, CategoryMoviesResponse,
+    OrganizeRequest,  # Phase 0.5 整理功能
 )
 from pydantic import BaseModel, Field
 import database as db
@@ -54,15 +55,15 @@ AV_PREFIXES = {
     'GAS', 'GD', 'GE', 'GF', 'GH', 'GIH', 'GIN', 'GK', 'GM', 'GNP', 'GQ', 'GQR', 'GRE', 'GS', 'GTA', 'GTO', 'GUG', 'GVS',
     'HA', 'HAB', 'HAME', 'HB', 'HERR', 'HEYDOUGA', 'HF', 'HHP', 'HIKARI', 'HIT', 'HJ', 'HND', 'HNI', 'HN', 'HO', 'HQ', 'HR', 'HS', 'HV', 'HX',
     'I' , 'IBW', 'IES', 'IP', 'IPZZ', 'IU', 'IV', 'IWF',
-    'JBD', 'JB', 'JB5', 'JBD', 'JBR', 'JBS', 'JC', 'JD', 'JE', 'JFH', 'JHS', 'JIS', 'JK', 'JKT', 'JMK', 'JN', 'JNT', 'JPD', 'JPI', 'JPS', 'JR', 'JS', 'JUL', 'JUMP', 'JUX', 'JW',
+    'JBD', 'JB', 'JB5', 'JBR', 'JBS', 'JC', 'JD', 'JE', 'JFH', 'JHS', 'JIS', 'JK', 'JKT', 'JMK', 'JN', 'JNT', 'JPD', 'JPI', 'JPS', 'JR', 'JS', 'JUL', 'JUMP', 'JUX', 'JW',
     'K', 'KA', 'KAM', 'KB', 'KD', 'KGI', 'KM', 'KN', 'KO', 'KOK', 'KRD', 'KTK', 'KT', 'KU', 'KW', 'KZ',
     'LA', 'LB', 'LD', 'LEC', 'LG', 'LK', 'LL', 'LUXU', 'LX',
     'MA', 'MAD', 'MCS', 'MDB', 'ME', 'MFE', 'MGM', 'MI', 'MID', 'MIM', 'MJ', 'MK', 'ML', 'MM', 'MMB', 'MPL', 'MS', 'MST', 'MTA', 'MUGEN', 'MV', 'MX', 'MZ',
     'N', 'NAM', 'NB', 'NCT', 'ND', 'NE', 'NEW', 'NFA', 'NG', 'NH', 'NI', 'NK', 'NM', 'NN', 'NP', 'NPM', 'NR', 'NS', 'NSPS', 'NST', 'NT', 'NTR', 'NTT', 'NUK', 'NUM',
     'OB', 'OBA', 'OL', 'ONE', 'OOO', 'OP', 'ORE', 'OU',
-    'P', 'P10', 'PAPA', 'PAR', 'PCD', 'PD', 'PE', 'PH', 'PJ', 'PK', 'PL', 'PP', 'PPV', 'PP', 'PRESTIGE', 'PRED', 'PRIME', 'PU', 'PRED',
+    'P', 'P10', 'PAPA', 'PAR', 'PCD', 'PD', 'PE', 'PH', 'PJ', 'PK', 'PL', 'PP', 'PPV', 'PRESTIGE', 'PRED', 'PRIME', 'PU',
     'Q', 'QD', 'R', 'R18', 'RAC', 'RB', 'RCT', 'RD', 'REAL', 'RED', 'RE', 'RHEI', 'RHK', 'RID', 'RKI', 'RMC', 'RR', 'RS', 'RVS', 'RX',
-    'S', 'S1', 'S2', 'S4U', 'SA', 'SACA', 'SAME', 'SAP', 'SAS', 'SC', 'SCO', 'SD', 'SDA', 'SDF', 'SDEN', 'SEN', 'SER', 'SF', 'SGA', 'SH', 'SHIN', 'SHK', 'SHL', 'SHP', 'SI', 'SIF', 'SKY', 'SL', 'SL', 'SMA', 'SMDB', 'SML', 'SNC', 'SNIS', 'SOE', 'SOG', 'SOP', 'SOW', 'SP', 'SS', 'SSA', 'SSD', 'SSK', 'ST', 'STAR', 'STD', 'STON', 'STS', 'ST', 'SUK', 'SW', 'SWAMP', 'SX',
+    'S', 'S1', 'S2', 'S4U', 'SA', 'SACA', 'SAME', 'SAP', 'SAS', 'SC', 'SCO', 'SD', 'SDA', 'SDF', 'SDEN', 'SEN', 'SER', 'SF', 'SGA', 'SH', 'SHIN', 'SHK', 'SHL', 'SHP', 'SI', 'SIF', 'SKY', 'SL', 'SMA', 'SMDB', 'SML', 'SNC', 'SNIS', 'SOE', 'SOG', 'SOP', 'SOW', 'SP', 'SS', 'SSA', 'SSD', 'SSK', 'ST', 'STAR', 'STD', 'STON', 'STS', 'SUK', 'SW', 'SWAMP', 'SX',
     'TAK', 'TBL', 'TBS', 'TC', 'TCE', 'TD', 'TEA', 'TEN', 'TGG', 'TH', 'TIGER', 'TK', 'TM', 'TN', 'TO', 'TOGE', 'TOKYO', 'TOS', 'TP', 'TR', 'TS', 'TSU', 'TT', 'TURBO', 'TV', 'TW', 'TX',
     'U', 'UDA', 'UFO', 'UK', 'UME', 'UMEMOTO', 'UQ', 'URC', 'URF', 'USAGI', 'USO', 'UTSUWA',
     'V', 'VAG', 'VAL', 'VENU', 'VH', 'VHS', 'VOSS', 'VQ', 'VR', 'VS',
@@ -95,8 +96,8 @@ EXCLUDE_PREFIXES = {
     'TS', 'TC', 'R3', 'CAM', 'HDRIP', 'BRRIP', 'BLURAY', 'DUBBED', 'SUBBED',
     # 特殊处理标识
     'UNCEN', 'CEN', 'DECENSOR', 'UNCENSOR', 'RAW', 'SUB', 'DUB',
-    # 常见错误格式
-    'OP', 'ED', 'OVA', 'EP', 'SP', 'CM', 'NC', 'PV',
+    # 常见错误格式（OP/SS 已是有效 AV 前缀，不排除）
+    'ED', 'OVA', 'EP', 'SP', 'CM', 'NC', 'PV',
     # 其他网站标识
     'RARBG', 'FTP', 'PTP', 'HDS', 'NTB', 'SPARKS', 'FLUX',
 }
@@ -933,6 +934,11 @@ async def scrape_batch(req: ScrapeRequest):
                 })
                 continue
             
+            # 检查本地库是否有该番号的视频（提前查询，避免在 complete 分支中引用时未定义）
+            local_video = db.get_local_video_by_code(code)
+            local_video_id = local_video["id"] if local_video else None
+            local_path = local_video.get("path") if local_video else None
+
             if existing and existing.get("scrape_status") == "complete":
                 # 即使跳过刮削，也要检查是否需要关联本地视频
                 if local_video_id and not existing.get("local_video_id"):
@@ -951,11 +957,6 @@ async def scrape_batch(req: ScrapeRequest):
                     "pct": int(((i + 1) / total) * 100)
                 })
                 continue
-
-            # 检查本地库是否有该番号的视频
-            local_video = db.get_local_video_by_code(code)
-            local_video_id = local_video["id"] if local_video else None
-            local_path = local_video.get("path") if local_video else None
 
             try:
                 movie_data = scrape_movie(code, req.save_cover)
@@ -2680,6 +2681,134 @@ async def download_actor_avatars(keyword: str = Query(...)):
         "Cache-Control": "no-cache",
     }
     return StreamingResponse(generate(), media_type="text/event-stream", headers=headers)
+
+
+# ===============================================================================
+# 整理功能路由（Phase 0.5）
+# ===============================================================================
+
+@app.post("/organize/preview", tags=["整理"])
+async def organize_preview(req: OrganizeRequest):
+    """
+    预览整理计划（不实际移动文件）
+    返回 SSE 流式事件:
+        - found: 找到的每个文件
+        - summary: 汇总统计
+        - error: 发生错误
+    """
+    import asyncio
+    from organizer import organize_files_gen, OrganizeMode
+
+    async def generate():
+        await asyncio.sleep(0)  # 确保 headers 先发送
+
+        loop = asyncio.get_running_loop()
+        gen = organize_files_gen(
+            source_paths=req.source_paths,
+            target_root=req.target_root,
+            mode=OrganizeMode.PREVIEW,
+        )
+
+        def make_sse(event_type: str, data: dict) -> str:
+            return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+        try:
+            while True:
+                # 单次迭代最多等 30s，防止 scan_video_files 在大目录/网络路径上无限阻塞
+                try:
+                    progress = await asyncio.wait_for(
+                        loop.run_in_executor(None, next, gen),
+                        timeout=30.0,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("[Organize] 预览单次迭代超时（30s），可能是网络路径或大目录阻塞")
+                    yield make_sse("error", {"message": "扫描超时（30s），请检查目录路径或减少目录大小"})
+                    break
+                if progress is None:
+                    break
+                data = progress.model_dump(exclude_none=True)
+                event_name = data.pop("event", "message")
+                yield make_sse(event_name, data)
+        except Exception as e:
+            logger.error(f"[Organize] 预览失败: {e}", exc_info=True)
+            yield make_sse("error", {"message": str(e)})
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache",
+        }
+    )
+
+
+@app.post("/organize/execute", tags=["整理"])
+async def organize_execute(req: OrganizeRequest):
+    """
+    执行整理（复制或移动文件）
+    请求体:
+        source_paths: 源目录列表
+        target_root:  目标根目录
+        mode: preview | copy | move
+    返回 SSE 流式事件:
+        - copied/moved/skipped/error: 每文件进度
+        - done: 汇总结果
+        - error: 发生错误
+    """
+    import asyncio
+    from organizer import organize_files_gen, OrganizeMode
+
+    async def generate():
+        await asyncio.sleep(0)
+
+        loop = asyncio.get_running_loop()
+        gen = organize_files_gen(
+            source_paths=req.source_paths,
+            target_root=req.target_root,
+            mode=OrganizeMode(req.mode.value),
+        )
+
+        def make_sse(event_type: str, data: dict) -> str:
+            return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+        try:
+            while True:
+                # 单次迭代最多等 30s，防止大文件复制时阻塞
+                try:
+                    progress = await asyncio.wait_for(
+                        loop.run_in_executor(None, next, gen),
+                        timeout=30.0,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("[Organize] 执行单次迭代超时（30s）")
+                    yield make_sse("error", {"message": "操作超时（30s），请重试"})
+                    break
+                if progress is None:
+                    break
+                data = progress.model_dump(exclude_none=True)
+                event_name = data.pop("event", "message")
+                yield make_sse(event_name, data)
+        except Exception as e:
+            logger.error(f"[Organize] 执行失败: {e}", exc_info=True)
+            yield make_sse("error", {"message": str(e)})
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache",
+        }
+    )
+
+
+@app.post("/organize/stop", tags=["整理"])
+async def organize_stop():
+    """中止正在进行的整理操作"""
+    from organizer import abort_organize
+    abort_organize()
+    return {"message": "整理操作已请求中止"}
 
 
 # ===============================================================================

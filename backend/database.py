@@ -67,6 +67,9 @@ def init_db():
         "plot": "ALTER TABLE movies ADD COLUMN plot TEXT",  # 剧情简介
         "source_type": "ALTER TABLE movies ADD COLUMN source_type TEXT DEFAULT 'web'",  # 来源类型: web/jellyfin/local
         "video_path": "ALTER TABLE movies ADD COLUMN video_path TEXT",  # 本地视频文件路径
+        "subtitle_type": "ALTER TABLE movies ADD COLUMN subtitle_type TEXT DEFAULT 'none'",  # 字幕类型: none/chinese/english/bilingual
+        "last_organized_at": "ALTER TABLE movies ADD COLUMN last_organized_at TIMESTAMP",  # 最近整理时间
+        "organized_path": "ALTER TABLE movies ADD COLUMN organized_path TEXT",  # 整理后存放路径
     }
     for col_name, sql in new_columns.items():
         if col_name not in existing_columns:
@@ -127,8 +130,9 @@ def create_movie(movie_data: dict) -> int:
             code, title, title_jp, title_cn, release_date, duration,
             studio, maker, director, cover_url, preview_url,
             detail_url, genres, actors, actors_male, local_cover_path, local_video_id,
-            scrape_status, scrape_source, fanart_path, poster_path, thumb_path
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            scrape_status, scrape_source, fanart_path, poster_path, thumb_path,
+            subtitle_type, organized_path
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         movie_data.get("code"),
         movie_data.get("title"),
@@ -152,6 +156,8 @@ def create_movie(movie_data: dict) -> int:
         movie_data.get("fanart_path"),
         movie_data.get("poster_path"),
         movie_data.get("thumb_path"),
+        movie_data.get("subtitle_type", "none"),
+        movie_data.get("organized_path"),
     ))
 
     movie_id = cursor.lastrowid
@@ -332,7 +338,11 @@ def merge_movie_data(existing: dict, new_data: dict) -> dict:
         if field in ("genres", "actors", "actors_male"):
             # 如果新数据有值而旧数据为空或不同，更新
             if new_value and isinstance(new_value, list) and len(new_value) > 0:
-                if not old_value or (isinstance(old_value, str) and len(json.loads(old_value) if old_value else []) < len(new_value)):
+                try:
+                    old_list_len = len(json.loads(old_value)) if isinstance(old_value, str) else 0
+                except (json.JSONDecodeError, TypeError):
+                    old_list_len = 0
+                if not old_value or old_list_len < len(new_value):
                     merged[field] = json.dumps(new_value, ensure_ascii=False)
         else:
             # 普通字段：如果新数据有值，更新
@@ -1560,3 +1570,44 @@ def get_movies_by_series(prefix: str, page: int = 1, page_size: int = 48) -> tup
 
     conn.close()
     return total, results
+
+
+# ========== 整理功能（Phase 0.5）============
+
+def update_movie_organize_info(movie_id: int, subtitle_type: str, organized_path: str):
+    """
+    更新影片的整理信息（整理功能专用）
+    - subtitle_type: none / chinese / english / bilingual
+    - organized_path: 整理后的目标文件夹路径
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE movies
+        SET subtitle_type = ?, organized_path = ?,
+            last_organized_at = CURRENT_TIMESTAMP,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+    """, (subtitle_type, organized_path, movie_id))
+    conn.commit()
+    conn.close()
+
+
+def get_movies_by_codes(codes: list) -> dict:
+    """
+    批量根据番号查询影片（整理功能扫描时使用）
+    返回: { "IPZZ-792": {id, actors, title, ...}, ... }
+    """
+    if not codes:
+        return {}
+    placeholders = ",".join(["?"] * len(codes))
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        f"SELECT * FROM movies WHERE code IN ({placeholders})",
+        codes
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return {dict(r)["code"]: dict(r) for r in rows}
+
