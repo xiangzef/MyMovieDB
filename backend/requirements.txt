@@ -4,7 +4,8 @@ requests==2.31.0
 beautifulsoup4==4.12.3
 lxml==5.1.0
 python-dotenv==0.21.1
-googletrans==4.0.0rc1
+deep-translator>=1.11.0
+
 pystray>=0.19.5
 Pillow>=9.0.0,<10.0.0
 pyinstaller>=5.0,<6.0.0

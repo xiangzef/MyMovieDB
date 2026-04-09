@@ -160,26 +160,6 @@
         .tab-panel { display: none; padding-top: 25px; }
         .tab-panel.active { display: block; }
 
-        /* 字幕徽章（Phase 0.5 整理功能） */
-        .subtitle-badge {
-            display: inline-block;
-            font-weight: 600;
-            border-radius: 4px;
-        }
-        .subtitle-chinese  { background: #14532d; color: #4ade80; }
-        .subtitle-english  { background: #1e3a5f; color: #60a5fa; }
-        .subtitle-bilingual { background: #3b0764; color: #c084fc; }
-
-        /* 整理功能 spinner */
-        .spinner {
-            border: 2px solid #333;
-            border-top-color: #e94560;
-            border-radius: 50%;
-            animation: spin 0.7s linear infinite;
-            display: inline-block;
-        }
-        @keyframes spin { to { transform: rotate(360deg); } }
-
         /* 统计卡片 */
         .stats-row {
             display: flex;
@@ -811,11 +791,6 @@
             font-size: 28px;
             color: #555;
         }
-        .actor-avatar-placeholder.unknown-actress {
-            background: linear-gradient(135deg, #3a2a1e 0%, #1a1510 100%) !important;
-            color: #c09060 !important;
-            border: 2px dashed #c09060;
-        }
         .actor-overlay {
             position: absolute;
             bottom: 0;
@@ -879,6 +854,26 @@
             .add-source-form { flex-direction: column; }
             .add-source-form input { width: 100%; }
         }
+
+        /* 字幕徽章（整理功能） */
+        .subtitle-badge {
+            display: inline-block;
+            padding: 1px 6px;
+            font-weight: 600;
+            border-radius: 4px;
+        }
+        .subtitle-chinese  { background: #14532d; color: #4ade80; }
+        .subtitle-english  { background: #1e3a5f; color: #60a5fa; }
+        .subtitle-bilingual { background: #3b0764; color: #c084fc; }
+
+        /* 整理功能 spinner */
+        .spinner {
+            border: 2px solid #333;
+            border-top-color: #e94560;
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
@@ -1240,7 +1235,8 @@
                     🏷️ 番号系列 <span class="tab-count">{{ categoryStats.series?.total || 0 }}</span>
                 </button>
                 <div style="flex:1;"></div>
-                <input v-model="categoryKeyword" @input="onCategoryKeywordChange"
+                <!-- 搜索框 -->
+                <input v-model="categoryKeyword" @input="onCategoryKeywordChange" 
                        :placeholder="categorySubTab === 'actors' ? '搜索女演员...' : '搜索番号系列...'"
                        style="padding:6px 12px;border-radius:6px;border:1px solid #333;background:#1a1a2e;color:#fff;width:180px;" />
             </div>
@@ -1252,8 +1248,8 @@
                     <p>暂无女演员数据</p>
                 </div>
                 <div v-else class="actor-grid">
-                    <!-- 有头像的女演员 -->
-                    <div v-for="actor in categoryItems.filter(a => a.has_avatar)" :key="actor.name"
+                    <!-- 所有具名女演员（有头像显示图片，无头像显示首字占位） -->
+                    <div v-for="actor in categoryItems" :key="actor.name"
                          class="actor-card"
                          @click="openCategoryDetail('actor', actor.name)">
                         <div class="actor-avatar-wrap">
@@ -1264,7 +1260,7 @@
                                  loading="lazy"
                                  @error="handleImgError" />
                             <div v-else class="actor-avatar actor-avatar-placeholder">
-                                {{ actor.name.slice(0, 1) }}
+                                {{ (actor.name || '?').slice(0, 1) }}
                             </div>
                             <div class="actor-overlay">
                                 <span>{{ actor.name }}</span>
@@ -1274,12 +1270,12 @@
                         <div class="actor-count">{{ actor.count }} 部</div>
                     </div>
 
-                    <!-- 佚名聚合卡片：无头像的女演员归入此卡 -->
+                    <!-- 佚名聚合卡片：数据库中演员名本身为"佚名"的影片归入此卡 -->
                     <div v-if="(categoryStats.actors?.anonymous || 0) > 0"
                          class="actor-card"
                          @click="openCategoryDetail('yiming', '佚名')">
                         <div class="actor-avatar-wrap">
-                            <div class="actor-avatar actor-avatar-placeholder unknown-actress">
+                            <div class="actor-avatar actor-avatar-placeholder" style="background:#2a1a2e;color:#e94560;font-size:14px;">
                                 佚名
                             </div>
                             <div class="actor-overlay">
@@ -1327,8 +1323,7 @@
     </div>
 
         <!-- ========== 整理功能 Tab ========== -->
-        <!-- 整理 tab（appMounted 防止初始化时整块闪现） -->
-        <div v-if="appMounted" class="tab-panel" :class="{active: currentTab === 'organize'}">
+        <div class="tab-panel" :class="{active: currentTab === 'organize'}">
             <h3 style="color:#e94560;margin-bottom:15px;">📁 Jellyfin 文件夹整理</h3>
             <p style="color:#888;font-size:13px;margin-bottom:20px;">
                 扫描本地视频目录，按 Jellyfin 标准结构整理文件。<br>
@@ -1434,7 +1429,7 @@
                                 <span v-else style="color:#555;">—</span>
                             </td>
                             <td style="padding:5px 12px;color:#888;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
-                                :title="item.target_dir">{{ item.actor_name }} / {{ item.target_dir.split(/[/\\]/).pop() }}</td>
+                                :title="item.target_dir">{{ item.actor_name }} / {{ item.target_dir ? item.target_dir.split(/[/\\]/).pop() : '' }}</td>
                             <td style="padding:5px 12px;">
                                 <span v-if="item.status === 'new'" style="color:#4ade80;">🆕 新增</span>
                                 <span v-else-if="item.status === 'exists'" style="color:#fbbf24;">⏳ 已存在</span>
@@ -1451,9 +1446,6 @@
                 </div>
             </div>
         </div>
-    </div>
-
-    <!-- ========== 详情弹窗 ========== -->
     <div class="modal" v-if="selectedMovie" @click.self="closeDetail">
         <div class="modal-content" @click.stop>
             <!-- 左侧海报 -->
@@ -1553,17 +1545,40 @@
                     &larr; 返回
                 </button>
                 <h3 v-if="categoryDetailType === 'actor'">👩 {{ categoryDetailName }}</h3>
-                <h3 v-else-if="categoryDetailType === 'yiming'">❓ 佚女演员</h3>
+                <h3 v-else-if="categoryDetailType === 'yiming'">👤 佚名演员列表</h3>
                 <h3 v-else>🏷️ {{ categoryDetailName }}</h3>
-                <span style="color:#888;margin-left:12px;">
-                    <span v-if="categoryDetailType === 'yiming'">{{ categoryDetailTotal }} 位女演员</span>
-                    <span v-else>{{ categoryDetailTotal }} 部影片</span>
-                </span>
+                <span style="color:#888;margin-left:12px;">{{ categoryDetailTotal }} {{ categoryDetailType === 'yiming' ? '位演员' : '部影片' }}</span>
             </div>
 
-            <!-- 影片网格（有头像的女演员详情） -->
+            <!-- 加载中 -->
             <div v-if="categoryDetailLoading" style="text-align:center;padding:40px;color:#666;">加载中...</div>
-            <div v-else-if="categoryDetailType !== 'yiming'" class="movie-grid">
+
+            <!-- 佚名演员网格 -->
+            <div v-else-if="categoryDetailType === 'yiming'" class="actor-grid">
+                <div v-for="actor in namelessActors" :key="actor.name"
+                     class="actor-card"
+                     @click="openCategoryDetail('actor', actor.name)">
+                    <div class="actor-avatar-wrap">
+                        <img v-if="actor.local_url"
+                             :src="actor.local_url"
+                             :alt="actor.name"
+                             class="actor-avatar"
+                             loading="lazy"
+                             @error="handleImgError" />
+                        <div v-else class="actor-avatar actor-avatar-placeholder">
+                            {{ (actor.name || '?').slice(0, 1) }}
+                        </div>
+                        <div class="actor-overlay">
+                            <span>{{ actor.name }}</span>
+                        </div>
+                    </div>
+                    <div class="actor-name">{{ actor.name }}</div>
+                    <div class="actor-count">{{ actor.count }} 部</div>
+                </div>
+            </div>
+
+            <!-- 影片网格（actor / series） -->
+            <div v-else class="movie-grid">
                 <div v-for="m in categoryDetailMovies" :key="m.id"
                      class="movie-card"
                      @click="showMovieDetail(m.id)">
@@ -1579,33 +1594,6 @@
                 </div>
             </div>
 
-            <!-- 佚女演员网格（点击"佚名"聚合卡后展示） -->
-            <div v-else-if="namelessActors.length > 0" class="actor-grid">
-                <div v-for="actor in namelessActors" :key="actor.name"
-                     class="actor-card"
-                     @click="openCategoryDetail('actor', actor.name)">
-                    <div class="actor-avatar-wrap">
-                        <img v-if="actor.local_url"
-                             :src="actor.local_url"
-                             :alt="actor.name"
-                             class="actor-avatar"
-                             loading="lazy"
-                             @error="handleImgError" />
-                        <div v-else class="actor-avatar actor-avatar-placeholder unknown-actress">
-                            {{ actor.name.slice(0, 1) }}
-                        </div>
-                        <div class="actor-overlay">
-                            <span>{{ actor.name }}</span>
-                        </div>
-                    </div>
-                    <div class="actor-name">{{ actor.name }}</div>
-                    <div class="actor-count">{{ actor.count }} 部</div>
-                </div>
-            </div>
-            <div v-else-if="categoryDetailType === 'yiming'" style="text-align:center;padding:40px;color:#666;">
-                所有女演员头像均已收录 🎉
-            </div>
-
             <!-- 分页 -->
             <div class="pagination" v-if="categoryDetailTotalPages > 1" style="margin-top:15px;">
                 <button @click="categoryDetailPrevPage" :disabled="categoryDetailPage === 1">&lt; 上一页</button>
@@ -1615,8 +1603,8 @@
         </div>
     </div>
 
-    <!-- 刮削进度浮层（v-if + appMounted 确保初始化期间不闪现） -->
-    <div v-if="appMounted && scrapePanel.show" class="scrape-overlay">
+    <!-- 刮削进度浮层 -->
+    <div class="scrape-overlay" :class="{active: scrapePanel.show}">
         <div class="scrape-panel">
             <div class="scrape-panel-header">
                 <h3>🔄 刮削进度 <span style="color:#666;font-weight:normal;font-size:12px;margin-left:8px;">{{ scrapePanel.title }}</span></h3>
@@ -1644,9 +1632,9 @@
         </div>
     </div>
 
-    <!-- 详情弹窗（appMounted 防止初始化闪现） -->
-    <div class="modal-overlay" :class="{show: appMounted && selectedMovie}" @click.self="closeDetail">
-        <div class="modal-content" v-if="appMounted && selectedMovie">
+    <!-- 详情弹窗 -->
+    <div class="modal-overlay" :class="{show: selectedMovie}" @click.self="closeDetail">
+        <div class="modal-content" v-if="selectedMovie">
             <!-- Fanart 背景 -->
             <div class="modal-fanart"
                 :style="selectedMovie.fanart_path ? {backgroundImage: `url(${getCoverUrl(selectedMovie, 'fanart')})`} : {}">
@@ -1687,16 +1675,6 @@
                 <div class="modal-row"><span class="modal-label">制作商</span><span class="modal-value">{{ selectedMovie.studio || '-' }}</span></div>
                 <div class="modal-row"><span class="modal-label">片商</span><span class="modal-value">{{ selectedMovie.maker || '-' }}</span></div>
                 <div class="modal-row"><span class="modal-label">导演</span><span class="modal-value">{{ selectedMovie.director || '-' }}</span></div>
-                <!-- 字幕信息（整理功能 Phase 0.5） -->
-                <div class="modal-row" v-if="selectedMovie.subtitle_type && selectedMovie.subtitle_type !== 'none'">
-                    <span class="modal-label">字幕</span>
-                    <span class="subtitle-badge" :class="'subtitle-' + selectedMovie.subtitle_type"
-                          style="font-size:12px;padding:2px 8px;border-radius:4px;">
-                        {{ selectedMovie.subtitle_type === 'chinese' ? '中文字幕 🇨🇳' :
-                           selectedMovie.subtitle_type === 'english' ? '英文字幕 🇺🇸' :
-                           selectedMovie.subtitle_type === 'bilingual' ? '双语字幕 🌐' : '无字幕' }}
-                    </span>
-                </div>
                 <div class="modal-row"><span class="modal-label">女演员</span>
                     <span class="modal-value">{{ formatArray(selectedMovie.actors) }}</span>
                 </div>
@@ -1795,14 +1773,17 @@
     </div>
 </div>
 
-<script src="/vue.global.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
+<!-- Vue CDN + MD5: 加版本号强制刷新缓存 -->
+<script src="https://cdn.bootcdn.net/ajax/libs/vue/3.4.27/vue.global.prod.min.js?v=20260401"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/blueimp-md5/2.19.0/js/md5.min.js?v=20260401"></script>
 <script>
+// Vue/MD5 加载诊断
+if (typeof Vue === 'undefined') {
+  document.body.innerHTML = '<div style="color:#e94560;padding:40px;font-size:18px;">❌ Vue 加载失败，请检查网络或换个浏览器试试。</div>';
+} else if (typeof md5 === 'undefined') {
+  console.warn('⚠️ MD5 未加载，部分功能可能异常');
+}
 const { createApp, ref, computed, onMounted, nextTick } = Vue;
-
-// ========== MD5（匹配 Python hashlib.md5） ==========
-// 使用 CryptoJS 库（从 CDN 加载），toString() 输出标准 hex
-function md5String(s) { return CryptoJS.MD5(s).toString(); }
 
 // ========== 全局常量 ==========
 const SAMPLE_IMG = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect fill="%230f3460" width="100" height="100"/><text x="50" y="55" text-anchor="middle" fill="%23666" font-size="12">No Cover</text></svg>';
@@ -1816,14 +1797,11 @@ const calcVisiblePages = (current, total) => {
     return pages;
 };
 
+try {
 createApp({
     setup() {
         const API = 'http://localhost:8000';
-
-        // 防止 Vue 初始化期间 DOM 闪现（闪烁问题修复）
-        const appMounted = ref(false);
-        onMounted(() => { appMounted.value = true; });
-
+        
         // 用户管理
         const currentUser = ref(null);
         const token = ref(localStorage.getItem('token') || '');
@@ -2069,16 +2047,8 @@ createApp({
                 case 'start':
                     addScrapeLog('info', `🔄 ${evt.message || '开始处理...'}`);
                     break;
-                case 'source_start':
-                    // 扫描单个目录时显示目录路径
-                    if (evt.path) addScrapeLog('info', `📁 ${evt.message || evt.path}`);
-                    break;
-                case 'source_done':
-                    // 单目录扫描完成
-                    addScrapeLog('info', `✅ ${evt.message || '目录扫描完成'} (找到 ${evt.found} 个)`);
-                    break;
                 case 'progress':
-                    // 只更新进度和统计，不添加日志（防止高频日志刷屏）
+                    // 只更新进度和统计，不添加日志
                     scrapePanel.value.pct = evt.pct;
                     if (evt.stats) {
                         scrapePanel.value.stats.success = evt.stats.success || 0;
@@ -2121,9 +2091,7 @@ createApp({
                     break;
                 case 'done':
                     scrapePanel.value.pct = 100;
-                    const sc = evt.success_count ?? (evt.results ? evt.results.reduce((a, r) => a + (r.status === '完成' ? r.count : 0), 0) : 0);
-                    const fc = evt.fail_count ?? 0;
-                    addScrapeLog('info', `🎉 ${evt.message || '完成'}！共找到 ${sc + fc} 个`);
+                    addScrapeLog('info', `🎉 完成！成功 ${evt.success_count}，失败 ${evt.fail_count}`);
                     // 3秒后关闭浮层
                     setTimeout(() => {
                         scrapePanel.value.show = false;
@@ -2386,53 +2354,11 @@ createApp({
             } catch (e) { showToast('删除失败', 'error'); }
         };
 
-        // 普通目录重新扫描（调用单目录专用 API，只扫描该目录）
+        // 普通目录重新扫描（复用 scanSources 逻辑，但只扫该目录）
         const rescanSource = async (source) => {
             if (scanning.value) return;
-            scanning.value = true;
-
-            scrapePanel.value.show = true;
-            scrapePanel.value.title = `重新扫描: ${source.path}`;
-            scrapePanel.value.logs = [];
-            scrapePanel.value.pct = 0;
-            scrapePanel.value.jobId = `scan-${source.id}`;
-            scrapePanel.value.stats = { success: 0, fail: 0, linked: 0 };
-            addScrapeLog('info', `🔍 重新扫描: ${source.path}`);
-
-            try {
-                const res = await fetch(`${API}/local-sources/${source.id}/scan`, { method: 'POST' });
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                const reader = res.body.getReader();
-                const decoder = new TextDecoder();
-                let buffer = '';
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop() || '';
-                    for (const line of lines) {
-                        if (!line.startsWith('data: ')) continue;
-                        try {
-                            const evt = JSON.parse(line.slice(6));
-                            handleScrapeEvent(evt, 'scan');
-                        } catch (e) { /* ignore */ }
-                    }
-                }
-                if (buffer.startsWith('data: ')) {
-                    try {
-                        const evt = JSON.parse(buffer.slice(6));
-                        handleScrapeEvent(evt, 'scan');
-                    } catch (e) { /* ignore */ }
-                }
-            } catch (e) {
-                addScrapeLog('error', `连接失败: ${e.message}`);
-            }
-            scanning.value = false;
-            loadSources();
-            loadVideoStats();
-            if (currentTab.value === 'videos') loadLocalVideos();
+            // 直接触发全量扫描（后端会扫所有已注册目录）
+            await scanSources();
         };
 
         const scanSources = async () => {
@@ -2797,11 +2723,7 @@ createApp({
         };
 
         // ========== Init ==========
-        onMounted(async () =&gt; {
-            // 确保刮削面板关闭（修复初始化时卡住的问题）
-            scrapePanel.value.show = false;
-            scrapePanel.value.logs = [];
-            
+        onMounted(async () => {
             // 检查登录状态
             await checkAuth();
             
@@ -2857,12 +2779,14 @@ createApp({
             const jobId = 'jellyfin-' + Date.now();
             jellyfinAbortController = new AbortController();
             
-            scrapePanel.value.show = true;
-            scrapePanel.value.title = '扫描 Jellyfin 影视库';
-            scrapePanel.value.pct = 0;
-            scrapePanel.value.logs = [];
-            scrapePanel.value.jobId = jobId;
-            scrapePanel.value.stats = { success: 0, fail: 0, linked: 0, failed: 0, skipped: 0 };
+            scrapePanel.value = {
+                show: true,
+                title: '扫描 Jellyfin 影视库',
+                pct: 0,
+                logs: [],
+                jobId: jobId,
+                stats: { success: 0, failed: 0, skipped: 0 }
+            };
             
             addScrapeLog('info', `📁 重新扫描: ${path}`);
             
@@ -2921,12 +2845,14 @@ createApp({
             const jobId = 'jellyfin-' + Date.now();
             jellyfinAbortController = new AbortController();  // 保存到全局变量
 
-            scrapePanel.value.show = true;
-            scrapePanel.value.title = '扫描 Jellyfin 影视库';
-            scrapePanel.value.pct = 0;
-            scrapePanel.value.logs = [];
-            scrapePanel.value.jobId = jobId;
-            scrapePanel.value.stats = { success: 0, fail: 0, linked: 0, failed: 0, skipped: 0 };
+            scrapePanel.value = {
+                show: true,
+                title: '扫描 Jellyfin 影视库',
+                pct: 0,
+                logs: [],
+                jobId: jobId,
+                stats: { success: 0, failed: 0, skipped: 0 }
+            };
 
             addScrapeLog('info', `📁 开始扫描: ${dir}`);
 
@@ -3024,7 +2950,7 @@ createApp({
         const categoryLoading = ref(false);
         const categoryKeyword = ref('');
         const categoryDetailName = ref('');
-        const categoryDetailType = ref('');  // 'actor' | 'series' | 'yiming'
+        const categoryDetailType = ref('');  // 'actor' | 'series'
         const categoryDetailTotal = ref(0);
         const categoryDetailPage = ref(1);
         const categoryDetailTotalPages = computed(() => Math.ceil(categoryDetailTotal.value / 48));
@@ -3032,7 +2958,7 @@ createApp({
         const categoryDetailMovies = ref([]);
         const categoryDetailLoading = ref(false);
         const showCategoryDetail = ref(false);
-        const namelessActors = ref([]);  // 佚女演员列表（详情弹窗用）
+        const namelessActors = ref([]);  // 佚名演员列表（佚名聚合卡片用）
         const downloadingAvatars = ref(false);
         let categoryKeywordTimer = null;
 
@@ -3057,10 +2983,15 @@ createApp({
                     ? `${API}/categories/actors`
                     : `${API}/categories/series`;
                 const res = await fetch(`${endpoint}?${params}`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 const data = await res.json();
-                categoryTotal.value = data.total;
-                categoryItems.value = data.items;
-            } catch (e) { console.error(e); }
+                categoryTotal.value = data.total || 0;
+                categoryItems.value = data.items || [];
+            } catch (e) {
+                console.error('[loadCategoryList]', e);
+                categoryItems.value = [];
+                categoryTotal.value = 0;
+            }
             categoryLoading.value = false;
         };
 
@@ -3068,6 +2999,8 @@ createApp({
             categorySubTab.value = tab;
             categoryPage.value = 1;
             categoryKeyword.value = '';
+            categoryItems.value = [];   // 先清空，避免旧数据结构污染新 tab 的渲染
+            categoryTotal.value = 0;
             loadCategoryList();
         };
 
@@ -3095,16 +3028,13 @@ createApp({
         const loadCategoryDetailList = async () => {
             categoryDetailLoading.value = true;
             try {
-                // 佚名聚合卡：加载无头像的女演员列表
                 if (categoryDetailType.value === 'yiming') {
-                    const params = new URLSearchParams({
-                        page: categoryDetailPage.value,
-                        page_size: 48,
-                    });
+                    // 佚名：调用无头像演员接口
+                    const params = new URLSearchParams({ page: categoryDetailPage.value, page_size: 48 });
                     const res = await fetch(`${API}/actors/not-in-repo?${params}`);
                     const data = await res.json();
                     categoryDetailTotal.value = data.total;
-                    namelessActors.value = data.items;
+                    namelessActors.value = data.items || [];
                     categoryDetailMovies.value = [];
                 } else {
                     const name = encodeURIComponent(categoryDetailName.value);
@@ -3146,33 +3076,89 @@ createApp({
             });
         };
 
-        // 从演员名获取本地头像 URL（与后端 _get_avatar_filename 逻辑一致：URL 编码姓名）
-        // "张三" → /avatars/%E5%BC%A0%E4%B8%89.jpg
-        // 与 Python urllib.parse.quote(name, safe='') 完全对齐，不再有 MD5/Base64 编码对齐问题
+        // 从演员名获取本地头像 URL（直接用文件名匹配，不再使用MD5）
         const getActorAvatarUrl = (name) => {
             if (!name) return null;
-            return `${API}/avatars/${encodeURIComponent(name)}.jpg`;
+            // 清理名称中的方括号、引号等，只保留演员名字
+            const cleanName = name.replace(/[\[\]"\s]/g, '').trim();
+            // 直接使用演员名字作为文件名
+            return `${API}/avatars/${encodeURIComponent(cleanName)}.jpg`;
         };
 
-        // 批量下载所有已知女优头像（SSE 实时进度）
+        // md5 辅助（RFC 1321 标准实现，与 Python hashlib.md5 完全一致）
+        // 参考: RFC 1321 Section 3.1 — 与 Python hashlib.md5 结果逐字节一致
+        const md5 = (str) => {
+            const r = [7, 12, 17, 22,  7, 12, 17, 22,  7, 12, 17, 22,  7, 12, 17, 22,
+                        5,  9, 14, 20,  5,  9, 14, 20,  5,  9, 14, 20,  5,  9, 14, 20,
+                        4, 11, 16, 23,  4, 11, 16, 23,  4, 11, 16, 23,  4, 11, 16, 23,
+                        6, 10, 15, 21,  6, 10, 15, 21,  6, 10, 15, 21,  6, 10, 15, 21];
+            const k = new Uint32Array(64);
+            for (let i = 0; i < 64; i++) k[i] = Math.floor(Math.abs(Math.sin(i + 1)) * 0x100000000) >>> 0;
+
+            const msg = new TextEncoder().encode(str);
+            const origLen = msg.length;
+            // 填充：追加 0x80，再追加 0x00，使总长 ≡ 56 (mod 64)
+            const padLen = (55 - (origLen % 64) + 64) % 64; // 0~63
+            const buf = new Uint8Array(origLen + 1 + padLen + 8); // +1 for 0x80, +8 for bitLen
+            buf.set(msg);
+            buf[origLen] = 0x80;
+            // bit length（大端序，64位）
+            const view = new DataView(buf.buffer);
+            view.setUint32(buf.byteLength - 8, (origLen * 8) / 0x100000000 >>> 0, false);
+            view.setUint32(buf.byteLength - 4, (origLen * 8) >>> 0, false);
+
+            // MD5 初始化寄存器
+            let a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
+            let A = a0, B = b0, C = c0, D = d0;
+
+            // 逐块处理（每块 64 字节）
+            const blocks = buf.byteLength / 64;
+            for (let block = 0; block < blocks; block++) {
+                const M = new Uint32Array(16);
+                for (let i = 0; i < 16; i++) {
+                    M[i] = buf[block*64 + i*4]
+                         | (buf[block*64 + i*4 + 1] << 8)
+                         | (buf[block*64 + i*4 + 2] << 16)
+                         | (buf[block*64 + i*4 + 3] << 24);
+                }
+                let a = A, b = B, c = C, d = D;
+                for (let i = 0; i < 64; i++) {
+                    let f, g;
+                    if (i < 16)       { f = (b & c) | ((~b) & d); g = i; }
+                    else if (i < 32)  { f = (d & b) | ((~d) & c); g = (5*i + 1) % 16; }
+                    else if (i < 48)  { f = b ^ c ^ d;            g = (3*i + 5) % 16; }
+                    else              { f = c ^ (b | ~d);          g = (7*i)     % 16; }
+                    const temp = (b + ((a + f + k[i] + M[g]) >>> 0)) >>> 0;
+                    a = d; d = c; c = b;
+                    b = (temp + ((r[i] < 32 ? (1 << r[i]) : (1 << (r[i] - 32)) * 0x100000000) >>> 0)) >>> 0;
+                }
+                A = (A + a) >>> 0; B = (B + b) >>> 0; C = (C + c) >>> 0; D = (D + d) >>> 0;
+            }
+            const hex = n => (n & 0xffffffff).toString(16).padStart(8, '0');
+            return hex(A) + hex(B) + hex(C) + hex(D);
+        };
+
+        // 批量下载所有已知女优头像（SSE 进度浮层）
         const downloadAllAvatars = async () => {
             if (!confirm('确定下载所有已知女优头像？这会批量从 gfriends 仓库下载图片，可能需要较长时间。')) return;
             downloadingAvatars.value = true;
 
+            // 打开进度浮层
             scrapePanel.value.show = true;
             scrapePanel.value.title = '批量下载女优头像';
             scrapePanel.value.logs = [];
             scrapePanel.value.pct = 0;
-            scrapePanel.value.jobId = null;
-            scrapePanel.value.stats = { success: 0, fail: 0, skipped: 0 };
+            scrapePanel.value.jobId = '_pending_';
+            scrapePanel.value.stats = { success: 0, fail: 0, linked: 0 };
             addScrapeLog('info', '⬇ 开始下载女优头像...');
 
             try {
-                const res = await fetch(`${API}/actors/download-avatars?keyword=all`, {
-                    method: 'POST'
-                    // 注意：不带 Content-Type 避免触发 CORS preflight
-                    // keyword 是 Query 参数，不是 body
-                });
+                const res = await fetch(`${API}/actors/download-avatars?keyword=all`, { method: 'POST' });
+                // 后端崩溃时 response.body 可能为 null，先检查
+                if (!res.body) {
+                    addScrapeLog('fail', '❌ 服务器响应异常，请检查后端日志');
+                    throw new Error('Response body is null');
+                }
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
                 const reader = res.body.getReader();
@@ -3185,53 +3171,45 @@ createApp({
                     buffer += decoder.decode(value, { stream: true });
                     const lines = buffer.split('\n');
                     buffer = lines.pop() || '';
+
                     for (const line of lines) {
-                        if (!line.startsWith('data: ')) continue;
+                        if (!line.startsWith('data:')) continue;
                         try {
-                            const evt = JSON.parse(line.slice(6));
-                            // 处理头像下载事件
-                            if (evt.type === 'start') {
-                                scrapePanel.value.jobId = evt.job_id;
-                                scrapePanel.value.stats = { success: 0, fail: 0, skipped: 0 };
-                                addScrapeLog('info', `🔄 共 ${evt.total} 个女优，开始下载...`);
-                            } else if (evt.type === 'progress') {
-                                scrapePanel.value.pct = evt.pct;
-                            } else if (evt.type === 'item') {
-                                scrapePanel.value.pct = evt.pct;
-                                scrapePanel.value.stats[evt.status === 'skip' ? 'skipped' : evt.status === 'success' ? 'success' : 'fail']++;
-                                const icon = evt.status === 'skip' ? '⏭' : evt.status === 'success' ? '✅' : '❌';
-                                addScrapeLog(evt.status === 'skip' ? 'skipped' : evt.status === 'success' ? 'success' : 'fail',
-                                    `${icon} ${evt.name} ${evt.status === 'skip' ? '已缓存' : evt.status === 'success' ? '下载成功' : '失败'}`);
-                            } else if (evt.type === 'complete') {
+                            const ev = JSON.parse(line.slice(5).trim());
+                            if (ev.type === 'start') {
+                                scrapePanel.value.jobId = ev.job_id;
+                                addScrapeLog('info', `共 ${ev.total} 位演员待下载`);
+                            } else if (ev.type === 'item') {
+                                scrapePanel.value.pct = ev.pct || 0;
+                                if (ev.status === 'success') {
+                                    scrapePanel.value.stats.success++;
+                                    addScrapeLog('success', `✅ ${ev.name}`);
+                                } else if (ev.status === 'skip') {
+                                    scrapePanel.value.stats.linked++;
+                                    addScrapeLog('info', `⏭ ${ev.name}（已有头像）`);
+                                } else {
+                                    scrapePanel.value.stats.fail++;
+                                    addScrapeLog('fail', `❌ ${ev.name}（未找到）`);
+                                }
+                            } else if (ev.type === 'complete') {
                                 scrapePanel.value.pct = 100;
-                                addScrapeLog('success', `🎉 头像下载完成！成功 ${evt.success}，失败 ${evt.fail}，跳过 ${evt.total - evt.success - evt.fail}`);
-                                showToast(`头像下载完成：${evt.success} 成功`, 'success');
+                                addScrapeLog('success', `🎉 ${ev.message || '下载完成'}`);
                             }
-                        } catch (e) { /* ignore parse error */ }
+                        } catch {}
                     }
                 }
-                // 处理剩余 buffer
-                if (buffer.startsWith('data: ')) {
-                    try {
-                        const evt = JSON.parse(buffer.slice(6));
-                        if (evt.type === 'complete') {
-                            addScrapeLog('success', `🎉 完成！成功 ${evt.success}，失败 ${evt.fail}`);
-                            showToast(`头像下载完成：${evt.success} 成功`, 'success');
-                        }
-                    } catch (e) { /* ignore */ }
-                }
             } catch (e) {
-                console.error('[downloadAvatars]', e);
-                addScrapeLog('fail', '❌ ' + (e.message || '下载失败'));
+                addScrapeLog('fail', '❌ 下载失败: ' + (e.message || 'network error'));
                 showToast('头像下载失败', 'error');
-            } finally {
-                setTimeout(() => { scrapePanel.value.show = false; }, 3000);
-                downloadingAvatars.value = false;
-                loadCategoryStats();
             }
+            // 无论成功失败，等待 1 秒后关闭浮层
+            setTimeout(() => {
+                scrapePanel.value.show = false;
+                downloadingAvatars.value = false;
+                loadCategoryStats();   // 刷新统计（has_avatar 状态可能已变）
+            }, 1000);
         };
 
-        // Tab 切换
         // ── 整理功能（Phase 0.5）──────────────────────────────────────────────
         const organizeSources = ref([]);
         const organizeSourceInput = ref('');
@@ -3258,7 +3236,6 @@ createApp({
         };
 
         const browseOrganizeTarget = async () => {
-            // 通过 open-folder 选择目录（复用现有接口）
             const folder = prompt('输入目标目录路径（如 E:\\jellyfin）:');
             if (folder && folder.trim()) {
                 organizeTargetRoot.value = folder.trim();
@@ -3266,7 +3243,6 @@ createApp({
         };
 
         const parseOrganizeSSE = (text) => {
-            // 解析 SSE 事件格式: "event: found\ndata: {...}\n\n"
             const lines = text.split('\n');
             let event = 'message';
             let dataStr = '';
@@ -3291,7 +3267,6 @@ createApp({
 
             const controller = new AbortController();
             organizeAbortController.value = controller;
-            // 5 分钟超时兜底，防止后端异常导致 fetch 永久挂起
             const timeoutId = setTimeout(() => {
                 controller.abort();
                 organizeStatusText.value = '⏱ 预览超时，请检查目录路径或网络';
@@ -3309,9 +3284,7 @@ createApp({
                     signal: controller.signal,
                 });
 
-                if (!res.ok) {
-                    throw new Error(`服务器返回错误: ${res.status} ${res.statusText}`);
-                }
+                if (!res.ok) throw new Error(`服务器返回错误: ${res.status} ${res.statusText}`);
 
                 const reader = res.body.getReader();
                 const decoder = new TextDecoder();
@@ -3345,9 +3318,7 @@ createApp({
                     }
                 }
             } catch (e) {
-                if (e.name === 'AbortError') {
-                    // 可能是超时或用户取消，不显示额外提示
-                } else {
+                if (e.name !== 'AbortError') {
                     console.error('[Organize] 预览失败:', e);
                     organizeStatusText.value = `预览失败: ${e.message}`;
                 }
@@ -3376,7 +3347,6 @@ createApp({
 
             const controller = new AbortController();
             organizeAbortController.value = controller;
-            // 10 分钟超时（复制/移动大文件需要更长时间）
             const timeoutId = setTimeout(() => {
                 controller.abort();
                 organizeStatusText.value = '⏱ 操作超时，请稍后重试';
@@ -3394,9 +3364,7 @@ createApp({
                     signal: controller.signal,
                 });
 
-                if (!res.ok) {
-                    throw new Error(`服务器返回错误: ${res.status} ${res.statusText}`);
-                }
+                if (!res.ok) throw new Error(`服务器返回错误: ${res.status} ${res.statusText}`);
 
                 const reader = res.body.getReader();
                 const decoder = new TextDecoder();
@@ -3435,9 +3403,7 @@ createApp({
                     }
                 }
             } catch (e) {
-                if (e.name === 'AbortError') {
-                    // timeout 或 stopOrganize 触发，不做额外处理
-                } else {
+                if (e.name !== 'AbortError') {
                     console.error('[Organize] 执行失败:', e);
                     organizeStatusText.value = `执行失败: ${e.message}`;
                 }
@@ -3458,16 +3424,22 @@ createApp({
             organizeStatusText.value = '已停止';
         };
 
+        // Tab 切换
         const switchTab = (tab) => {
             currentTab.value = tab;
             if (tab === 'movies') loadMovies();
             if (tab === 'sources') loadSources();
             if (tab === 'videos') { loadSources(); loadVideoStats(); loadLocalVideos(); }
-            if (tab === 'categories') { loadCategoryStats(); loadCategoryList(); }
+            if (tab === 'categories') {
+                categoryItems.value = [];   // 清空防止旧数据渲染异常
+                categoryTotal.value = 0;
+                loadCategoryStats();
+                loadCategoryList();
+            }
         };
 
         return {
-            currentTab, backendStatus, currentUser, logout, getRoleName, appMounted,
+            currentTab, backendStatus, currentUser, logout, getRoleName,
             // Organize (Phase 0.5)
             organizeSources, organizeSourceInput, organizeTargetRoot,
             organizeItems, organizeRunning, organizeNewCount, organizeExistsCount,
@@ -3518,6 +3490,10 @@ createApp({
         };
     }
 }).mount('#app');
+} catch(e) {
+  console.error('❌ Vue 初始化失败:', e);
+  document.body.insertAdjacentHTML('beforeend', '<div style="color:#e94560;padding:40px;font-size:16px;font-family:monospace;background:#1a1a2e;min-height:100vh;">❌ Vue 初始化失败<br><pre style="color:#f88;">' + e.message + '</pre></div>');
+}
 </script>
 </body>
 </html>

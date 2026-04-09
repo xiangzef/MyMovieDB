@@ -29,6 +29,8 @@ from models import (
     UserLogin, UserRegister, UserResponse, LoginResponse,
     ActorListResponse, SeriesListResponse, CategoryMoviesResponse,
     OrganizeRequest,  # Phase 0.5 整理功能
+    # Phase 1 新增：统一响应模型
+    ApiSuccess, ApiList, UserListResponse, MovieStatsResponse,
 )
 from pydantic import BaseModel, Field
 import database as db
@@ -389,7 +391,7 @@ async def login(request: UserLogin):
     }
 
 
-@app.post("/auth/register")
+@app.post("/auth/register", response_model=ApiSuccess)
 async def register(request: UserRegister):
     """用户注册（默认为 guest 角色）"""
     conn = db.get_db()
@@ -411,7 +413,7 @@ async def register(request: UserRegister):
     conn.commit()
     conn.close()
     
-    return {"success": True, "message": "注册成功"}
+    return ApiSuccess(success=True, message="注册成功")
 
 
 @app.get("/auth/me")
@@ -421,12 +423,12 @@ async def get_current_user_info(token: str = Query(None)):
     return user
 
 
-@app.post("/auth/logout")
+@app.post("/auth/logout", response_model=ApiSuccess)
 async def logout(token: str = Query(None)):
     """用户登出"""
     if token and token in active_tokens:
         del active_tokens[token]
-    return {"success": True, "message": "已登出"}
+    return ApiSuccess(success=True, message="已登出")
 
 
 # ========== 管理员 API ==========
@@ -436,29 +438,29 @@ class UserUpdateRequest(BaseModel):
     is_active: Optional[int] = Field(None, description="是否激活")
 
 
-@app.get("/admin/users")
+@app.get("/admin/users", response_model=UserListResponse)
 async def get_all_users(token: str = Query(None)):
     """获取所有用户列表（仅管理员）"""
     user = get_current_user(token)
     if user['role'] != 'admin':
         raise HTTPException(status_code=403, detail="权限不足")
-    
+
     conn = db.get_db()
     cursor = conn.cursor()
-    
+
     cursor.execute("""
         SELECT id, username, email, role, is_active, created_at, last_login
         FROM users
         ORDER BY created_at DESC
     """)
-    
+
     users = [dict(row) for row in cursor.fetchall()]
     conn.close()
-    
-    return {"users": users}
+
+    return UserListResponse(users=users)
 
 
-@app.put("/admin/users/{user_id}")
+@app.put("/admin/users/{user_id}", response_model=ApiSuccess)
 async def update_user(user_id: int, request: UserUpdateRequest, token: str = Query(None)):
     """更新用户信息（仅管理员）"""
     user = get_current_user(token)
@@ -491,10 +493,10 @@ async def update_user(user_id: int, request: UserUpdateRequest, token: str = Que
     
     conn.close()
     
-    return {"success": True, "message": "更新成功"}
+    return ApiSuccess(success=True, message="更新成功")
 
 
-@app.delete("/admin/users/{user_id}")
+@app.delete("/admin/users/{user_id}", response_model=ApiSuccess)
 async def delete_user(user_id: int, token: str = Query(None)):
     """删除用户（仅管理员）"""
     user = get_current_user(token)
@@ -518,8 +520,8 @@ async def delete_user(user_id: int, token: str = Query(None)):
     cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
     conn.commit()
     conn.close()
-    
-    return {"success": True, "message": "删除成功"}
+
+    return ApiSuccess(success=True, message="删除成功")
 
 
 # ========== 前端页面路由 ==========
@@ -569,8 +571,8 @@ async def get_movie(movie_id: int):
     try:
         return MovieResponse(**movie)
     except Exception as e:
-        logging.error(f"[get_movie] Pydantic 验证失败 id={movie_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"影片数据格式错误 (id={movie_id}): {str(e)[:100]}")
+        logging.error(f"[get_movie] Pydantic 验证失败 id={movie_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="影片数据加载失败，请检查数据完整性")
 
 
 @app.get("/movies/code/{code}", response_model=MovieResponse)
@@ -585,8 +587,8 @@ async def get_movie_by_code(code: str):
     try:
         return MovieResponse(**movie)
     except Exception as e:
-        logging.error(f"[get_movie_by_code] Pydantic 验证失败 code={code}: {e}")
-        raise HTTPException(status_code=500, detail=f"影片数据格式错误 ({code}): {str(e)[:100]}")
+        logging.error(f"[get_movie_by_code] Pydantic 验证失败 code={code}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="影片数据加载失败，请检查数据完整性")
 
 
 
@@ -639,7 +641,8 @@ async def open_folder(path: str = Query(..., description="要打开的文件夹�
         subprocess.Popen(f'explorer "{folder}"')
         return {"success": True, "message": f"已打开文件夹: {folder}"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"打开失败: {str(e)}")
+        logging.error(f"[open_folder] 打开文件夹失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="打开文件夹失败")
 
 
 @app.get("/play-video")
@@ -685,7 +688,8 @@ async def play_video(path: str = Query(..., description="要播放的视频文�
             os.startfile(path)
             return {"success": True, "message": "迅雷播放器未安装，已用默认程序打开"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"播放失败: {str(e)}")
+        logging.error(f"[play_video] 播放失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="播放视频失败")
 
 
 @app.get("/search")
@@ -2522,7 +2526,11 @@ async def get_actors(
     keyword: str = Query(None)
 ):
     """获取女演员列表（按作品数量降序）"""
-    total, items = db.get_actor_stats(page=page, page_size=page_size, keyword=keyword)
+    try:
+        total, items = db.get_actor_stats(page=page, page_size=page_size, keyword=keyword)
+    except Exception as e:
+        logger.error(f"[get_actors] 加载女演员列表失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"加载女演员列表失败: {e}")
     return ActorListResponse(total=total, page=page, page_size=page_size, items=items)
 
 
@@ -2564,27 +2572,31 @@ async def get_movies_by_series(
 @app.get("/categories/stats", tags=["类别"])
 async def get_categories_stats():
     """获取类别统计概览"""
-    from gfriends import AVATAR_DIR
+    try:
+        from gfriends import AVATAR_DIR
 
-    _, all_actors = db.get_actor_stats(page=1, page_size=10000)
-    total_actors = len(all_actors)
-    total_known = sum(1 for a in all_actors if a["has_avatar"])
+        _, all_actors = db.get_actor_stats(page=1, page_size=10000)
+        total_actors = len(all_actors)
+        total_known = sum(1 for a in all_actors if a["has_avatar"])
 
-    total_series, _ = db.get_series_stats(page=1, page_size=10000)
+        total_series, _ = db.get_series_stats(page=1, page_size=10000)
 
-    cached_avatars = 0
-    if AVATAR_DIR.exists():
-        cached_avatars = len(list(AVATAR_DIR.glob("*.jpg"))) + len(list(AVATAR_DIR.glob("*.png")))
+        cached_avatars = 0
+        if AVATAR_DIR.exists():
+            cached_avatars = len(list(AVATAR_DIR.glob("*.jpg"))) + len(list(AVATAR_DIR.glob("*.png")))
 
-    return {
-        "actors": {
-            "total": total_actors,
-            "known": total_known,
-            "anonymous": total_actors - total_known,
-        },
-        "series": {"total": total_series},
-        "avatars": {"cached": cached_avatars}
-    }
+        return {
+            "actors": {
+                "total": total_actors,
+                "known": total_known,
+                "anonymous": total_actors - total_known,
+            },
+            "series": {"total": total_series},
+            "avatars": {"cached": cached_avatars}
+        }
+    except Exception as e:
+        logger.error(f"[get_categories_stats] 获取类别统计失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"获取类别统计失败: {e}")
 
 
 @app.get("/actors/not-in-repo", tags=["女演员"])
@@ -2707,17 +2719,22 @@ async def organize_preview(req: OrganizeRequest):
             source_paths=req.source_paths,
             target_root=req.target_root,
             mode=OrganizeMode.PREVIEW,
+            auto_scrape=req.auto_scrape,
         )
 
         def make_sse(event_type: str, data: dict) -> str:
             return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+        # 用 partial 包装 next，防止 StopIteration 逃逸到 asyncio 回调链
+        import functools
+        _next = functools.partial(next, gen)
 
         try:
             while True:
                 # 单次迭代最多等 30s，防止 scan_video_files 在大目录/网络路径上无限阻塞
                 try:
                     progress = await asyncio.wait_for(
-                        loop.run_in_executor(None, next, gen),
+                        loop.run_in_executor(None, _next),
                         timeout=30.0,
                     )
                 except asyncio.TimeoutError:
@@ -2767,17 +2784,22 @@ async def organize_execute(req: OrganizeRequest):
             source_paths=req.source_paths,
             target_root=req.target_root,
             mode=OrganizeMode(req.mode.value),
+            auto_scrape=req.auto_scrape,
         )
 
         def make_sse(event_type: str, data: dict) -> str:
             return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+        # 用 partial 包装 next，防止 StopIteration 逃逸到 asyncio 回调链
+        import functools
+        _next = functools.partial(next, gen)
 
         try:
             while True:
                 # 单次迭代最多等 30s，防止大文件复制时阻塞
                 try:
                     progress = await asyncio.wait_for(
-                        loop.run_in_executor(None, next, gen),
+                        loop.run_in_executor(None, _next),
                         timeout=30.0,
                     )
                 except asyncio.TimeoutError:

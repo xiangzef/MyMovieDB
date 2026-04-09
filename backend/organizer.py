@@ -22,7 +22,7 @@ import os
 import shutil
 import logging
 from pathlib import Path
-from typing import Optional, List, Callable
+from typing import Optional, List, Callable, Iterator
 from datetime import datetime
 
 import database as db
@@ -52,14 +52,47 @@ def reset_abort():
 # 正则：番号 + 字幕后缀 提取
 # ─────────────────────────────────────────────────────────────────────────────
 
-# 字幕后缀模式（加在番号识别之后）
-# 例: IPZZ-792-C → code=IPZZ-792, suffix=C
-#     FC2-PPV-123456 → code=FC2-PPV-123456, suffix=None
-#     FC2-PPV-123456-C → code=FC2-PPV-123456, suffix=C
+# 番号识别正则（从字符串开头匹配）
+# 例: SNIS-001-C.mp4 → code=SNIS-001, suffix=C
+#     489155.com@SNOS-146.mp4 → 不匹配（需用 SEARCH_RE）
+#
+# 字幕后缀识别说明：
+#   (?P<suffix>C|U|UC)  匹配字幕标记字母（独立匹配，不吞数字）
+#   (?:[-.]?(?P<suffix>...))?  可选分隔符（- 或 .），分隔符后可无连接
+#   例: MIDA-533-C  → code=MIDA-533, suffix=C
+#       MIDA-533C   → code=MIDA-533, suffix=C  （数字直接连字幕字母）
+#       300MIUM-1326-C → code=300MIUM-1326, suffix=C  （字母前缀含数字）
+#
+# 关键修复（2026-04-04）：
+#   [A-Z0-9]*[A-Z]-\d{2,5}  替代  [A-Z0-9]+-\d{2,5}
+#   + 会过度贪婪，*+[A-Z] 强制以字母结尾，防止吞掉不该属于番号的数字
+#   如 "ABC-123-456" 正确识别为 code=ABC-123（不以456结尾）
+#   如 "300MIUM-1326" 正确识别为 code=300MIUM-1326（6位数含数字前缀）
+#
 _SUBTITLE_SUFFIX_RE = re.compile(
-    r'^(?P<code>(?:FC2-PPV-\d{5,7}|HEYDOUGA-\d{4}-\d{3,5}|[A-Z]{2,6}-\d{2,5}))'
-    r'(?:-(?P<suffix>C|U|UC))?'                   # 可选字幕后缀
-    r'(?P<ext>\.[^.]+)?$',                        # 可选扩展名
+    r'^(?P<code>(?:'
+    r'FC2-PPV-\d{5,7}|'                           # FC2-PPV-xxxxxx
+    r'HEYDOUGA-\d{4}-\d{3,5}|'                   # HEYDOUGA-xxxx-xxxx
+    r'[A-Z0-9]*[A-Z]-\d{2,5}|'                  # 字母+数字-数字，强制以字母结尾
+    r'\d[A-Z0-9]*[A-Z]-\d{2,5}|'                 # 数字+字母/数字-数字
+    r'))'
+    r'(?:[-.]?(?P<suffix>C|U|UC))?'              # 可选字幕后缀（支持 -C .C 或直接 C）
+    r'(?:[.].+)?$',                              # 可选扩展名
+    re.IGNORECASE
+)
+
+# 番号识别正则（从字符串任意位置搜索，用于有前缀的文件名）
+# 例: 489155.com@SNOS-146.mp4 → code=SNOS-146
+#     xmmdh.net_SSIS-157C_1_1.mp4 → code=SSIS-157, suffix=C
+_SUBTITLE_SUFFIX_SEARCH_RE = re.compile(
+    r'(?P<code>(?:'
+    r'FC2-PPV-\d{5,7}|'
+    r'HEYDOUGA-\d{4}-\d{3,5}|'
+    r'[A-Z0-9]*[A-Z]-\d{2,5}|'
+    r'\d[A-Z0-9]*[A-Z]-\d{2,5}'
+    r'))'
+    r'(?:[-.]?(?P<suffix>C|U|UC))?'
+    r'(?:[.].+)?',
     re.IGNORECASE
 )
 
@@ -78,7 +111,9 @@ def _safe_dir_name(name: str) -> str:
     """
     if not name:
         return "未知演员"
-    # Windows 非法字符: < > : " / \\ | ? * 以及控制字符
+    # 去除方括号和引号
+    name = name.strip().strip('[]"\' ')
+    # Windows 非法字符: < > : " / \ | ? * 以及控制字符
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name)
     # 去除前后空格和点
     name = name.strip().strip('.')
@@ -101,7 +136,7 @@ def _extract_code_with_suffix(filename: str) -> tuple:
     从文件名中提取番号和字幕后缀
 
     参数:
-        filename: 文件名（不含路径），如 "IPZZ-792-C.mp4"
+        filename: 文件名（不含路径），如 "IPZZ-792-C.mp4" 或 "489155.com@SNOS-146.mp4"
 
     返回:
         (code, subtitle_type, display_name)
@@ -111,7 +146,12 @@ def _extract_code_with_suffix(filename: str) -> tuple:
         返回 (None, None, None) 如果无法识别番号
     """
     name = Path(filename).stem  # 去扩展名
+
+    # 1. 先尝试从头匹配（正常文件名）
     match = _SUBTITLE_SUFFIX_RE.match(name)
+    # 2. 失败则从任意位置搜索（有前缀的下载文件名）
+    if not match:
+        match = _SUBTITLE_SUFFIX_SEARCH_RE.search(name)
 
     if not match:
         return None, None, None
@@ -519,10 +559,14 @@ def organize_files_gen(
     source_paths: List[str],
     target_root: str,
     mode: OrganizeMode,
+    auto_scrape: bool = False,
 ) -> Iterator[OrganizeProgress]:
     """
     Generator 版本的 organize_files，每次 yield 一个 OrganizeProgress。
     专为 asyncio.to_thread 设计，可在不阻塞事件循环的情况下逐个推送进度。
+
+    参数:
+        auto_scrape: 是否对未收录的影片自动联网刮削（整理时获取演员信息/封面）
     """
     global _abort_organize
     reset_abort()
@@ -554,6 +598,7 @@ def organize_files_gen(
     # 4. 执行阶段（复制/移动）
     success_count = 0
     fail_count = 0
+    scrape_count = 0
 
     for f in files:
         if _abort_organize:
@@ -575,6 +620,27 @@ def organize_files_gen(
             continue
 
         movie_data = movies_map.get(f["code"], {})
+
+        # ── 自动刮削：影片未收录时联网获取信息 ──────────────────────
+        if auto_scrape and not movie_data:
+            code = f["code"]
+            # 通知前端开始刮削
+            yield OrganizeProgress(
+                event="scrape_start",
+                source_path=f["path"],
+                code=code,
+                status="scraping",
+                reason=f"正在联网刮削 {code} ...",
+            )
+            scraped = _auto_scrape_movie(code, f["path"])
+            if scraped:
+                movies_map[code] = scraped
+                movie_data = scraped
+                scrape_count += 1
+                logger.info(f"[Organize] 自动刮削成功: {code} → {movie_data.get('title', '无标题')}")
+            else:
+                logger.warning(f"[Organize] 自动刮削失败: {code}，将以「未知演员」整理")
+
         target_dir, target_file = build_target_path(
             f["code"],
             _get_primary_actor(movie_data) or "未知演员",
@@ -639,8 +705,74 @@ def organize_files_gen(
         event="done",
         success_count=success_count,
         fail_count=fail_count,
-        message=f"完成：成功 {success_count}，失败 {fail_count}",
+        message=f"完成：成功 {success_count}，失败 {fail_count}，刮削 {scrape_count} 部",
     )
+
+    # MOVE 模式：清理移动后留下的空源文件夹
+    if mode == OrganizeMode.MOVE:
+        for source_path in source_paths:
+            removed = _cleanup_empty_dirs(source_path)
+            if removed:
+                logger.info(f"[Organize] 已清理空文件夹 {removed} 个: {source_path}")
+
+
+def _cleanup_empty_dirs(source_path: str) -> int:
+    """
+    递归删除 source_path 下的所有空文件夹，返回清理数量。
+    只删除确实为空的目录（不含任何文件，包括隐藏文件）。
+    """
+    removed = 0
+    try:
+        p = Path(source_path)
+        if not p.exists():
+            return 0
+        # 按深度从深到浅排序（先删子目录，再删父目录）
+        all_dirs = sorted([d for d in p.rglob("*") if d.is_dir()], key=lambda d: len(d.parts), reverse=True)
+        for d in all_dirs:
+            try:
+                # is_dir() + list is fast check without os.listdir overhead
+                if d.exists() and not any(d.iterdir()):
+                    d.rmdir()
+                    removed += 1
+                    logger.debug(f"[Organize] 删除空目录: {d}")
+            except Exception as e:
+                logger.debug(f"[Organize] 无法删除目录 {d}: {e}")
+    except Exception as e:
+        logger.warning(f"[Organize] 清理空目录失败 {source_path}: {e}")
+    return removed
+
+
+def _auto_scrape_movie(code: str, local_video_path: Optional[str] = None) -> Optional[dict]:
+    """
+    自动刮削单个影片（整理时调用）
+
+    流程：联网刮削 → 保存封面 → upsert 到数据库
+    返回: 影片数据字典（包含 id），失败返回 None
+    """
+    try:
+        import scraper as scrape_module
+        from pathlib import Path
+        import config as cfg
+
+        # 1. 联网刮削
+        movie_data = scrape_module.scrape_movie_enhanced(code, save_cover=False)
+        if not movie_data:
+            return None
+
+        # 2. 保存封面到 data/covers/{code}/
+        covers_dir = Path(cfg.COVERS_DIR)
+        covers_dir.mkdir(parents=True, exist_ok=True)
+        movie_data = scrape_module.save_movie_assets(movie_data, covers_dir, local_video_path)
+
+        # 3. upsert 到数据库
+        movie_id, _ = db.upsert_movie(movie_data)
+        movie_data["id"] = movie_id
+
+        return movie_data
+
+    except Exception as e:
+        logger.warning(f"[_auto_scrape_movie] 刮削失败 {code}: {e}")
+        return None
 
 
 def _gen_preview_items(f, movies_map, target_root) -> Iterator[OrganizeProgress]:
@@ -692,7 +824,18 @@ def _get_primary_actor(movie_data: dict) -> Optional[str]:
     """获取主女演员（第一个）"""
     actors = movie_data.get("actors", [])
     if isinstance(actors, str):
-        actors = [a.strip() for a in actors.split(",") if a.strip()]
+        # 数据库里 actors 字段可能是 JSON 数组格式 '["斎木香住"]'，也可能是逗号分隔字符串
+        actors_str = actors.strip()
+        if actors_str.startswith("["):
+            # JSON 数组格式
+            try:
+                import json
+                actors = json.loads(actors_str)
+            except Exception:
+                # JSON 解析失败，回退逗号分隔
+                actors = [a.strip() for a in actors.split(",") if a.strip()]
+        else:
+            actors = [a.strip() for a in actors.split(",") if a.strip()]
     if actors:
         return actors[0]
     return None

@@ -1262,34 +1262,27 @@ def get_actor_stats(page: int = 1, page_size: int = 48, keyword: str = None) -> 
         cached_files = set()
 
     def _safe_filename(name: str):
-        """将演员姓名转换为安全文件名（直接用真实名字，去除非法字符）"""
+        """将演员姓名转换为安全文件名（直接用真实名字，去除非法字符和方括号）"""
         if not name or name == "佚名":
             return None
+        # 去除方括号和引号
+        name = name.strip().strip('[]"\' ')
         illegal = r'\/:*?"<>|'
         result = name
         for ch in illegal:
             result = result.replace(ch, '_')
         return result.strip() or None
 
-    def _has_avatar(name: str):
-        """O(1) 判断演员是否有本地头像"""
-        # 1) 真实名字格式（当前格式）
+    def _has_avatar(name: str) -> bool:
+        """O(1) 判断演员是否有本地头像（直接文件名匹配）"""
         safe_name = _safe_filename(name)
-        if safe_name and safe_name in cached_files:
-            return True
-        # 2) MD5 兜底（早期文件兼容）
-        h = hashlib.md5(name.encode("utf-8")).hexdigest()[12:-12]
-        return h in cached_files
+        return bool(safe_name and safe_name in cached_files)
 
     def _local_url(name: str):
-        """返回头像 URL（无则为 None）"""
+        """返回头像 URL（直接文件名匹配）"""
         safe_name = _safe_filename(name)
         if safe_name and safe_name in cached_files:
             return f"/avatars/{quote(safe_name, safe='')}.jpg"
-        # MD5 兜底（早期文件）
-        h = hashlib.md5(name.encode("utf-8")).hexdigest()[12:-12]
-        if h in cached_files:
-            return f"/avatars/{h}.jpg"
         return None
 
     conn = get_db()
@@ -1307,7 +1300,7 @@ def get_actor_stats(page: int = 1, page_size: int = 48, keyword: str = None) -> 
         try:
             actors = json.loads(actors_str)
             for a in actors:
-                if a and a.strip() and a != "佚名":
+                if a and a.strip() and a != "佚名" and a != "[]":
                     actor_count[a] = actor_count.get(a, 0) + 1
         except Exception:
             pass

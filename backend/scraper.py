@@ -55,18 +55,26 @@ except ImportError:
     print("警告: Pillow 未安装，将跳过封面裁切")
 
 # ===============================================================================
-# 可选依赖：Google 翻译
+# 可选依赖：deep-translator 翻译（Phase 1 替换 googletrans）
 # ===============================================================================
-# 功能: 将日文标题翻译为中文
-# 安装: pip install googletrans==4.0.0-rc1
-# 注意: Google 翻译 API 可能不稳定，已设置容错处理
+# 功能: 将日文标题翻译为中文，支持 Google/DeepL/Microsoft 等多个后端
+# 安装: pip install deep-translator
+# 说明: googletrans 已废弃，改用 deep-translator（活跃维护，稳定性高）
 
 try:
-    from googletrans import Translator           # Google 翻译
-    GOOGLE_TRANSLATE_AVAILABLE = True           # 标记翻译可用
+    from deep_translator import GoogleTranslator
+    TRANSLATOR_ENGINE = "google"
+    GOOGLE_TRANSLATE_AVAILABLE = True
 except ImportError:
-    GOOGLE_TRANSLATE_AVAILABLE = False          # 标记翻译不可用
-    print("警告: googletrans 未安装，标题将不会翻译")
+    try:
+        # 备用：Microsoft Translator
+        from deep_translator import MicrosoftTranslator
+        TRANSLATOR_ENGINE = "microsoft"
+        GOOGLE_TRANSLATE_AVAILABLE = True
+    except ImportError:
+        GOOGLE_TRANSLATE_AVAILABLE = False
+        TRANSLATOR_ENGINE = None
+        print("警告: deep-translator 未安装，标题将不会翻译（pip install deep-translator）")
 
 # ===============================================================================
 # 导入配置文件
@@ -79,11 +87,23 @@ except ImportError:
 import config
 
 # ===============================================================================
-# 日志配置
+# 日志配置（由 main.py 统一管理，此处仅获取 logger）
 # ===============================================================================
 
-logging.basicConfig(level=logging.INFO)          # 设置日志级别为 INFO
-logger = logging.getLogger(__name__)             # 获取当前模块的日志记录器
+logger = logging.getLogger(__name__)
+
+
+def _clean_actor_name(name: str) -> str:
+    """
+    清理演员名称中的方括号、引号等，只保留演员名字
+    例如: '["柚月あい"]' -> '柚月あい'
+          '["葵いぶき"]' -> '葵いぶき'
+    """
+    if not name:
+        return name
+    # 去除首尾的方括号、引号、空格
+    cleaned = name.strip().strip('[]"\' ')
+    return cleaned if cleaned else name
 
 
 # ===============================================================================
@@ -98,7 +118,7 @@ def translate_to_chinese(text: str, retry: int = 2) -> str:
         text: 待翻译的日文文本
         retry: 失败重试次数（默认2次）
     返回: 翻译后的中文文本，失败时返回原文
-    依赖: googletrans.Translator
+    依赖: deep_translator.GoogleTranslator
     语法:
         result = translate_to_chinese("日文标题")
     """
@@ -109,14 +129,13 @@ def translate_to_chinese(text: str, retry: int = 2) -> str:
     # 最多重试指定次数
     for i in range(retry):
         try:
-            # 创建翻译器实例
-            # 语法: Translator() 实例化
-            translator = Translator()
-            # 执行翻译
-            # 语法: translator.translate(文本, src=源语言, dest=目标语言)
-            result = translator.translate(text, src='ja', dest='zh-cn')
-            if result and result.text:
-                return result.text
+            if TRANSLATOR_ENGINE == "google":
+                result = GoogleTranslator(source='ja', target='zh-CN').translate(text)
+            else:
+                # Microsoft 后端
+                result = MicrosoftTranslator(source='ja', target='zh-CN').translate(text)
+            if result:
+                return result
         except Exception as e:
             logger.warning(f"翻译失败 (尝试 {i+1}/{retry}): {e}")
             if i < retry - 1:
@@ -1251,12 +1270,15 @@ class AvbaseScraper(BaseScraper):
         # 提取演员 - 从 /talents/ 链接中提取
         actor_links = soup.select('a[href*="/talents/"]')
         if actor_links:
-            actors = [link.get_text(strip=True) for link in actor_links if link.get_text(strip=True)]
+            actors = [_clean_actor_name(link.get_text(strip=True)) for link in actor_links if link.get_text(strip=True)]
             if actors:
                 # 去重（保持顺序）
                 seen = set()
                 unique_actors = []
                 for actor in actors:
+                    # 跳过无效的演员名
+                    if not actor or actor in ('[未找到]', '佚名', '未知') or len(actor) < 2:
+                        continue
                     if actor not in seen:
                         seen.add(actor)
                         unique_actors.append(actor)
@@ -1527,10 +1549,12 @@ class FanzaScraper(BaseScraper):
         if actor_links:
             actors = []
             for link in actor_links:
-                text = link.get_text(strip=True)
+                text = _clean_actor_name(link.get_text(strip=True))
                 # 过滤干扰项
                 if text and text not in ["AV女優一覧", "AV女優", "女優一覧", "一覧"]:
-                    actors.append(text)
+                    # 跳过无效的演员名
+                    if text not in ('[未找到]', '佚名', '未知') and len(text) >= 2:
+                        actors.append(text)
             if actors:
                 # 去重（保持顺序）
                 seen = set()
@@ -1698,7 +1722,9 @@ class JavcupScraper(BaseScraper):
         # 提取演员
         actor_tags = soup.select(".actress, .actor, .performer")
         if actor_tags:
-            actors = [tag.get_text(strip=True) for tag in actor_tags if tag.get_text(strip=True)]
+            actors = [_clean_actor_name(tag.get_text(strip=True)) for tag in actor_tags if tag.get_text(strip=True)]
+            # 过滤无效演员名
+            actors = [a for a in actors if a and a not in ('[未找到]', '佚名', '未知') and len(a) >= 2]
             if actors:
                 data["actors"] = actors
 

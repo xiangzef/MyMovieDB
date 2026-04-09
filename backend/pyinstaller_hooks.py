@@ -6,7 +6,7 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 # 收集依赖
 datas = []
-datas += collect_data_files('googletrans')
+datas += collect_data_files('deep_translator')
 datas += collect_data_files('uvicorn')
 datas += collect_data_files('starlette')
 datas += collect_data_files('fastapi')
@@ -38,7 +38,7 @@ hiddenimports = [
     'httpx',
     'anyio',
     'sniffio',
-    'googletrans',
+    'deep_translator',
     'pystray',
     'PIL',
     'PIL.Image',

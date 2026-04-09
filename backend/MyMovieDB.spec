@@ -3,7 +3,7 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = [('icon.ico', '.')]
 binaries = []
-hiddenimports = ['uvicorn', 'uvicorn.logging', 'uvicorn.loops', 'uvicorn.loops.auto', 'uvicorn.protocols', 'uvicorn.protocols.http', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.websockets', 'uvicorn.protocols.websockets.auto', 'uvicorn.lifespan', 'uvicorn.lifespan.auto', 'starlette', 'starlette.routing', 'starlette.middleware', 'starlette.middleware.cors', 'fastapi', 'pydantic', 'pydantic.BaseModel', 'httpcore', 'httpx', 'anyio', 'sniffio', 'googletrans', 'pystray', 'PIL', 'PIL.Image', 'PIL.ImageDraw']
+hiddenimports = ['uvicorn', 'uvicorn.logging', 'uvicorn.loops', 'uvicorn.loops.auto', 'uvicorn.protocols', 'uvicorn.protocols.http', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.websockets', 'uvicorn.protocols.websockets.auto', 'uvicorn.lifespan', 'uvicorn.lifespan.auto', 'starlette', 'starlette.routing', 'starlette.middleware', 'starlette.middleware.cors', 'fastapi', 'pydantic', 'pydantic.BaseModel', 'httpcore', 'httpx', 'anyio', 'sniffio', 'deep_translator', 'pystray', 'PIL', 'PIL.Image', 'PIL.ImageDraw']
 tmp_ret = collect_all('uvicorn')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('starlette')
@@ -12,7 +12,7 @@ tmp_ret = collect_all('fastapi')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('pydantic')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('googletrans')
+tmp_ret = collect_all('deep_translator')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('pystray')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]

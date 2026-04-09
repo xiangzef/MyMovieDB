@@ -200,6 +200,7 @@ class OrganizeRequest(BaseModel):
     source_paths: List[str]          # 源目录列表（可多选）
     target_root: str                 # 目标根目录，如 "E:/jellyfin"
     mode: OrganizeMode = OrganizeMode.PREVIEW  # 默认为预览模式
+    auto_scrape: bool = False        # 整理时自动刮削未收录的影片
 
 
 class OrganizePreviewItem(BaseModel):
@@ -217,8 +218,18 @@ class OrganizePreviewItem(BaseModel):
 
 
 class OrganizeProgress(BaseModel):
-    """整理进度（SSE 流式推送）"""
-    event: str             # found/summary/copied/moved/skipped/error/done
+    """整理进度（SSE 流式推送）
+
+    event 类型:
+      - found       : 预览找到文件
+      - summary     : 预览汇总
+      - scrape_start: 正在自动刮削（auto_scrape 模式）
+      - copied/moved: 文件复制/移动成功
+      - skipped     : 目标文件已存在
+      - error       : 处理出错
+      - done        : 全部完成
+    """
+    event: str
     # found 事件
     source_path: Optional[str] = None
     code: Optional[str] = None
@@ -242,4 +253,37 @@ class OrganizeProgress(BaseModel):
     success_count: Optional[int] = None
     fail_count: Optional[int] = None
     message: Optional[str] = None
+
+
+# ===============================================================================
+# Phase 1 新增：统一 API 响应模型（安全/规范化）
+# ===============================================================================
+
+class ApiSuccess(BaseModel):
+    """通用成功响应"""
+    success: bool = True
+    message: Optional[str] = None
+
+
+class ApiList(BaseModel):
+    """通用列表响应"""
+    total: int
+    page: int
+    page_size: int
+    items: List[dict]
+
+
+class UserListResponse(BaseModel):
+    """用户列表响应"""
+    users: List[dict]
+
+
+class MovieStatsResponse(BaseModel):
+    """影片统计响应"""
+    total: int
+    scraped: int
+    unscraped: int
+    actors: int
+    series: int
+
 
