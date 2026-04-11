@@ -365,27 +365,52 @@ def download_avatar(actor_name: str, url: str, prefer_aifix=True) -> bool:
         except:
             pass
 
-    try:
-        session = _get_session()
-        resp = session.get(url, timeout=15)
-        resp.raise_for_status()
+    # 指数退避重试：最多 3 次，间隔 1s / 2s / 4s
+    RETRY_HTTP_CODES = {429, 500, 502, 503, 504}
 
-        # 校验图片
+    for attempt in range(3):
         try:
-            Image.open(io.BytesIO(resp.content)).verify()
-        except:
-            logger.warning(f"头像校验失败: {actor_name} <- {url}")
+            session = _get_session()
+            resp = session.get(url, timeout=15)
+            # 重试 HTTP 错误码
+            if resp.status_code in RETRY_HTTP_CODES and attempt < 2:
+                wait = min(2 ** attempt, 30)
+                logger.info(f"头像下载 HTTP {resp.status_code}，{wait}s 后重试 ({attempt + 1}/3): {actor_name}")
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+
+            # 校验图片
+            try:
+                Image.open(io.BytesIO(resp.content)).verify()
+            except Exception as img_err:
+                logger.warning(f"头像校验失败: {actor_name} <- {url}: {img_err}")
+                return False
+
+            # 保存
+            with open(local_path, "wb") as f:
+                f.write(resp.content)
+
+            if attempt > 0:
+                logger.info(f"头像下载成功（第 {attempt + 1} 次尝试）: {actor_name} → {safe_name}.jpg")
+            else:
+                logger.debug(f"头像下载成功: {actor_name} → {safe_name}.jpg")
+            return True
+
+        except requests.exceptions.ConnectionError as e:
+            # 网络错误，重试
+            if attempt < 2:
+                wait = min(2 ** attempt, 30)
+                logger.info(f"头像下载连接失败，{wait}s 后重试 ({attempt + 1}/3): {actor_name} <- {url}")
+                time.sleep(wait)
+                continue
+            logger.warning(f"头像下载失败（网络）: {actor_name} <- {url}: {e}")
+            return False
+        except Exception as e:
+            logger.warning(f"头像下载失败: {actor_name} <- {url}: {e}")
             return False
 
-        # 保存
-        with open(local_path, "wb") as f:
-            f.write(resp.content)
-
-        logger.debug(f"头像下载成功: {actor_name} → {safe_name}.jpg")
-        return True
-    except Exception as e:
-        logger.warning(f"头像下载失败: {actor_name} <- {url}: {e}")
-        return False
+    return False  # 兜底（理论上不会到达）
 
 
 def batch_download_avatars(actor_names: list, max_workers=5, delay=0.3, prefer_aifix=True) -> dict:

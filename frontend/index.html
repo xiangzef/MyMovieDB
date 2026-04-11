@@ -1131,10 +1131,12 @@
 
             <!-- 筛选 -->
             <div class="video-filter-bar">
-                <select v-model="videoFilter.scraped" @change="loadLocalVideos">
-                    <option :value="null">全部</option>
-                    <option :value="1">已刮削</option>
-                    <option :value="0">未刮削</option>
+                <select v-model="videoFilter.scrape_status" @change="loadLocalVideos">
+                    <option :value="null">全部状态</option>
+                    <option value="complete">✅ 已完成</option>
+                    <option value="not_complete">⚠️ 待刮削/不完整</option>
+                    <option value="partial">⚠️ 部分刮削</option>
+                    <option value="empty">🔴 未刮削</option>
                 </select>
                 <select v-model="videoFilter.source_id" @change="loadLocalVideos">
                     <option :value="null">全部目录</option>
@@ -1147,7 +1149,7 @@
                 </select>
                 <input v-model="videoFilter.keyword" placeholder="搜索文件名或编号..." @keyup.enter="loadLocalVideos">
                 <button class="btn btn-secondary btn-sm" @click="loadLocalVideos">筛选</button>
-                <button class="btn btn-secondary btn-sm" @click="videoFilter = {scraped:null, source_id:null, keyword:''}; loadLocalVideos()">重置</button>
+                <button class="btn btn-secondary btn-sm" @click="videoFilter = {scrape_status:null, source_id:null, keyword:''}; loadLocalVideos()">重置</button>
                 <button class="btn btn-sm btn-secondary" @click="loadVideoStats">🔄 刷新统计</button>
             </div>
 
@@ -1181,8 +1183,8 @@
                     <div>
                         <span v-if="v.scrape_status === 'complete'" class="movie-badge badge-scraped">✅ 已完成</span>
                         <span v-else-if="v.scrape_status === 'partial'" class="movie-badge badge-partial">⚠️ 部分</span>
-                        <span v-else-if="v.scraped" class="movie-badge badge-scraped">已刮削</span>
-                        <span v-else class="movie-badge badge-unscraped">待刮削</span>
+                        <span v-else-if="v.scrape_status === 'empty' || !v.movie_id" class="movie-badge badge-unscraped">🔴 待刮削</span>
+                        <span v-else class="movie-badge badge-partial">⚠️ 待完善</span>
                     </div>
                     <!-- 大小 -->
                     <div style="font-size:12px;color:#666;min-width:70px;text-align:right;">
@@ -1191,7 +1193,7 @@
                     <!-- 操作 -->
                     <div class="video-actions">
                         <button v-if="v.movie_id" class="btn btn-sm btn-secondary" @click="showMovieDetail(v.movie_id)">详情</button>
-                        <button v-if="v.code && !v.scraped" class="btn btn-sm btn-success" @click="scrapeOneLocal(v)" :disabled="scraping">刮削</button>
+                        <button v-if="v.code && v.scrape_status !== 'complete'" class="btn btn-sm btn-success" @click="scrapeOneLocal(v)" :disabled="scraping">刮削</button>
                         <button class="btn btn-sm btn-danger" @click="deleteLocalVideo(v.id)">删除</button>
                     </div>
                 </div>
@@ -1690,6 +1692,17 @@
                     </span>
                 </div>
                 <div class="modal-row">
+                    <span class="modal-label">刮削次数</span>
+                    <span class="modal-value">
+                        <span :style="(selectedMovie.scrape_count||0) === 0 ? 'color:#dc3545;' : 'color:#aaa;'">
+                            {{ selectedMovie.scrape_count || 0 }} 次
+                        </span>
+                        <span v-if="selectedMovie.last_scraped_at" style="color:#666;font-size:11px;margin-left:8px;">
+                            · 最近：{{ selectedMovie.last_scraped_at ? selectedMovie.last_scraped_at.slice(0,16).replace('T',' ') : '-' }}
+                        </span>
+                    </span>
+                </div>
+                <div class="modal-row">
                     <span class="modal-label">数据来源</span>
                     <span class="modal-value">
                         <span v-if="selectedMovie.source_type === 'jellyfin'" class="jellyfin-badge">📁 Jellyfin 导入</span>
@@ -1912,7 +1925,7 @@ createApp({
         const localVideosLoading = ref(false);
         const videoPage = ref(1);
         const videoPageSize = ref(30);
-        const videoFilter = ref({ scraped: null, source_id: null, keyword: '' });
+        const videoFilter = ref({ scrape_status: null, source_id: null, keyword: '' });
 
         const videoTotalPages = computed(() => Math.ceil((videoStats.value.total || 0) / videoPageSize.value));
         const videoVisiblePages = computed(() => calcVisiblePages(videoPage.value, videoTotalPages.value));
@@ -2531,7 +2544,8 @@ createApp({
                     page: videoPage.value,
                     page_size: videoPageSize.value
                 });
-                if (videoFilter.value.scraped !== null) params.set('scraped', videoFilter.value.scraped);
+                if (videoFilter.value.scrape_status !== null && videoFilter.value.scrape_status !== undefined)
+                    params.set('scrape_status', videoFilter.value.scrape_status);
                 if (videoFilter.value.source_id) params.set('source_id', videoFilter.value.source_id);
                 if (videoFilter.value.keyword) params.set('keyword', videoFilter.value.keyword);
 

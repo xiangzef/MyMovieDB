@@ -1,6 +1,7 @@
 """
 SQLite 数据库模块
 """
+import re
 import sqlite3
 from datetime import datetime
 from typing import List, Optional
@@ -70,6 +71,8 @@ def init_db():
         "subtitle_type": "ALTER TABLE movies ADD COLUMN subtitle_type TEXT DEFAULT 'none'",  # 字幕类型: none/chinese/english/bilingual
         "last_organized_at": "ALTER TABLE movies ADD COLUMN last_organized_at TIMESTAMP",  # 最近整理时间
         "organized_path": "ALTER TABLE movies ADD COLUMN organized_path TEXT",  # 整理后存放路径
+        "scrape_count": "ALTER TABLE movies ADD COLUMN scrape_count INTEGER DEFAULT 0",  # 刮削次数
+        "last_scraped_at": "ALTER TABLE movies ADD COLUMN last_scraped_at TIMESTAMP",  # 最近一次刮削时间
     }
     for col_name, sql in new_columns.items():
         if col_name not in existing_columns:
@@ -116,8 +119,97 @@ def init_db():
         """, ('admin', password_hash))
         print("✅ 创建默认 admin 账户（密码: 123）")
     
+    # 创建 tokens 表（Token 持久化）
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS tokens (
+            token TEXT PRIMARY KEY,
+            user_id INTEGER,
+            username TEXT NOT NULL,
+            role TEXT NOT NULL,
+            email TEXT,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        )
+    """)
+
     conn.commit()
     conn.close()
+
+
+# ========== Token 持久化函数 ==========
+
+def create_token_db(token: str, user_data: dict, hours: int = 24) -> None:
+    """将 Token 写入数据库"""
+    from datetime import datetime, timedelta
+    conn = get_db()
+    cursor = conn.cursor()
+    expires_at = (datetime.now() + timedelta(hours=hours)).isoformat()
+    cursor.execute("""
+        INSERT OR REPLACE INTO tokens (token, user_id, username, role, email, created_at, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        token,
+        user_data.get("id"),
+        user_data.get("username"),
+        user_data.get("role"),
+        user_data.get("email"),
+        datetime.now().isoformat(),
+        expires_at,
+    ))
+    conn.commit()
+    conn.close()
+
+
+def verify_token_db(token: str) -> Optional[dict]:
+    """从数据库验证 Token，返回用户信息或 None（已过期或不存在）"""
+    from datetime import datetime
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT user_id, username, role, email, created_at, expires_at
+        FROM tokens WHERE token = ?
+    """, (token,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    # 检查是否过期
+    if datetime.now() > datetime.fromisoformat(row["expires_at"]):
+        # 过期自动清理
+        conn2 = get_db()
+        conn2.execute("DELETE FROM tokens WHERE token = ?", (token,))
+        conn2.commit()
+        conn2.close()
+        return None
+    return {
+        "id": row["user_id"],
+        "username": row["username"],
+        "role": row["role"],
+        "email": row["email"],
+    }
+
+
+def delete_token_db(token: str) -> bool:
+    """从数据库删除指定 Token"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM tokens WHERE token = ?", (token,))
+    affected = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return affected > 0
+
+
+def clean_expired_tokens_db() -> int:
+    """清理所有已过期的 Token，返回清理数量"""
+    from datetime import datetime
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM tokens WHERE expires_at < ?", (datetime.now().isoformat(),))
+    affected = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return affected
 
 
 def create_movie(movie_data: dict) -> int:
@@ -430,6 +522,8 @@ def upsert_movie(movie_data: dict) -> tuple:
 
     # 计算削刮状态
     movie_data["scrape_status"] = calculate_scrape_status(movie_data)
+    # 每次刮削更新时间和次数（由调用方传入，若未传则在 upsert 时自动处理）
+    movie_data["last_scraped_at"] = datetime.now().isoformat()
     
     # 只有新建记录时才设置默认 source_type
     # 更新时会通过 merge_movie_data 保留原有值
@@ -438,6 +532,8 @@ def upsert_movie(movie_data: dict) -> tuple:
 
     if existing:
         # 更新，智能合并（会保护 source_type/video_path/local_video_id）
+        # 刮削次数递增
+        movie_data["scrape_count"] = (existing.get("scrape_count") or 0) + 1
         update_movie(existing["id"], movie_data, merge=True)
         # 如果有 local_video_id，也更新关联
         if movie_data.get("local_video_id"):
@@ -447,6 +543,7 @@ def upsert_movie(movie_data: dict) -> tuple:
         # 创建新记录时才设置默认 source_type
         if "source_type" not in movie_data:
             movie_data["source_type"] = "web"
+        movie_data.setdefault("scrape_count", 1)  # 首次刮削
         movie_id = create_movie(movie_data)
         # 如果有 local_video_id，也建立关联
         if movie_data.get("local_video_id"):
@@ -521,14 +618,12 @@ def row_to_movie_response(row: dict) -> dict:
 def calculate_scrape_status(movie_data: dict) -> str:
     """
     计算削刮完整度状态
-    complete: 有标题 + 有发布日期 + 有制作商 + 有女演员 + 有封面
+    complete: 有标题 + 有发布日期 + 有制作商 + 有女演员 + 有封面 + 有 NFO 文件
     partial: 部分字段有值
     empty: 仅番号，无其他信息
     
     注意：Jellyfin 视频的封面可能在远程服务器，不检查本地文件
     """
-    from pathlib import Path
-    
     # 判断是否是 Jellyfin 来源
     source_type = movie_data.get("source_type") or movie_data.get("source")
     is_jellyfin = source_type == "jellyfin"
@@ -565,6 +660,18 @@ def calculate_scrape_status(movie_data: dict) -> str:
             except:
                 pass
     
+    # 检查 NFO 文件（仅非 Jellyfin 来源）
+    has_nfo = False
+    if not is_jellyfin:
+        code = movie_data.get("code")
+        if code:
+            safe_code = re.sub(r'[<>:"/\\|?*]', '_', str(code))
+            nfo_path = DATABASE_PATH.parent / "covers" / safe_code / f"{safe_code}.nfo"
+            try:
+                has_nfo = nfo_path.exists()
+            except Exception:
+                pass
+    
     # Jellyfin 视频：只要有标题和演员就认为是完整的（发布日期和制作商可能缺失）
     if is_jellyfin:
         if has_title and has_actors:
@@ -574,10 +681,10 @@ def calculate_scrape_status(movie_data: dict) -> str:
         else:
             return "empty"
     
-    # 网络刮削视频：判断完整度 - 必须同时满足5个条件
-    if has_title and has_release_date and has_maker and has_actors and has_cover:
+    # 网络刮削视频：判断完整度 - 必须同时满足6个条件（含 NFO）
+    if has_title and has_release_date and has_maker and has_actors and has_cover and has_nfo:
         return "complete"
-    elif has_title or has_release_date or has_maker or has_actors or has_cover:
+    elif has_title or has_release_date or has_maker or has_actors or has_cover or has_nfo:
         return "partial"
     else:
         return "empty"
@@ -601,6 +708,109 @@ def update_movie_scrape_status(movie_id: int):
         conn.commit()
     
     conn.close()
+
+
+def check_and_fix_scrape_status(code: str) -> dict:
+    """
+    轻量级单片预检：根据当前数据库字段重新计算 scrape_status，
+    若与已存标志不一致则原地修正，无需任何网络请求。
+
+    返回:
+        {
+          "exists": bool,          # 数据库中是否存在此番号
+          "old_status": str|None,  # 修正前的标志
+          "new_status": str|None,  # 修正后的标志（不变则与 old_status 相同）
+          "fixed": bool,           # 是否做了修正写入
+          "should_scrape": bool,   # 修正后是否仍需刮削（new_status != 'complete'）
+          "last_scraped_at": str|None,
+          "scrape_count": int,
+        }
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM movies WHERE code = ?", (code,))
+    row = cursor.fetchone()
+
+    if not row:
+        conn.close()
+        return {
+            "exists": False,
+            "old_status": None,
+            "new_status": None,
+            "fixed": False,
+            "should_scrape": True,
+            "last_scraped_at": None,
+            "scrape_count": 0,
+        }
+
+    movie_data = dict(row)
+    old_status = movie_data.get("scrape_status")
+    new_status = calculate_scrape_status(movie_data)
+    fixed = False
+
+    # 只有状态真正变化时才写库，避免无意义的 UPDATE
+    if new_status != old_status:
+        cursor.execute(
+            "UPDATE movies SET scrape_status = ?, updated_at = CURRENT_TIMESTAMP WHERE code = ?",
+            (new_status, code)
+        )
+        conn.commit()
+        fixed = True
+
+    conn.close()
+    return {
+        "exists": True,
+        "old_status": old_status,
+        "new_status": new_status,
+        "fixed": fixed,
+        "should_scrape": new_status != "complete",
+        "last_scraped_at": movie_data.get("last_scraped_at"),
+        "scrape_count": movie_data.get("scrape_count") or 0,
+    }
+
+
+def batch_verify_scrape_status(limit: int = 0) -> dict:
+    """
+    批量校验并修正全库 scrape_status 标志位。
+    不做网络请求，只根据当前字段重新计算并写库。
+
+    Args:
+        limit: 最多处理多少条，0 = 全部
+
+    Returns:
+        {"total": int, "fixed": int, "complete": int, "partial": int, "empty": int}
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+
+    sql = "SELECT * FROM movies ORDER BY id"
+    if limit > 0:
+        sql += f" LIMIT {limit}"
+    cursor.execute(sql)
+    rows = cursor.fetchall()
+
+    stats = {"total": 0, "fixed": 0, "complete": 0, "partial": 0, "empty": 0}
+    updates = []
+
+    for row in rows:
+        movie_data = dict(row)
+        old_status = movie_data.get("scrape_status")
+        new_status = calculate_scrape_status(movie_data)
+        stats["total"] += 1
+        stats[new_status] = stats.get(new_status, 0) + 1
+        if new_status != old_status:
+            updates.append((new_status, movie_data["id"]))
+
+    if updates:
+        cursor.executemany(
+            "UPDATE movies SET scrape_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            updates
+        )
+        conn.commit()
+        stats["fixed"] = len(updates)
+
+    conn.close()
+    return stats
 
 
 # ========== 本地视频源管理 ==========
@@ -828,11 +1038,13 @@ def get_local_videos(
     page_size: int = 30,
     source_id: int = None,
     scraped: int = None,
+    scrape_status: str = None,
     keyword: str = None
 ) -> tuple:
     """
     获取本地视频列表（分页）
-    scraped: None=全部, 0=未刮削, 1=已刮削
+    scraped: None=全部, 0=未刮削, 1=已刮削（按 local_videos.scraped 字段）
+    scrape_status: None=全部, 'complete'=完整, 'partial'=部分, 'empty'=空, 'not_complete'=不完整(partial+empty+NULL)
     """
     conn = get_db()
     cursor = conn.cursor()
@@ -848,13 +1060,24 @@ def get_local_videos(
         where_clauses.append("v.scraped = ?")
         params.append(scraped)
 
+    if scrape_status is not None:
+        if scrape_status == "not_complete":
+            where_clauses.append("(m.scrape_status IS NULL OR m.scrape_status != 'complete')")
+        else:
+            where_clauses.append("m.scrape_status = ?")
+            params.append(scrape_status)
+
     if keyword:
         where_clauses.append("(v.name LIKE ? OR v.code LIKE ?)")
         params.extend([f"%{keyword}%", f"%{keyword}%"])
 
     where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
 
-    cursor.execute(f"SELECT COUNT(*) FROM local_videos v WHERE {where_sql}", params)
+    cursor.execute(f"""
+        SELECT COUNT(*) FROM local_videos v
+        LEFT JOIN movies m ON v.movie_id = m.id
+        WHERE {where_sql}
+    """, params)
     total = cursor.fetchone()[0]
 
     offset = (page - 1) * page_size
@@ -932,29 +1155,79 @@ def delete_local_video(video_id: int) -> bool:
 
 def get_unscraped_local_videos() -> list:
     """
-    获取所有需要刮削的本地视频
-    
-    业务逻辑：
-    - 未刮削的视频（scraped = 0）
-    - 部分刮削的视频（scrape_status = 'partial' 或 'empty'）
-    - 已完整刮削的跳过（scrape_status = 'complete'）
+    获取所有需要刮削的本地视频。
+
+    业务逻辑（两步走，避免大量无意义刮削）：
+
+    Step-1（SQL层过滤）：
+      - 只取 code 非空、scrape_status != 'complete' 的视频
+      - 排除 source_type = 'jellyfin' 的影片（Jellyfin 来源不走网络刮削）
+
+    Step-2（Python层轻量预检）：
+      - 对每条视频调用 check_and_fix_scrape_status()
+      - 若实际数据已满足 complete 要求（标志位只是还没更新），
+        则原地修正标志并跳过，不加入待刮削列表
+      - 防止已有完整数据的影片因标志位滞后而被重复刮削
     """
     conn = get_db()
     cursor = conn.cursor()
 
+    # Step-1：SQL 层粗过滤
     cursor.execute("""
-        SELECT v.*, s.path as source_path, m.scrape_status
+        SELECT v.*, s.path as source_path,
+               m.scrape_status, m.source_type AS movie_source_type,
+               m.last_scraped_at, m.scrape_count
         FROM local_videos v
         LEFT JOIN local_sources s ON v.source_id = s.id
         LEFT JOIN movies m ON v.movie_id = m.id
         WHERE v.code IS NOT NULL AND v.code != ''
-          AND (v.scraped = 0 OR m.scrape_status IS NULL OR m.scrape_status IN ('partial', 'empty'))
+          AND (m.scrape_status IS NULL OR m.scrape_status != 'complete')
+          AND (m.source_type IS NULL OR m.source_type != 'jellyfin')
         ORDER BY v.id
     """)
 
     rows = cursor.fetchall()
     conn.close()
-    return [dict(row) for row in rows]
+
+    # Step-2：Python 层精确预检（只校验标志位，无网络请求）
+    result = []
+    for row in rows:
+        video = dict(row)
+        code = video.get("code")
+        if not code:
+            continue
+
+        # 预检：重新计算当前字段是否已满足 complete
+        check = check_and_fix_scrape_status(code)
+
+        if check["exists"] and not check["should_scrape"]:
+            # 标志位已修正为 complete，不需要再刮削
+            # 同步 local_videos.scraped = 1（避免下次还被查出来）
+            if video.get("movie_id") and not video.get("scraped"):
+                _mark_video_scraped_silent(video["id"], video["movie_id"])
+            continue
+
+        # 把预检结果附到 video dict 上，供调用方参考
+        video["scrape_count"] = check.get("scrape_count", 0)
+        video["last_scraped_at"] = check.get("last_scraped_at")
+        result.append(video)
+
+    return result
+
+
+def _mark_video_scraped_silent(video_id: int, movie_id: int):
+    """标记视频为已刮削（内部静默调用，不抛异常）"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE local_videos SET scraped = 1, movie_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (movie_id, video_id)
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 
 def cleanup_videos_without_code():
@@ -1036,17 +1309,22 @@ def cleanup_invalid_codes():
 
 
 def get_local_video_stats() -> dict:
-    """获取本地视频统计"""
+    """获取本地视频统计
+    
+    scraped  = scrape_status='complete'（真正完整刮削）
+    unscraped= scraped=0 OR scrape_status IN ('partial','empty',NULL)（未刮或不完整）
+    """
     conn = get_db()
     cursor = conn.cursor()
 
     cursor.execute("""
         SELECT
             COUNT(*) as total,
-            SUM(CASE WHEN scraped = 1 THEN 1 ELSE 0 END) as scraped,
-            SUM(CASE WHEN scraped = 0 THEN 1 ELSE 0 END) as unscraped
-        FROM local_videos
-        WHERE code IS NOT NULL AND code != ''
+            SUM(CASE WHEN m.scrape_status = 'complete' THEN 1 ELSE 0 END) as scraped,
+            SUM(CASE WHEN m.scrape_status IS NULL OR m.scrape_status != 'complete' THEN 1 ELSE 0 END) as unscraped
+        FROM local_videos v
+        LEFT JOIN movies m ON v.movie_id = m.id
+        WHERE v.code IS NOT NULL AND v.code != ''
     """)
     row = cursor.fetchone()
 

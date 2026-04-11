@@ -297,6 +297,18 @@ app = FastAPI(
     version="1.0.0"
 )
 
+
+@app.on_event("startup")
+async def startup_event():
+    """启动时清理已过期的 Token"""
+    try:
+        cleaned = db.clean_expired_tokens_db()
+        if cleaned > 0:
+            print(f"[Auth] 清理了 {cleaned} 个过期 Token")
+    except Exception as e:
+        print(f"[Auth] 启动时清理 Token 失败: {e}")
+
+
 # 配置 CORS（允许前端访问）
 app.add_middleware(
     CORSMiddleware,
@@ -317,21 +329,34 @@ app.mount("/covers", StaticFiles(directory=str(cfg.COVERS_DIR)), name="covers")
 
 # ========== 认证相关 API ==========
 
-# 简单的 token 存储（生产环境应使用 Redis）
-active_tokens = {}
+# Token 内存缓存（写穿式，DB 为主存储）
+active_tokens: dict = {}
+
 
 def verify_token(token: str) -> dict:
-    """验证 token 并返回用户信息"""
-    if not token or token not in active_tokens:
+    """验证 token 并返回用户信息（优先查缓存，fallback DB）"""
+    if not token:
         raise HTTPException(status_code=401, detail="未登录或 token 已过期")
-    
-    user_data = active_tokens[token]
-    # 检查 token 是否过期（24小时）
-    if datetime.now() - user_data['created_at'] > timedelta(hours=24):
-        del active_tokens[token]
+
+    # 缓存命中
+    if token in active_tokens:
+        user_data = active_tokens[token]
+        if datetime.now() - user_data["created_at"] <= timedelta(hours=24):
+            return user_data["user"]
+        # 缓存过期，删除
+        active_tokens.pop(token, None)
+
+    # 缓存未命中，查数据库
+    user = db.verify_token_db(token)
+    if not user:
         raise HTTPException(status_code=401, detail="token 已过期，请重新登录")
-    
-    return user_data['user']
+
+    # 回填缓存
+    active_tokens[token] = {
+        "user": user,
+        "created_at": datetime.now(),
+    }
+    return user
 
 
 def get_current_user(token: str = Query(None, alias="token")):
@@ -372,10 +397,12 @@ async def login(request: UserLogin):
         'created_at': row['created_at'],
         'last_login': row['last_login']
     }
-    
+
+    # 持久化到 DB（同时写穿缓存）
+    db.create_token_db(token, user_data)
     active_tokens[token] = {
         'user': user_data,
-        'created_at': datetime.now()
+        'created_at': datetime.now(),
     }
     
     # 更新最后登录时间
@@ -425,9 +452,10 @@ async def get_current_user_info(token: str = Query(None)):
 
 @app.post("/auth/logout", response_model=ApiSuccess)
 async def logout(token: str = Query(None)):
-    """用户登出"""
-    if token and token in active_tokens:
-        del active_tokens[token]
+    """用户登出（同时删除 DB 和缓存中的 Token）"""
+    if token:
+        active_tokens.pop(token, None)
+        db.delete_token_db(token)
     return ApiSuccess(success=True, message="已登出")
 
 
@@ -892,12 +920,26 @@ async def scrape_batch(req: ScrapeRequest):
     total = len(codes)
 
     def generate():
+        import time as _time
         success_count = 0
         fail_count = 0
         local_link_count = 0
         skipped_count = 0
+        start_time = _time.time()
 
         for i, code in enumerate(codes):
+            elapsed = _time.time() - start_time
+            processed = success_count + fail_count + skipped_count
+            speed = processed / elapsed if elapsed > 0 else 0
+            eta = int((total - processed) / speed) if speed > 0 else -1
+
+            def _speed_eta(extra: int = 0) -> dict:
+                """生成 speed/eta 字段"""
+                p = processed + extra
+                e = elapsed + 0.001
+                spd = p / e
+                eta_val = int((total - p) / spd) if spd > 0 else -1
+                return {"speed": round(spd, 2), "eta": eta_val}
             # 检查停止标志
             if stop_event.is_set():
                 yield _send_sse({
@@ -905,11 +947,13 @@ async def scrape_batch(req: ScrapeRequest):
                     "code": code,
                     "index": i + 1,
                     "total": total,
-                    "message": "用户停止了刮削"
+                    "message": "用户停止了刮削",
+                    "elapsed": round(_time.time() - start_time, 1),
                 })
                 break
 
             # 发送当前处理信息
+            _se = _speed_eta()
             yield _send_sse({
                 "type": "scraping",
                 "job_id": job_id,
@@ -917,15 +961,29 @@ async def scrape_batch(req: ScrapeRequest):
                 "title": f"正在刮削 {code} ({i+1}/{total})...",
                 "index": i + 1,
                 "total": total,
-                "pct": int((i / total) * 100)
+                "pct": int((i / total) * 100),
+                "speed": _se["speed"],
+                "eta": _se["eta"],
             })
 
-            # 检查是否已有完整削刮记录
-            existing = db.get_movie_by_code(code)
-            
-            # 跳过 Jellyfin 来源的影片
-            if existing and existing.get("source") == "jellyfin":
+            # ── 预检标志位（轻量，无网络请求）────────────────────────────
+            # 先用 check_and_fix_scrape_status() 校验并原地修正标志位：
+            # 1. 若字段已满足 complete 要求但标志位滞后 → 修正后跳过
+            # 2. 若确实 partial/empty → 继续刮削
+            # 3. 若数据库不存在 → 继续刮削
+            check = db.check_and_fix_scrape_status(code)
+            existing = db.get_movie_by_code(code)  # 取完整记录（供后续关联用）
+
+            # 检查本地库是否有该番号的视频（提前查询，避免在后续分支中引用时未定义）
+            local_video = db.get_local_video_by_code(code)
+            local_video_id = local_video["id"] if local_video else None
+            local_path = local_video.get("path") if local_video else None
+
+            # 跳过 Jellyfin 来源的影片（Jellyfin 有自己的元数据管理，不走网络刮削）
+            if existing and existing.get("source") in ("jellyfin",) or \
+               existing and existing.get("source_type") == "jellyfin":
                 skipped_count += 1
+                _se = _speed_eta()
                 yield _send_sse({
                     "type": "skipped",
                     "job_id": job_id,
@@ -934,31 +992,36 @@ async def scrape_batch(req: ScrapeRequest):
                     "message": "📁 Jellyfin 导入，跳过刮削",
                     "index": i + 1,
                     "total": total,
-                    "pct": int(((i + 1) / total) * 100)
+                    "pct": int(((i + 1) / total) * 100),
+                    "speed": _se["speed"],
+                    "eta": _se["eta"],
                 })
                 continue
-            
-            # 检查本地库是否有该番号的视频（提前查询，避免在 complete 分支中引用时未定义）
-            local_video = db.get_local_video_by_code(code)
-            local_video_id = local_video["id"] if local_video else None
-            local_path = local_video.get("path") if local_video else None
 
-            if existing and existing.get("scrape_status") == "complete":
-                # 即使跳过刮削，也要检查是否需要关联本地视频
-                if local_video_id and not existing.get("local_video_id"):
+            # 标志位校验：complete（含刚修正的情况）→ 跳过，补关联即可
+            if not check["should_scrape"]:
+                # 补全本地视频关联（防止历史数据缺关联）
+                if local_video_id and existing and not existing.get("local_video_id"):
                     db.mark_video_scraped(local_video_id, existing["id"])
                     db.link_movie_to_local_video(existing["id"], local_video_id)
                     local_link_count += 1
                 skipped_count += 1
+                _se = _speed_eta()
+                # 区分"已是complete"和"刚被修正为complete"两种情况给用户不同提示
+                fixed_msg = "🔧 标志位已修正为完整，跳过" if check["fixed"] else "已有完整削刮记录，跳过"
                 yield _send_sse({
                     "type": "skipped",
                     "job_id": job_id,
                     "code": code,
-                    "title": existing.get("title", ""),
-                    "message": "已有完整削刮记录，跳过",
+                    "title": existing.get("title", "") if existing else "",
+                    "message": fixed_msg,
+                    "scrape_count": check["scrape_count"],
+                    "last_scraped_at": check["last_scraped_at"],
                     "index": i + 1,
                     "total": total,
-                    "pct": int(((i + 1) / total) * 100)
+                    "pct": int(((i + 1) / total) * 100),
+                    "speed": _se["speed"],
+                    "eta": _se["eta"],
                 })
                 continue
 
@@ -982,6 +1045,8 @@ async def scrape_batch(req: ScrapeRequest):
                         db.mark_video_scraped(local_video_id, movie_id)
                         local_link_count += 1
 
+                    success_count += 1
+                    _se = _speed_eta()
                     yield _send_sse({
                         "type": "success",
                         "job_id": job_id,
@@ -991,10 +1056,13 @@ async def scrape_batch(req: ScrapeRequest):
                         "is_new": is_new,
                         "index": i + 1,
                         "total": total,
-                        "pct": int(((i + 1) / total) * 100)
+                        "pct": int(((i + 1) / total) * 100),
+                        "speed": _se["speed"],
+                        "eta": _se["eta"],
                     })
-                    success_count += 1
                 else:
+                    fail_count += 1
+                    _se = _speed_eta()
                     yield _send_sse({
                         "type": "fail",
                         "job_id": job_id,
@@ -1002,12 +1070,15 @@ async def scrape_batch(req: ScrapeRequest):
                         "message": "未找到影片信息",
                         "index": i + 1,
                         "total": total,
-                        "pct": int(((i + 1) / total) * 100)
+                        "pct": int(((i + 1) / total) * 100),
+                        "speed": _se["speed"],
+                        "eta": _se["eta"],
                     })
-                    fail_count += 1
 
             except Exception as e:
                 logger.error(f"刮削 {code} 失败: {e}")
+                fail_count += 1
+                _se = _speed_eta()
                 yield _send_sse({
                     "type": "error",
                     "job_id": job_id,
@@ -1015,23 +1086,29 @@ async def scrape_batch(req: ScrapeRequest):
                     "message": str(e)[:100],
                     "index": i + 1,
                     "total": total,
-                    "pct": int(((i + 1) / total) * 100)
+                    "pct": int(((i + 1) / total) * 100),
+                    "speed": _se["speed"],
+                    "eta": _se["eta"],
                 })
-                fail_count += 1
 
             # 请求间隔
             time.sleep(0.5)
 
         # 完成
+        total_elapsed = _time.time() - start_time
+        total_processed = success_count + fail_count + skipped_count
+        final_speed = total_processed / total_elapsed if total_elapsed > 0 else 0
         yield _send_sse({
             "type": "done",
             "job_id": job_id,
-            "processed": success_count + fail_count + skipped_count,
+            "processed": total_processed,
             "success_count": success_count,
             "fail_count": fail_count,
             "skipped_count": skipped_count,
             "local_link_count": local_link_count,
-            "total": total
+            "total": total,
+            "elapsed": round(total_elapsed, 1),
+            "avg_speed": round(final_speed, 2),
         })
 
         # 清理
@@ -1499,7 +1576,11 @@ async def scrape_local_videos():
                     last_pct = current_pct
                 continue
 
-            # 检查是否已有完整刮削记录
+            # ── 预检标志位（轻量，无网络请求）────────────────────────────
+            # check_and_fix_scrape_status() 会重新计算字段完整性并原地修正标志：
+            # - 数据已完整但标志滞后 → 修正后跳过（避免重复刮削）
+            # - 确实 partial/empty → 继续刮削
+            check = db.check_and_fix_scrape_status(code)
             existing = db.get_movie_by_code(code)
 
             # 跳过 Jellyfin 来源的影片
@@ -1517,9 +1598,9 @@ async def scrape_local_videos():
                     last_pct = current_pct
                 continue
 
-            if existing and existing.get("scrape_status") == "complete":
-                # 已完整刮削，跳过
-                if video_id and not existing.get("local_video_id"):
+            # 标志位校验通过（complete，含刚修正的情况）→ 跳过
+            if not check["should_scrape"]:
+                if video_id and existing and not existing.get("local_video_id"):
                     db.mark_video_scraped(video_id, existing["id"])
                     db.link_movie_to_local_video(existing["id"], video_id)
                 skip_count += 1
@@ -1590,9 +1671,8 @@ async def scrape_local_videos():
                 })
                 last_pct = current_pct
 
-                # 避免请求过快
+                # 避免请求过快（保留0.8s，原0.5s为重复遗留bug，已删除）
                 time.sleep(0.8)
-                time.sleep(0.5)
 
             except Exception as e:
                 logger.error(f"刮削 {code} 失败: {e}")
@@ -1630,6 +1710,7 @@ async def get_local_videos(
     page_size: int = Query(30, ge=1, le=100),
     source_id: int = Query(None, description="按视频源筛选"),
     scraped: int = Query(None, description="刮削状态: 0=未刮, 1=已刮"),
+    scrape_status: str = Query(None, description="刮削完整度: complete/partial/empty/not_complete"),
     keyword: str = Query(None, description="搜索文件名或编号")
 ):
     """获取本地视频列表"""
@@ -1638,6 +1719,7 @@ async def get_local_videos(
         page_size=page_size,
         source_id=source_id,
         scraped=scraped,
+        scrape_status=scrape_status,
         keyword=keyword
     )
 
@@ -1678,14 +1760,6 @@ async def delete_local_video(video_id: int):
     if not success:
         raise HTTPException(status_code=404, detail="视频不存在")
     return {"success": True}
-async def get_cover(filename: str):
-    """获取封面图"""
-    cover_path = covers_dir / filename
-    
-    if not cover_path.exists():
-        raise HTTPException(status_code=404, detail="封面不存在")
-    
-    return {"url": f"/covers/{filename}"}
 
 
 # 批量重新生成所有 poster（从 fanart 右半边截取）
@@ -1901,6 +1975,33 @@ class FixScrapeResponse(BaseModel):
     fixed: int
     failed: int
     results: List[FixScrapeResult]
+
+
+@app.post("/scrape/verify-status", tags=["刮削"])
+async def verify_scrape_status(limit: int = Query(0, description="最多校验条数，0=全部")):
+    """
+    批量校验并修正 scrape_status 标志位（无网络请求，纯本地字段校验）
+
+    - 遍历全库（或指定 limit 条）影片
+    - 重新计算每部影片的 scrape_status（基于字段完整性）
+    - 若与存储值不一致则原地修正
+    - 返回统计：总数 / 修正数 / complete 数 / partial 数 / empty 数
+
+    使用场景：
+    1. 刮削后 UI 显示状态不一致时手动触发
+    2. 批量刮削前先运行，过滤掉实际已完整的影片
+    3. 定期维护时清理历史脏数据
+    """
+    try:
+        stats = db.batch_verify_scrape_status(limit=limit)
+        return {
+            "success": True,
+            "message": f"校验完成：共 {stats['total']} 部，修正 {stats['fixed']} 部（complete={stats['complete']}, partial={stats['partial']}, empty={stats['empty']}）",
+            "stats": stats,
+        }
+    except Exception as e:
+        logger.error("batch_verify_scrape_status 失败", exc_info=True)
+        raise HTTPException(status_code=500, detail="校验失败，请查看服务器日志")
 
 
 @app.post("/scrape/fix", tags=["刮削"])
@@ -2858,11 +2959,22 @@ if __name__ == "__main__":
 
     # 预检查端口是否可用
     def is_port_available(port: int) -> bool:
+        import errno as _errno
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.bind(("0.0.0.0", port))
                 return True
-        except OSError:
+        except OSError as e:
+            # WSAEACCES (10013): 系统级权限拒绝（如 Hyper-V/Docker 保留端口段）
+            # 此情况下所有端口都会返回拒绝，直接用 localhost 绑定尝试
+            if e.errno == 10013:
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s2:
+                        s2.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        s2.bind(("127.0.0.1", port))
+                        return True
+                except OSError:
+                    return False
             return False
 
     # 如果首选端口不可用，尝试递增端口

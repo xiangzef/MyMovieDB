@@ -51,3 +51,6 @@ Thumbs.db
 *.egg-info/
 dist/
 build/
+
+# Tests（测试文件统一放 tests/，不纳入版本追踪）
+tests/
