@@ -221,13 +221,15 @@ class OrganizeProgress(BaseModel):
     """整理进度（SSE 流式推送）
 
     event 类型:
-      - found       : 预览找到文件
-      - summary     : 预览汇总
-      - scrape_start: 正在自动刮削（auto_scrape 模式）
-      - copied/moved: 文件复制/移动成功
-      - skipped     : 目标文件已存在
-      - error       : 处理出错
-      - done        : 全部完成
+      - found        : 预览找到文件
+      - summary      : 预览汇总
+      - item_progress: 当前正在处理的文件（前端显示浮层）
+      - scrape_start : 正在自动刮削（auto_scrape 模式）
+      - copied/moved : 文件复制/移动成功
+      - cleaned      : 源文件夹清理（已删除或不足100MB）
+      - skipped      : 目标文件已存在
+      - error        : 处理出错
+      - done         : 全部完成
     """
     event: str
     # found 事件
@@ -249,9 +251,13 @@ class OrganizeProgress(BaseModel):
     estimated_size: Optional[str] = None
     # copied/moved/skipped 事件
     elapsed: Optional[str] = None
+    # cleaned 事件
+    folder_path: Optional[str] = None
+    removed_size: Optional[int] = None
     # done 事件
     success_count: Optional[int] = None
     fail_count: Optional[int] = None
+    cleanup_folders: Optional[int] = None  # 源文件夹清理数量
     message: Optional[str] = None
 
 

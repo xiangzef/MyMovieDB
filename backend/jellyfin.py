@@ -208,10 +208,30 @@ def scan_jellyfin_directory(directory: str) -> List[Dict]:
             
             code = dir_name.upper()  # 标准化番号
             
-            # 查找 NFO 文件（可选）
+            # 查找 NFO 文件（可选，支持 -C/-U/-UC/-4K 等后缀变体）
             try:
                 nfo_files = list(dir_path.glob('*.nfo'))
-                nfo_path = str(nfo_files[0]) if nfo_files else None
+                nfo_path = None
+                if nfo_files:
+                    # ① 精确匹配：NFO 文件名（去扩展名）= 目录名
+                    for nf in nfo_files:
+                        stem = os.path.splitext(nf.name)[0]
+                        if stem.upper() == dir_name.upper():
+                            nfo_path = str(nf)
+                            break
+                    # ② 基础番号匹配（SSIS-251-C → SSIS-251）
+                    if not nfo_path:
+                        base_code = re.sub(r'[-_](C|U|UC|4K|HD|KT|TT)$', '',
+                                           dir_name, flags=re.IGNORECASE)
+                        if base_code.upper() != dir_name.upper():
+                            for nf in nfo_files:
+                                stem = os.path.splitext(nf.name)[0]
+                                if stem.upper() == base_code.upper():
+                                    nfo_path = str(nf)
+                                    break
+                    # ③ 兜底：使用第一个找到的 NFO
+                    if not nfo_path:
+                        nfo_path = str(nfo_files[0])
             except Exception as e:
                 print(f"[Jellyfin] 扫描 NFO 失败 {dir_path}: {e}")
                 nfo_path = None

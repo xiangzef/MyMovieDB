@@ -300,7 +300,28 @@ app = FastAPI(
 
 @app.on_event("startup")
 async def startup_event():
-    """启动时清理已过期的 Token"""
+    """启动时同步数据 + 清理已过期的 Token"""
+    # ① 同步 is_jellyfin 标识（防止数据库层面的来源不一致）
+    try:
+        sync_result = db.sync_local_videos_is_jellyfin()
+        if sync_result.get('lv_is_jellyfin_synced', 0) > 0 or \
+           sync_result.get('case_a_fixed', 0) > 0 or \
+           sync_result.get('case_b_fixed', 0) > 0:
+            print(f"[DataSync] is_jellyfin 同步: "
+                  f"lv更新={sync_result.get('lv_is_jellyfin_synced', 0)} "
+                  f"CaseA修复={sync_result.get('case_a_fixed', 0)} "
+                  f"CaseB修复={sync_result.get('case_b_fixed', 0)}")
+    except Exception as e:
+        print(f"[DataSync] 启动时同步 is_jellyfin 失败: {e}")
+
+    # ② 修复 is_jellyfin IS NULL 的孤立记录
+    try:
+        fix_result = db.fix_is_jellyfin_null_records()
+        if fix_result.get('fixed', 0) > 0 or fix_result.get('remaining_null', 0) > 0:
+            print(f"[DataSync] is_jellyfin=NULL: {fix_result['message']}")
+    except Exception as e:
+        print(f"[DataSync] 启动时修复孤立记录失败: {e}")
+
     try:
         cleaned = db.clean_expired_tokens_db()
         if cleaned > 0:
@@ -915,6 +936,7 @@ async def scrape_batch(req: ScrapeRequest):
     if not codes:
         with _scrape_lock:
             _scrape_stop_flags.pop(job_id, None)
+        set_stop_check(None)  # 清理全局停止回调，防止影响后续单片刮削
         return {"success": False, "message": "未识别到有效番号"}
 
     total = len(codes)
@@ -1046,6 +1068,39 @@ async def scrape_batch(req: ScrapeRequest):
                         local_link_count += 1
 
                     success_count += 1
+                    # ── 刮削后验证：确认数据完整性 ───────────────────────
+                    after = db.check_and_fix_scrape_status(code)
+                    if after["exists"] and after["should_scrape"]:
+                        # 刮削不完整：缺 maker/actors/cover 等字段
+                        success_count -= 1  # 不计入 success
+                        missing_fields = []
+                        movie = db.get_movie_by_code(code)
+                        if movie:
+                            if not movie.get("maker") and not movie.get("studio"):
+                                missing_fields.append("制作商")
+                            if not movie.get("actors"):
+                                missing_fields.append("演员")
+                            if not movie.get("local_cover_path") and not movie.get("cover_url"):
+                                missing_fields.append("封面")
+                            if not movie.get("release_date"):
+                                missing_fields.append("发布日期")
+                        _se = _speed_eta()
+                        yield _send_sse({
+                            "type": "partial",
+                            "job_id": job_id,
+                            "code": code,
+                            "title": movie_data.get("title", "") if movie_data else "",
+                            "message": "⚠️ 刮削不完整（" + "、".join(missing_fields) + "缺失）",
+                            "missing_fields": missing_fields,
+                            "scrape_count": after.get("scrape_count", 0),
+                            "index": i + 1,
+                            "total": total,
+                            "pct": int(((i + 1) / total) * 100),
+                            "speed": _se["speed"],
+                            "eta": _se["eta"],
+                        })
+                        continue
+
                     _se = _speed_eta()
                     yield _send_sse({
                         "type": "success",
@@ -1114,6 +1169,7 @@ async def scrape_batch(req: ScrapeRequest):
         # 清理
         with _scrape_lock:
             _scrape_stop_flags.pop(job_id, None)
+        set_stop_check(None)  # 重置全局停止回调，避免污染后续的单片刮削
 
     headers = {
         "Cache-Control": "no-cache",
@@ -1534,6 +1590,7 @@ async def scrape_local_videos():
     if not unscraped:
         with _scrape_lock:
             _scrape_stop_flags.pop(job_id, None)
+        set_stop_check(None)  # 清理全局停止回调，防止影响后续单片刮削
         return {"success": True, "message": "没有需要刮削的视频", "processed": 0}
 
     total = len(unscraped)
@@ -1583,8 +1640,8 @@ async def scrape_local_videos():
             check = db.check_and_fix_scrape_status(code)
             existing = db.get_movie_by_code(code)
 
-            # 跳过 Jellyfin 来源的影片
-            if existing and existing.get("source_type") == "jellyfin":
+            # 跳过 Jellyfin 来源的影片（双保险：is_jellyfin 字段 + source_type 判断）
+            if video.get("is_jellyfin") == 1 or (existing and existing.get("source_type") == "jellyfin"):
                 skip_count += 1
                 if current_pct != last_pct:
                     yield _send_sse({
@@ -1700,6 +1757,7 @@ async def scrape_local_videos():
         # 清理停止标志
         with _scrape_lock:
             _scrape_stop_flags.pop(job_id, None)
+        set_stop_check(None)  # 重置全局停止回调，避免污染后续的单片刮削
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -2002,6 +2060,526 @@ async def verify_scrape_status(limit: int = Query(0, description="最多校验�
     except Exception as e:
         logger.error("batch_verify_scrape_status 失败", exc_info=True)
         raise HTTPException(status_code=500, detail="校验失败，请查看服务器日志")
+
+
+@app.post("/scrape/jellyfin-verify", tags=["刮削"])
+async def verify_jellyfin_status():
+    """
+    校验 Jellyfin 来源影片的刮削状态。
+
+    - 统计 Jellyfin 视频的 complete/partial/empty 分布
+    - 统计 Jellyfin 结构完整性 jellyfin_status 分布（complete/partial/broken/unknown）
+    - 对 scrape_status != 'complete' 的影片尝试修正（重算标志位）
+    - 返回统计和需要关注的影片列表
+    """
+    try:
+        conn = db.get_db()
+        cursor = conn.cursor()
+
+        # 统计 Jellyfin 视频各状态数量（scrape_status）
+        cursor.execute("""
+            SELECT COALESCE(m.scrape_status, 'NULL') as status, COUNT(*) as cnt
+            FROM local_videos v
+            JOIN movies m ON v.movie_id = m.id
+            WHERE v.code IS NOT NULL AND v.code != ''
+              AND m.source_type = 'jellyfin'
+            GROUP BY m.scrape_status
+        """)
+        status_dist = {row["status"]: row["cnt"] for row in cursor.fetchall()}
+
+        # 统计 Jellyfin 结构完整性分布（jellyfin_status）
+        cursor.execute("""
+            SELECT COALESCE(m.jellyfin_status, 'unknown') as js, COUNT(*) as cnt
+            FROM local_videos v
+            JOIN movies m ON v.movie_id = m.id
+            WHERE m.source_type = 'jellyfin'
+            GROUP BY m.jellyfin_status
+        """)
+        jellyfin_struct_dist = {row["js"]: row["cnt"] for row in cursor.fetchall()}
+
+        # 检查是否有 Jellyfin 视频的 scrape_status 不是 complete
+        cursor.execute("""
+            SELECT v.id, v.code, m.title, m.scrape_status, m.release_date,
+                   m.maker, m.poster_path
+            FROM local_videos v
+            JOIN movies m ON v.movie_id = m.id
+            WHERE v.code IS NOT NULL AND v.code != ''
+              AND m.source_type = 'jellyfin'
+              AND m.scrape_status != 'complete'
+            LIMIT 50
+        """)
+        issues = [dict(row) for row in cursor.fetchall()]
+
+        # 同时检查 Jellyfin 视频中有多少实际上没有本地 poster 封面文件
+        cursor.execute("""
+            SELECT COUNT(*) as total,
+                   SUM(CASE WHEN m.poster_path IS NULL OR m.poster_path = '' THEN 1 ELSE 0 END) as no_poster
+            FROM local_videos v
+            JOIN movies m ON v.movie_id = m.id
+            WHERE v.code IS NOT NULL AND v.code != ''
+              AND m.source_type = 'jellyfin'
+        """)
+        poster_stats = dict(cursor.fetchone())
+
+        # 有 jellyfin_status=broken 或 unknown 的影片（需要关注）
+        cursor.execute("""
+            SELECT v.code, m.title, v.path, m.poster_path, m.jellyfin_status
+            FROM local_videos v
+            JOIN movies m ON v.movie_id = m.id
+            WHERE m.source_type = 'jellyfin'
+              AND m.jellyfin_status IN ('broken', 'unknown', 'partial')
+            LIMIT 50
+        """)
+        struct_issues = [dict(row) for row in cursor.fetchall()]
+
+        conn.close()
+
+        return {
+            "success": True,
+            "status_distribution": status_dist,
+            "jellyfin_struct_distribution": jellyfin_struct_dist,
+            "issues": issues,
+            "struct_issues": struct_issues,
+            "poster_stats": poster_stats,
+            "message": (
+                f"Jellyfin 视频 {status_dist.get('complete', 0)} 部完整，"
+                f"{status_dist.get('partial', 0)} 部部分，"
+                f"{status_dist.get('empty', 0)} 部为空；"
+                f"结构完整 {jellyfin_struct_dist.get('complete', 0)} 部，"
+                f"缺失封面 {jellyfin_struct_dist.get('partial', 0)} 部，"
+                f"文件失效 {jellyfin_struct_dist.get('broken', 0)} 部"
+            ),
+        }
+    except Exception as e:
+        logger.error("verify_jellyfin_status 失败", exc_info=True)
+        raise HTTPException(status_code=500, detail="Jellyfin 校验失败")
+
+
+@app.post("/scrape/jellyfin-refresh-status", tags=["刮削"])
+async def refresh_jellyfin_status():
+    """
+    重新扫描所有 Jellyfin 影片的文件结构，计算并更新 jellyfin_status 列。
+    仅对 source_type='jellyfin' 的记录有效，批量操作，无网络请求。
+    """
+    try:
+        stats = db.batch_verify_jellyfin_status()
+        return {
+            "success": True,
+            **stats,
+            "message": (
+                f"Jellyfin 结构扫描完成：共 {stats['total']} 部，"
+                f"完整 {stats['complete']} 部，缺失封面 {stats['partial']} 部，"
+                f"文件失效 {stats['broken']} 部，未知 {stats['unknown']} 部，"
+                f"本次修正 {stats['fixed']} 部"
+            ),
+        }
+    except Exception as e:
+        logger.error("refresh_jellyfin_status 失败", exc_info=True)
+        raise HTTPException(status_code=500, detail="刷新 Jellyfin 结构状态失败")
+
+
+@app.post("/scrape/jellyfin-scrape-missing", tags=["刮削"])
+async def scrape_jellyfin_missing():
+    """
+    Jellyfin 影片补全刮削：联网补充缺失的元数据（厂商/演员等）。
+
+    与批量刮削的区别：
+    - 批量刮削（/local-sources/scrape）：处理 is_jellyfin=0 的独立视频库
+    - Jellyfin 补全刮削：处理 is_jellyfin=1 的 Jellyfin 影片，
+      联网刮削后强制保留 source_type='jellyfin'（不污染来源）
+
+    数据流：
+    1. 查询 is_jellyfin=1 且 scrape_status != 'complete' 的 Jellyfin 影片
+    2. 对每部联网刮削，upsert_movie(force_source_type='jellyfin')
+    3. 刮削完成后更新 jellyfin_status
+
+    返回 SSE 流式进度。
+    """
+    from scraper import scrape_movie, save_movie_assets, set_stop_check
+    import uuid
+    import time
+
+    job_id = str(uuid.uuid4())[:8]
+    stop_event = threading.Event()
+    with _scrape_lock:
+        _scrape_stop_flags[job_id] = stop_event
+    set_stop_check(lambda: stop_event.is_set())
+
+    # 查询 Jellyfin 待刮削影片（is_jellyfin=1 且 scrape_status != 'complete'）
+    conn = db.get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT v.id, v.code, v.path, v.movie_id,
+               m.title, m.maker, m.actors, m.scrape_status
+        FROM local_videos v
+        JOIN movies m ON v.movie_id = m.id
+        WHERE v.is_jellyfin = 1
+          AND v.code IS NOT NULL AND v.code != ''
+          AND m.scrape_status != 'complete'
+        ORDER BY v.id
+    """)
+    jellyfin_videos = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+
+    if not jellyfin_videos:
+        with _scrape_lock:
+            _scrape_stop_flags.pop(job_id, None)
+        set_stop_check(None)
+        return {"success": True, "message": "所有 Jellyfin 影片数据已完整，无需补全", "processed": 0}
+
+    total = len(jellyfin_videos)
+
+    def generate():
+        success_count = 0
+        fail_count = 0
+        last_pct = -1
+
+        for i, video in enumerate(jellyfin_videos):
+            if stop_event.is_set():
+                yield _send_sse({
+                    "type": "stopped", "job_id": job_id,
+                    "code": video.get("code"), "index": i + 1,
+                    "total": total, "message": "用户停止了 Jellyfin 补全刮削"
+                })
+                break
+
+            code = video.get("code")
+            movie_id = video["movie_id"]
+            video_id = video["id"]
+            current_pct = int(((i + 1) / total) * 100)
+
+            # 跳过已完整
+            check = db.check_and_fix_scrape_status(code)
+            if not check["should_scrape"]:
+                if current_pct != last_pct:
+                    yield _send_sse({
+                        "type": "progress", "job_id": job_id,
+                        "index": i + 1, "total": total, "pct": current_pct,
+                        "stats": {"success": success_count, "fail": fail_count}
+                    })
+                    last_pct = current_pct
+                continue
+
+            yield _send_sse({
+                "type": "scraping", "job_id": job_id,
+                "code": code,
+                "title": f"[Jellyfin] 正在刮削 {code}",
+                "index": i + 1, "total": total, "pct": current_pct
+            })
+
+            try:
+                movie_data = scrape_movie(code, save_cover=True)
+                if movie_data and movie_data.get("title"):
+                    covers_dir = Path(cfg.COVERS_DIR)
+                    covers_dir.mkdir(parents=True, exist_ok=True)
+                    movie_data = save_movie_assets(movie_data, covers_dir, video.get("path"))
+                    # 关键：force_source_type='jellyfin' 保留来源标识
+                    mid, is_new = db.upsert_movie(movie_data, force_source_type='jellyfin')
+                    db.mark_video_scraped(mid, video_id)
+                    db.link_movie_to_local_video(mid, video_id)
+                    # 更新 jellyfin_status（校验文件完整性）
+                    db.update_jellyfin_status(mid)
+                    success_count += 1
+                    yield _send_sse({
+                        "type": "success", "job_id": job_id,
+                        "code": code, "title": movie_data.get("title", ""),
+                        "index": i + 1, "total": total, "pct": current_pct,
+                        "stats": {"success": success_count, "fail": fail_count}
+                    })
+                else:
+                    fail_count += 1
+                    yield _send_sse({
+                        "type": "fail", "job_id": job_id,
+                        "code": code, "message": "未找到数据",
+                        "index": i + 1, "total": total, "pct": current_pct,
+                        "stats": {"success": success_count, "fail": fail_count}
+                    })
+            except Exception as e:
+                fail_count += 1
+                logger.warning(f"Jellyfin 补全刮削失败 {code}: {e}")
+                yield _send_sse({
+                    "type": "fail", "job_id": job_id,
+                    "code": code, "message": str(e),
+                    "index": i + 1, "total": total, "pct": current_pct,
+                    "stats": {"success": success_count, "fail": fail_count}
+                })
+
+            time.sleep(0.8)
+
+        # 完成
+        with _scrape_lock:
+            _scrape_stop_flags.pop(job_id, None)
+        set_stop_check(None)
+        yield _send_sse({
+            "type": "done", "job_id": job_id,
+            "total": total,
+            "stats": {"success": success_count, "fail": fail_count},
+            "message": f"Jellyfin 补全刮削完成：成功 {success_count} 部，失败 {fail_count} 部"
+        })
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
+
+@app.get("/scrape/jellyfin-missing-count", tags=["刮削"])
+async def get_jellyfin_missing_count():
+    """
+    返回 Jellyfin 影片中缺失数据的数量（用于前台显示按钮 badge）。
+    """
+    try:
+        conn = db.get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT COUNT(*)
+            FROM local_videos v
+            JOIN movies m ON v.movie_id = m.id
+            WHERE v.is_jellyfin = 1
+              AND v.code IS NOT NULL AND v.code != ''
+              AND m.scrape_status != 'complete'
+        """)
+        count = cursor.fetchone()[0]
+        conn.close()
+        return {"success": True, "count": count}
+    except Exception as e:
+        logger.error(f"get_jellyfin_missing_count 失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/scrape/jellyfin-incomplete", tags=["刮削"])
+async def get_jellyfin_incomplete():
+    """
+    获取 Jellyfin 来源但元数据不完整的影片列表（缺 maker 或 actors）。
+    返回：{incomplete: [{code, title, maker, actors, video_path, local_video_path}]}
+    """
+    try:
+        items = db.get_jellyfin_incomplete_codes()
+        return {"success": True, "count": len(items), "items": items}
+    except Exception as e:
+        logger.error(f"get_jellyfin_incomplete 失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/scrape/jellyfin-enrich-nfo", tags=["刮削"])
+async def enrich_jellyfin_from_nfo(request: Request):
+    """
+    从 Jellyfin NFO 文件批量补全 movies 表缺失的元数据。
+
+    请求体（可选）: { "codes": ["ABP-454", "SSNI-730"] }  // 不传则处理全部
+
+    流程：
+    1. 找到每个番号对应的 NFO 文件（支持 -C/-U/-UC/-4K 后缀变体）
+    2. 解析 NFO，提取 maker/studio/actors/genres/poster_path/fanart_path
+    3. 仅补充空字段（不覆盖已有数据）
+    4. 重算 scrape_status
+
+    返回 SSE 流式进度：enrich_progress / enrich_done
+    """
+    body = await request.json() if request.body else {}
+    target_codes = body.get("codes", None)  # None = 处理全部
+
+    # 获取待处理列表
+    if target_codes:
+        all_incomplete = db.get_jellyfin_incomplete_codes()
+        items = [it for it in all_incomplete if it['code'] in target_codes]
+    else:
+        items = db.get_jellyfin_incomplete_codes()
+
+    total = len(items)
+
+    async def generate():
+        if total == 0:
+            yield _send_sse({
+                "type": "enrich_done",
+                "total": 0,
+                "nfo_found": 0,
+                "nfo_missing": 0,
+                "fields_updated": 0,
+                "message": "没有需要补全的 Jellyfin 影片"
+            })
+            return
+
+        nfo_found_count = 0
+        nfo_missing_count = 0
+        fields_updated_total = 0
+
+        for i, item in enumerate(items):
+            code = item['code']
+            yield _send_sse({
+                "type": "enrich_progress",
+                "code": code,
+                "index": i + 1,
+                "total": total,
+                "pct": int((i / total) * 100),
+                "message": f"正在补全 {code}..."
+            })
+
+            result = db.enrich_jellyfin_movie_from_nfo(code)
+
+            if result['success']:
+                if result['nfo_found']:
+                    nfo_found_count += 1
+                    fields_updated_total += len(result.get('fields_updated', []))
+                    yield _send_sse({
+                        "type": "enrich_success",
+                        "code": code,
+                        "nfo_path": result.get('nfo_path', ''),
+                        "fields_updated": result.get('fields_updated', []),
+                        "message": result['message'],
+                        "index": i + 1,
+                        "total": total,
+                    })
+                else:
+                    nfo_missing_count += 1
+                    yield _send_sse({
+                        "type": "enrich_no_nfo",
+                        "code": code,
+                        "message": result['message'],
+                        "index": i + 1,
+                        "total": total,
+                    })
+            else:
+                nfo_missing_count += 1
+                yield _send_sse({
+                    "type": "enrich_error",
+                    "code": code,
+                    "message": result['message'],
+                    "index": i + 1,
+                    "total": total,
+                })
+
+        # 更新 scrape_status
+        for item in items:
+            db.check_and_fix_scrape_status(item['code'])
+
+        yield _send_sse({
+            "type": "enrich_done",
+            "total": total,
+            "nfo_found": nfo_found_count,
+            "nfo_missing": nfo_missing_count,
+            "fields_updated": fields_updated_total,
+            "message": (f"NFO 补全完成：找到 {nfo_found_count} 部 NFO，"
+                       f"缺失 {nfo_missing_count} 部，更新了 {fields_updated_total} 个字段")
+        })
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    )
+
+
+@app.get("/local-sources/jellyfin-folders", tags=["本地视频"])
+async def get_jellyfin_folder_issues():
+    """
+    扫描 Jellyfin 来源目录，识别：
+
+    1. 空子文件夹（无视频文件 + 无 .nfo/.jpg 等元数据）
+       → 可能表示视频文件实际不在此路径（Jellyfin 库指向了其他位置）
+
+    2. 有元数据但无视频文件的子文件夹
+       → 元数据存在但视频文件缺失，需要用户确认是否需要修复路径
+
+    返回每个 Jellyfin 源目录的扫描结果。
+    """
+    import os
+    from pathlib import Path
+
+    try:
+        conn = db.get_db()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT id, path, name FROM local_sources WHERE is_jellyfin = 1
+        """)
+        sources = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+
+        results = []
+        video_exts = {".mp4", ".mkv", ".avi", ".wmv", ".mov", ".webm", ".m4v", ".ts", ".flv", ".mpg", ".mpeg"}
+        meta_exts = {".nfo", ".jpg", ".jpeg", ".png", ".tbn", ".xml"}
+
+        for source in sources:
+            root = source["path"]
+            if not os.path.exists(root):
+                results.append({
+                    "source_id": source["id"],
+                    "path": root,
+                    "status": "path_missing",
+                    "message": "路径不存在",
+                    "empty_folders": [],
+                    "meta_only_folders": [],
+                })
+                continue
+
+            empty_folders = []
+            meta_only_folders = []
+            total_subfolders = 0
+            total_videos = 0
+
+            try:
+                for subfolder in os.listdir(root):
+                    subpath = os.path.join(root, subfolder)
+                    if not os.path.isdir(subpath):
+                        continue
+                    total_subfolders += 1
+                    files = os.listdir(subpath)
+                    video_files = [f for f in files if Path(f).suffix.lower() in video_exts]
+                    meta_files = [f for f in files if Path(f).suffix.lower() in meta_exts]
+
+                    if len(files) == 0:
+                        # 完全空的文件夹
+                        empty_folders.append({
+                            "name": subfolder,
+                            "path": subpath,
+                            "reason": "完全空（无任何文件）",
+                        })
+                    elif len(video_files) == 0 and len(meta_files) > 0:
+                        # 有元数据但无视频
+                        meta_only_folders.append({
+                            "name": subfolder,
+                            "path": subpath,
+                            "files": files[:20],  # 最多显示20个
+                            "file_count": len(files),
+                        })
+                        total_videos += 0  # 无视频文件
+                    elif len(video_files) > 0:
+                        total_videos += len(video_files)
+            except PermissionError:
+                results.append({
+                    "source_id": source["id"],
+                    "path": root,
+                    "status": "permission_error",
+                    "message": "无访问权限",
+                    "empty_folders": [],
+                    "meta_only_folders": [],
+                })
+                continue
+
+            results.append({
+                "source_id": source["id"],
+                "path": root,
+                "status": "ok" if not empty_folders and not meta_only_folders else "needs_attention",
+                "total_subfolders": total_subfolders,
+                "total_videos": total_videos,
+                "empty_folders": empty_folders,
+                "meta_only_folders": meta_only_folders,
+                "message": (
+                    f"共 {total_subfolders} 个子文件夹，{total_videos} 个视频，"
+                    f"{len(empty_folders)} 个空文件夹，{len(meta_only_folders)} 个仅元数据"
+                ),
+            })
+
+        return {"success": True, "results": results}
+
+    except Exception as e:
+        logger.error("get_jellyfin_folder_issues 失败", exc_info=True)
+        raise HTTPException(status_code=500, detail="目录扫描失败")
 
 
 @app.post("/scrape/fix", tags=["刮削"])
@@ -2805,48 +3383,62 @@ async def organize_preview(req: OrganizeRequest):
     """
     预览整理计划（不实际移动文件）
     返回 SSE 流式事件:
-        - found: 找到的每个文件
+        - scan_start: 开始扫描
+        - found: 找到的每个文件（逐文件实时推送）
         - summary: 汇总统计
         - error: 发生错误
+
+    设计原则：不设超时，让目录扫描自然完成。
+    大网络目录可能耗时较长，但用户会看到实时文件列表，而不是无响应的 spinner。
     """
     import asyncio
-    from organizer import organize_files_gen, OrganizeMode
+    from organizer import organize_files_sync, OrganizeMode
 
     async def generate():
-        await asyncio.sleep(0)  # 确保 headers 先发送
+        await asyncio.sleep(0)
 
         loop = asyncio.get_running_loop()
-        gen = organize_files_gen(
-            source_paths=req.source_paths,
-            target_root=req.target_root,
-            mode=OrganizeMode.PREVIEW,
-            auto_scrape=req.auto_scrape,
-        )
 
         def make_sse(event_type: str, data: dict) -> str:
             return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
-        # 用 partial 包装 next，防止 StopIteration 逃逸到 asyncio 回调链
-        import functools
-        _next = functools.partial(next, gen)
+        # 先发送 scan_start，让前端立即显示"正在扫描..."
+        yield make_sse("scan_start", {"message": "正在扫描文件..."})
+
+        def progress_handler(progress):
+            data = progress.model_dump(exclude_none=True)
+            event_name = data.pop("event", "message")
+            # 用 queue 传递给 asyncio loop
+            q.put_nowait((event_name, data))
+
+        # 用 queue 把 generator 的 yield 事件传回 asyncio
+        q = asyncio.Queue()
+
+        def run_sync():
+            try:
+                organize_files_sync(
+                    source_paths=req.source_paths,
+                    target_root=req.target_root,
+                    mode=OrganizeMode.PREVIEW,
+                    auto_scrape=False,
+                    progress_callback=progress_handler,
+                )
+            finally:
+                q.put_nowait((None, None))  # 结束信号
+
+        # 在线程池中运行（不影响主 asyncio loop）
+        executor_future = loop.run_in_executor(None, run_sync)
 
         try:
             while True:
-                # 单次迭代最多等 30s，防止 scan_video_files 在大目录/网络路径上无限阻塞
-                try:
-                    progress = await asyncio.wait_for(
-                        loop.run_in_executor(None, _next),
-                        timeout=30.0,
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning("[Organize] 预览单次迭代超时（30s），可能是网络路径或大目录阻塞")
-                    yield make_sse("error", {"message": "扫描超时（30s），请检查目录路径或减少目录大小"})
+                # 不设超时：扫描多久等多久，目录越大越能看到实时进度
+                event_name, data = await q.get()
+                if event_name is None:
                     break
-                if progress is None:
-                    break
-                data = progress.model_dump(exclude_none=True)
-                event_name = data.pop("event", "message")
                 yield make_sse(event_name, data)
+        except asyncio.CancelledError:
+            executor_future.cancel()
+            raise
         except Exception as e:
             logger.error(f"[Organize] 预览失败: {e}", exc_info=True)
             yield make_sse("error", {"message": str(e)})
@@ -2875,43 +3467,51 @@ async def organize_execute(req: OrganizeRequest):
         - error: 发生错误
     """
     import asyncio
-    from organizer import organize_files_gen, OrganizeMode
+    from organizer import organize_files_sync, OrganizeMode
 
     async def generate():
         await asyncio.sleep(0)
 
         loop = asyncio.get_running_loop()
-        gen = organize_files_gen(
-            source_paths=req.source_paths,
-            target_root=req.target_root,
-            mode=OrganizeMode(req.mode.value),
-            auto_scrape=req.auto_scrape,
-        )
 
         def make_sse(event_type: str, data: dict) -> str:
             return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
-        # 用 partial 包装 next，防止 StopIteration 逃逸到 asyncio 回调链
-        import functools
-        _next = functools.partial(next, gen)
+        q: asyncio.Queue = asyncio.Queue()
+
+        def progress_handler(progress):
+            data = progress.model_dump(exclude_none=True)
+            event_name = data.pop("event", "message")
+            q.put_nowait((event_name, data))
+
+        def run_sync():
+            try:
+                organize_files_sync(
+                    source_paths=req.source_paths,
+                    target_root=req.target_root,
+                    mode=OrganizeMode(req.mode.value),
+                    auto_scrape=req.auto_scrape,
+                    progress_callback=progress_handler,
+                )
+            except Exception as e:
+                logger.error(f"[Organize] 执行出错: {e}", exc_info=True)
+                q.put_nowait(("error", {"message": str(e)}))
+            finally:
+                q.put_nowait((None, None))
+
+        executor_future = loop.run_in_executor(None, run_sync)
 
         try:
             while True:
-                # 单次迭代最多等 30s，防止大文件复制时阻塞
-                try:
-                    progress = await asyncio.wait_for(
-                        loop.run_in_executor(None, _next),
-                        timeout=30.0,
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning("[Organize] 执行单次迭代超时（30s）")
-                    yield make_sse("error", {"message": "操作超时（30s），请重试"})
+                # 不设超时：文件复制/移动耗时取决于文件大小和网络，大文件慢慢等
+                # 实时看到每个 copied/moved/skipped 事件，胜于超时放弃
+                event_name, data = await q.get()
+                if event_name is None:
                     break
-                if progress is None:
-                    break
-                data = progress.model_dump(exclude_none=True)
-                event_name = data.pop("event", "message")
                 yield make_sse(event_name, data)
+        except asyncio.CancelledError:
+            executor_future.cancel()
+            raise
         except Exception as e:
             logger.error(f"[Organize] 执行失败: {e}", exc_info=True)
             yield make_sse("error", {"message": str(e)})

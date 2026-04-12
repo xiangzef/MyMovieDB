@@ -1,0 +1,26 @@
+{
+  "success": [],
+  "failed": [
+    {
+      "code": "ABP-013",
+      "movie_id": 1019
+    },
+    {
+      "code": "ABP-031",
+      "movie_id": 1020
+    },
+    {
+      "code": "ABP-041",
+      "movie_id": 1021
+    },
+    {
+      "code": "ABP-058",
+      "movie_id": 1022
+    },
+    {
+      "code": "ABP-073",
+      "movie_id": 1023
+    }
+  ],
+  "skipped": []
+}

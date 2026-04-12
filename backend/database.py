@@ -11,6 +11,41 @@ import json
 DATABASE_PATH = Path(__file__).resolve().parent.parent / "data" / "movies.db"
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 番号标准化（统一去零格式）
+# ─────────────────────────────────────────────────────────────────────────────
+# 规则：去除番号数字部分的前导零
+# 例: BEB-016 → BEB-16,  SSIS-037 → SSIS-37,  JNT-001 → JNT-1
+# FC2-PPV 和 HEYDOUGA 特殊格式保持原样（数字段可能较长）
+#
+# 统一标准化意义：
+#   - _extract_code_from_filename() 在扫描时已去零
+#   - 刮削器( scraper )从网页抓取时保持原格式（如 BEB-016）
+#   - 导致 movies.code='BEB-016' 但 local_videos.code='BEB-16'
+#   - organize / get_movies_by_codes 精确匹配失败
+# ─────────────────────────────────────────────────────────────────────────────
+_CODE_NORMALIZE_RE = re.compile(r'^([A-Z0-9]+)-0*(\d+)$', re.IGNORECASE)
+_FC2_RE = re.compile(r'^FC2-PPV-\d+$', re.IGNORECASE)
+_HEYDOUGA_RE = re.compile(r'^HEYDOUGA-\d+-\d+$', re.IGNORECASE)
+
+
+def normalize_code(code: str) -> str:
+    """
+    番号标准化：去除数字部分的前导零。
+    返回统一格式（如 BEB-016 → BEB-16）。
+    FC2-PPV / HEYDOUGA 等长数字段特殊格式保持原样。
+    """
+    if not code:
+        return code
+    # 特殊格式不做标准化
+    if _FC2_RE.match(code) or _HEYDOUGA_RE.match(code):
+        return code.upper()
+    m = _CODE_NORMALIZE_RE.match(code.strip())
+    if m:
+        return f"{m.group(1).upper()}-{int(m.group(2))}"
+    return code.upper()
+
+
 def get_db():
     """获取数据库连接"""
     DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -73,6 +108,14 @@ def init_db():
         "organized_path": "ALTER TABLE movies ADD COLUMN organized_path TEXT",  # 整理后存放路径
         "scrape_count": "ALTER TABLE movies ADD COLUMN scrape_count INTEGER DEFAULT 0",  # 刮削次数
         "last_scraped_at": "ALTER TABLE movies ADD COLUMN last_scraped_at TIMESTAMP",  # 最近一次刮削时间
+        # Jellyfin 结构完整性状态（仅 source_type=jellyfin 的影片有意义）
+        # complete: 视频文件 + poster 存在
+        # partial:  视频存在但 poster/fanart 缺失
+        # broken:   视频文件不存在（引用路径失效）
+        # unknown:  未校验过
+        "jellyfin_status": "ALTER TABLE movies ADD COLUMN jellyfin_status TEXT DEFAULT 'unknown'",
+        # local_videos 表的来源标识（避免每次 JOIN local_sources 查询 is_jellyfin）
+        # 在 init_local_videos_table() 里单独添加
     }
     for col_name, sql in new_columns.items():
         if col_name not in existing_columns:
@@ -511,22 +554,32 @@ def update_movie(movie_id: int, movie_data: dict, merge: bool = True) -> bool:
     return False
 
 
-def upsert_movie(movie_data: dict) -> tuple:
+def upsert_movie(movie_data: dict, force_source_type: str = None) -> tuple:
     """
     upsert：存在则更新，不存在则创建
     返回: (movie_id, is_new)
+
+    参数:
+        force_source_type: 强制设置 source_type（用于 Jellyfin 补全刮削，保留 'jellyfin' 来源）
+                          仅当 force_source_type='jellyfin' 且 existing movie 存在时，
+                          强制将 source_type 改为 'jellyfin'（覆盖 'web' 等污染值）
+
+    注意：存储前统一标准化 code（去零），与 _extract_code_from_filename 保持一致。
+
+    自动关联：每次 upsert_movie 成功后，自动查找所有 code 匹配的 local_videos，
+    并更新其 movie_id。从此不再出现"刮削后 movies 有数据但 local_videos 未关联"的孤立记录。
     """
     code = movie_data.get("code")
     if not code:
         raise ValueError("影片编号不能为空")
+    # ── 标准化：去零（与 local_videos.code 格式对齐）──────────────
+    code = normalize_code(code)
+    movie_data["code"] = code
 
     # 计算削刮状态
     movie_data["scrape_status"] = calculate_scrape_status(movie_data)
     # 每次刮削更新时间和次数（由调用方传入，若未传则在 upsert 时自动处理）
     movie_data["last_scraped_at"] = datetime.now().isoformat()
-    
-    # 只有新建记录时才设置默认 source_type
-    # 更新时会通过 merge_movie_data 保留原有值
 
     existing = get_movie_by_code(code)
 
@@ -534,11 +587,14 @@ def upsert_movie(movie_data: dict) -> tuple:
         # 更新，智能合并（会保护 source_type/video_path/local_video_id）
         # 刮削次数递增
         movie_data["scrape_count"] = (existing.get("scrape_count") or 0) + 1
+        # Jellyfin 补全刮削：强制保留 source_type='jellyfin'
+        if force_source_type == 'jellyfin' and existing.get("source_type") != 'jellyfin':
+            movie_data["source_type"] = 'jellyfin'
         update_movie(existing["id"], movie_data, merge=True)
         # 如果有 local_video_id，也更新关联
         if movie_data.get("local_video_id"):
             link_movie_to_local_video(existing["id"], movie_data["local_video_id"])
-        return existing["id"], False
+        movie_id = existing["id"]
     else:
         # 创建新记录时才设置默认 source_type
         if "source_type" not in movie_data:
@@ -548,7 +604,45 @@ def upsert_movie(movie_data: dict) -> tuple:
         # 如果有 local_video_id，也建立关联
         if movie_data.get("local_video_id"):
             link_movie_to_local_video(movie_id, movie_data["local_video_id"])
-        return movie_id, True
+
+    # ── 自动关联：查找所有 code 匹配的 local_videos 并更新 movie_id ──
+    _auto_link_local_videos(movie_id, code)
+
+    return movie_id, False if existing else True
+
+
+def _auto_link_local_videos(movie_id: int, code: str) -> int:
+    """
+    查找所有 code 匹配的 local_videos（movie_id IS NULL），
+    自动更新其 movie_id = 当前 movie_id，并设 scraped=1。
+
+    同时同步 is_jellyfin（从 local_sources.is_jellyfin 获取），
+    确保 local_videos.is_jellyfin 与目录来源一致。
+
+    返回更新的记录数。
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        # 同时更新 movie_id, scraped, is_jellyfin
+        cursor.execute("""
+            UPDATE local_videos
+            SET movie_id = ?,
+                scraped = 1,
+                is_jellyfin = (
+                    SELECT COALESCE(ls.is_jellyfin, 0)
+                    FROM local_sources ls
+                    WHERE ls.id = local_videos.source_id
+                ),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE code = ? AND (movie_id IS NULL OR movie_id != ?)
+        """, (movie_id, code, movie_id))
+        affected = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return affected
+    except Exception:
+        return 0
 
 
 def delete_movie(movie_id: int) -> bool:
@@ -813,6 +907,155 @@ def batch_verify_scrape_status(limit: int = 0) -> dict:
     return stats
 
 
+# ========== Jellyfin 结构完整性 ==========
+
+def calculate_jellyfin_status(movie_id: int, video_path: str, poster_path: str = None,
+                               fanart_path: str = None) -> str:
+    """
+    计算 Jellyfin 影片的结构完整性状态（仅 source_type=jellyfin 的影片有意义）。
+
+    完整性判断：
+      complete: video 存在 + poster 存在（核心）
+      partial:  video 存在，但 poster/fanart 至少缺一样
+      broken:   video 文件不存在（引用路径失效）
+      unknown:  无法判断（无 video_path）
+
+    注意：NFO 由 Jellyfin 自身管理，MyMovieDB 不强制要求。
+    """
+    from pathlib import Path
+
+    if not video_path:
+        return "unknown"
+
+    video_exists = Path(video_path).exists()
+    if not video_exists:
+        return "broken"
+
+    # 至少要有 poster（核心封面）
+    poster_exists = bool(poster_path and Path(poster_path).exists())
+    # fanart 是可选的
+    fanart_exists = bool(fanart_path and Path(fanart_path).exists())
+
+    if poster_exists:
+        return "complete"
+    else:
+        return "partial"
+
+
+def verify_jellyfin_status(movie_id: int) -> dict:
+    """
+    对单部 Jellyfin 影片重新校验结构完整性，不写库，只返回校验结果。
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT v.id, v.path, m.poster_path, m.fanart_path, m.jellyfin_status
+        FROM local_videos v
+        JOIN movies m ON v.movie_id = m.id
+        WHERE v.movie_id = ? AND m.source_type = 'jellyfin'
+        LIMIT 1
+    """, (movie_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        return None
+
+    lv_id, video_path, poster_path, fanart_path, old_status = row
+    new_status = calculate_jellyfin_status(movie_id, video_path, poster_path, fanart_path)
+    return {
+        "movie_id": movie_id,
+        "video_exists": Path(video_path).exists() if video_path else False,
+        "poster_exists": Path(poster_path).exists() if poster_path else False,
+        "fanart_exists": Path(fanart_path).exists() if fanart_path else False,
+        "old_status": old_status,
+        "new_status": new_status,
+        "changed": old_status != new_status,
+    }
+
+
+def update_jellyfin_status(movie_id: int, video_path: str, poster_path: str = None,
+                            fanart_path: str = None) -> str:
+    """
+    计算并写入 jellyfin_status 列（增量：仅当状态变化时才写库）。
+    返回计算后的状态值。
+    """
+    from pathlib import Path
+
+    new_status = calculate_jellyfin_status(movie_id, video_path, poster_path, fanart_path)
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT jellyfin_status FROM movies WHERE id = ?",
+        (movie_id,)
+    )
+    row = cursor.fetchone()
+    if row and row[0] == new_status:
+        conn.close()
+        return new_status  # 无需更新
+
+    cursor.execute(
+        "UPDATE movies SET jellyfin_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (new_status, movie_id)
+    )
+    conn.commit()
+    conn.close()
+    return new_status
+
+
+def batch_verify_jellyfin_status(limit: int = 0) -> dict:
+    """
+    批量校验 Jellyfin 影片的 jellyfin_status，并修正数据库。
+
+    Returns:
+        stats = {
+            "total": N,          # 总 Jellyfin 影片数
+            "complete": N,       # 结构完整（video + poster）
+            "partial": N,        # video 存在但封面缺失
+            "broken": N,         # video 文件不存在
+            "unknown": N,        # 无 video_path
+            "fixed": N,          # 本次修正的记录数
+        }
+    """
+    from pathlib import Path
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    query = """
+        SELECT v.id as lv_id, v.path, v.movie_id,
+               m.poster_path, m.fanart_path, m.jellyfin_status, m.id as m_id
+        FROM local_videos v
+        JOIN movies m ON v.movie_id = m.id
+        WHERE m.source_type = 'jellyfin'
+    """
+    if limit > 0:
+        query += f" LIMIT {limit}"
+    cursor.execute(query)
+
+    stats = {"total": 0, "complete": 0, "partial": 0, "broken": 0, "unknown": 0, "fixed": 0}
+    updates = []
+
+    for row in cursor.fetchall():
+        lv_id, video_path, movie_id, poster_path, fanart_path, old_status, m_id = row
+        new_status = calculate_jellyfin_status(m_id, video_path, poster_path, fanart_path)
+        stats["total"] += 1
+        stats[new_status] = stats.get(new_status, 0) + 1
+        if old_status != new_status:
+            updates.append((new_status, m_id))
+
+    if updates:
+        cursor.executemany(
+            "UPDATE movies SET jellyfin_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            updates
+        )
+        conn.commit()
+        stats["fixed"] = len(updates)
+
+    conn.close()
+    return stats
+
+
 # ========== 本地视频源管理 ==========
 
 def init_local_sources_table():
@@ -868,11 +1111,100 @@ def init_local_videos_table():
         )
     """)
 
+    # 添加 is_jellyfin 列（denormalize，避免每次 JOIN local_sources 查询）
+    # 解决：get_unscraped_local_videos SQL 过滤依赖 JOIN 结果，但 JOIN 结果与
+    #       movies.source_type 不同步，导致 Jellyfin 目录视频混入批量刮削
+    existing_lv_cols = [col[1] for col in cursor.execute("PRAGMA table_info(local_videos)")]
+    if 'is_jellyfin' not in existing_lv_cols:
+        try:
+            cursor.execute("ALTER TABLE local_videos ADD COLUMN is_jellyfin INTEGER DEFAULT 0")
+            print("  + local_videos.is_jellyfin 列已添加")
+        except Exception:
+            pass  # 已存在则忽略
+
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_local_videos_code ON local_videos(code)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_local_videos_source ON local_videos(source_id)")
 
     conn.commit()
     conn.close()
+
+
+def sync_local_videos_is_jellyfin():
+    """
+    将 local_videos.is_jellyfin 与 local_sources.is_jellyfin 同步。
+
+    背景：
+    - local_videos.is_jellyfin 是 denormalize 列，避免每次 JOIN 查询
+    - 当 local_sources.is_jellyfin 发生变化（如新增 Jellyfin 目录），
+      或 local_videos 移动/复制到新目录后，调用此函数同步
+    - 同时将 movies.source_type 与 is_jellyfin 目录的影片同步
+
+    同步规则：
+    - is_jellyfin=1 目录的视频 → local_videos.is_jellyfin=1, movies.source_type='jellyfin'
+    - is_jellyfin=0 目录的视频 → local_videos.is_jellyfin=0（source_type 不强制覆盖）
+    - Case B: is_jellyfin=0 但 source_type='jellyfin' → 强制改 source_type='web'
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # Step 1: 同步 local_videos.is_jellyfin
+    cursor.execute("""
+        UPDATE local_videos
+        SET is_jellyfin = (
+            SELECT COALESCE(ls.is_jellyfin, 0)
+            FROM local_sources ls
+            WHERE ls.id = local_videos.source_id
+        )
+        WHERE source_id IS NOT NULL
+    """)
+    lv_updated = cursor.rowcount
+
+    # Step 2: Case B 修复 - is_jellyfin=0 但 source_type='jellyfin' 的影片
+    #         这些是错误标记（来自非 Jellyfin 目录），强制改回 web
+    #         使用显式 JOIN movies m2 确保 subquery 正确引用
+    cursor.execute("""
+        UPDATE movies
+        SET source_type = 'web'
+        WHERE id IN (
+            SELECT lv.movie_id
+            FROM local_videos lv
+            JOIN local_sources ls ON lv.source_id = ls.id
+            JOIN movies m2 ON lv.movie_id = m2.id
+            WHERE ls.is_jellyfin = 0
+              AND lv.movie_id IS NOT NULL
+              AND m2.source_type = 'jellyfin'
+        )
+        AND source_type = 'jellyfin'
+    """)
+    case_b_fixed = cursor.rowcount
+
+    # Step 3: Case A 修复 - is_jellyfin=1 但 source_type='web' 的影片
+    #         这些是被批量刮削污染的 Jellyfin 影片，改为 jellyfin（保护来源）
+    #         注意：只改 source_type，不改 scrape_status（由 jellyfin_status 单独跟踪）
+    cursor.execute("""
+        UPDATE movies
+        SET source_type = 'jellyfin'
+        WHERE id IN (
+            SELECT lv.movie_id
+            FROM local_videos lv
+            JOIN local_sources ls ON lv.source_id = ls.id
+            WHERE ls.is_jellyfin = 1
+              AND lv.movie_id IS NOT NULL
+              AND movies.source_type = 'web'
+              AND movies.id = lv.movie_id
+        )
+        AND source_type = 'web'
+    """)
+    case_a_fixed = cursor.rowcount
+
+    conn.commit()
+    conn.close()
+
+    return {
+        'lv_is_jellyfin_synced': lv_updated,
+        'case_a_fixed': case_a_fixed,
+        'case_b_fixed': case_b_fixed,
+    }
 
 
 def init_all_tables():
@@ -976,6 +1308,8 @@ def upsert_local_video(video_data: dict) -> tuple:
     """
     upsert 本地视频记录（只保存有番号的视频）
     返回: (video_id, is_new)
+
+    注意：存储前统一标准化 code（去零），与 movies.code 保持一致。
     """
     path = video_data.get("path")
     if not path:
@@ -983,6 +1317,9 @@ def upsert_local_video(video_data: dict) -> tuple:
     # 不保存无番号的记录
     if not video_data.get("code"):
         return None, False
+    # ── 标准化：去零（与 movies.code 格式对齐）──────────────────
+    raw_code = video_data.get("code")
+    video_data["code"] = normalize_code(raw_code)
 
     conn = get_db()
     cursor = conn.cursor()
@@ -997,6 +1334,7 @@ def upsert_local_video(video_data: dict) -> tuple:
             UPDATE local_videos
             SET name = ?, code = ?, extension = ?, file_size = ?,
                 fanart_path = ?, poster_path = ?, thumb_path = ?,
+                is_jellyfin = COALESCE(?, is_jellyfin),
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
         """, (
@@ -1007,6 +1345,7 @@ def upsert_local_video(video_data: dict) -> tuple:
             video_data.get("fanart_path"),
             video_data.get("poster_path"),
             video_data.get("thumb_path"),
+            video_data.get("is_jellyfin", 0),
             video_id
         ))
         conn.commit()
@@ -1014,8 +1353,8 @@ def upsert_local_video(video_data: dict) -> tuple:
         return video_id, False
     else:
         cursor.execute("""
-            INSERT INTO local_videos (source_id, name, path, code, extension, file_size, fanart_path, poster_path, thumb_path)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO local_videos (source_id, name, path, code, extension, file_size, fanart_path, poster_path, thumb_path, is_jellyfin)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 0))
         """, (
             video_data.get("source_id"),
             video_data.get("name"),
@@ -1026,6 +1365,7 @@ def upsert_local_video(video_data: dict) -> tuple:
             video_data.get("fanart_path"),
             video_data.get("poster_path"),
             video_data.get("thumb_path"),
+            video_data.get("is_jellyfin", 0),
         ))
         video_id = cursor.lastrowid
         conn.commit()
@@ -1173,6 +1513,12 @@ def get_unscraped_local_videos() -> list:
     cursor = conn.cursor()
 
     # Step-1：SQL 层粗过滤
+    # 关键修复：用 v.is_jellyfin = 0 替代 m.source_type != 'jellyfin'
+    # 原因：movies.source_type 会被批量刮削污染（is_jellyfin=1 但 source_type='web'）
+    #       而 local_videos.is_jellyfin 由 sync_local_videos_is_jellyfin() 维护，
+    #       是可靠的来源标识
+    # 同步处理：is_jellyfin IS NULL 的孤立记录也纳入待刮削范围（fix_is_jellyfin_null_records 会清理，
+    #           但 startup 之前可能仍有残留，保守纳入统计）
     cursor.execute("""
         SELECT v.*, s.path as source_path,
                m.scrape_status, m.source_type AS movie_source_type,
@@ -1181,8 +1527,8 @@ def get_unscraped_local_videos() -> list:
         LEFT JOIN local_sources s ON v.source_id = s.id
         LEFT JOIN movies m ON v.movie_id = m.id
         WHERE v.code IS NOT NULL AND v.code != ''
+          AND (v.is_jellyfin = 0 OR v.is_jellyfin IS NULL)
           AND (m.scrape_status IS NULL OR m.scrape_status != 'complete')
-          AND (m.source_type IS NULL OR m.source_type != 'jellyfin')
         ORDER BY v.id
     """)
 
@@ -1309,32 +1655,145 @@ def cleanup_invalid_codes():
 
 
 def get_local_video_stats() -> dict:
-    """获取本地视频统计
-    
-    scraped  = scrape_status='complete'（真正完整刮削）
-    unscraped= scraped=0 OR scrape_status IN ('partial','empty',NULL)（未刮或不完整）
+    """
+    获取本地视频统计。
+
+    统计口径（与 get_unscraped_local_videos() 的预检验证逻辑对齐）：
+    - total:       所有有番号的本地视频（含 Jellyfin）
+    - scraped:     非 Jellyfin + scrape_status='complete'（真正完整刮削）
+    - unscraped:   非 Jellyfin + 实际需要网络刮削的数量
+                   = partial（movie 存在但数据不完整）+ exists_false（无 movie 记录）
+                   → 与 get_unscraped_local_videos() 返回的影片数完全一致
+    - complete_unlabeled: 非 Jellyfin + 已有完整数据（经 check_and_fix 验证）
+                         但 scrape_status != 'complete' 的数量
+                         → 预检时会跳过并自动修正标志
+    - jellyfin:    Jellyfin 来源视频数（metadata 由 Jellyfin 提供，不走网络刮削）
+    - is_null:     is_jellyfin IS NULL 的孤立记录（需要清理）
+
+    scraped 直接用 SQL COUNT 得出，不依赖公式反推，确保数字一致。
     """
     conn = get_db()
     cursor = conn.cursor()
 
+    # ① 总视频数
     cursor.execute("""
-        SELECT
-            COUNT(*) as total,
-            SUM(CASE WHEN m.scrape_status = 'complete' THEN 1 ELSE 0 END) as scraped,
-            SUM(CASE WHEN m.scrape_status IS NULL OR m.scrape_status != 'complete' THEN 1 ELSE 0 END) as unscraped
+        SELECT COUNT(*) FROM local_videos
+        WHERE code IS NOT NULL AND code != ''
+    """)
+    total = cursor.fetchone()[0]
+
+    # ② Jellyfin 视频数（用 v.is_jellyfin 标识，不依赖 movies.source_type）
+    cursor.execute("""
+        SELECT COUNT(*) FROM local_videos v
+        WHERE v.code IS NOT NULL AND v.code != ''
+          AND v.is_jellyfin = 1
+    """)
+    jellyfin = cursor.fetchone()[0]
+
+    # ③ is_jellyfin IS NULL 的孤立记录数（需修复）
+    cursor.execute("""
+        SELECT COUNT(*) FROM local_videos v
+        WHERE v.code IS NOT NULL AND v.code != ''
+          AND v.is_jellyfin IS NULL
+    """)
+    is_null = cursor.fetchone()[0]
+
+    # ④ 非 Jellyfin 中 scrape_status='complete' 的数量
+    #   含 is_jellyfin = 0 和 is_jellyfin IS NULL（孤立记录按非 Jellyfin 处理）
+    cursor.execute("""
+        SELECT COUNT(*) FROM local_videos v
+        JOIN movies m ON v.movie_id = m.id
+        WHERE v.code IS NOT NULL AND v.code != ''
+          AND (v.is_jellyfin = 0 OR v.is_jellyfin IS NULL)
+          AND m.scrape_status = 'complete'
+    """)
+    scraped = cursor.fetchone()[0]
+
+    # ⑤ 其余 non-JF 视频，用 check_and_fix 预检验证并归类
+    #   包含 is_jellyfin = 0 和 is_jellyfin IS NULL
+    cursor.execute("""
+        SELECT v.id, v.code
         FROM local_videos v
         LEFT JOIN movies m ON v.movie_id = m.id
         WHERE v.code IS NOT NULL AND v.code != ''
+          AND (v.is_jellyfin = 0 OR v.is_jellyfin IS NULL)
+          AND (m.scrape_status IS NULL OR m.scrape_status != 'complete')
+        ORDER BY v.id
     """)
-    row = cursor.fetchone()
+    rows = cursor.fetchall()
+
+    complete_unlabeled = 0
+    unscraped = 0
+    for row in rows:
+        check = check_and_fix_scrape_status(row['code'])
+        if not check['exists']:
+            unscraped += 1
+        elif check['should_scrape']:
+            unscraped += 1
+        else:
+            complete_unlabeled += 1
 
     conn.close()
-    return dict(row) if row else {"total": 0, "scraped": 0, "unscraped": 0}
+    return {
+        'total': total,
+        'scraped': scraped,
+        'unscraped': unscraped,
+        'complete_unlabeled': complete_unlabeled,
+        'jellyfin': jellyfin,
+        'is_null': is_null,  # 新增：孤立记录数
+    }
 
 
-# ===============================================================================
-# Jellyfin 导入相关函数
-# ===============================================================================
+def fix_is_jellyfin_null_records() -> dict:
+    """
+    修复所有 is_jellyfin IS NULL 的孤立记录。
+
+    根因：这些 local_videos 的 source_id 指向已删除的 local_sources，
+          导致 is_jellyfin 字段为 NULL。
+
+    修复策略：
+    1. 将所有 is_jellyfin IS NULL 设为 is_jellyfin = 0
+       （无来源记录 = 非 Jellyfin 视频，按正常刮削处理）
+    2. 不删除 movies 记录（可能还有价值）
+    3. 返回修复统计
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # 修复前数量
+    cursor.execute("""
+        SELECT COUNT(*) FROM local_videos
+        WHERE code IS NOT NULL AND code != ''
+          AND is_jellyfin IS NULL
+    """)
+    before = cursor.fetchone()[0]
+
+    # 修复 UPDATE
+    cursor.execute("""
+        UPDATE local_videos
+        SET is_jellyfin = 0,
+            scraped = COALESCE(scraped, 0),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE is_jellyfin IS NULL
+          AND code IS NOT NULL AND code != ''
+    """)
+    fixed = cursor.rowcount
+    conn.commit()
+
+    # 提交后再查询（SQLite 自动开始新事务）
+    cursor.execute("""
+        SELECT COUNT(*) FROM local_videos
+        WHERE code IS NOT NULL AND code != ''
+          AND is_jellyfin IS NULL
+    """)
+    after = cursor.fetchone()[0]
+    conn.close()
+    return {
+        'fixed': fixed,
+        'remaining_null': after,
+        'message': f'已修复 {fixed} 条孤立记录' + (f'，剩余 {after} 条' if after else '，全部修复完毕'),
+    }
+
 
 def import_jellyfin_movie(code: str, metadata: dict, video_path: str, 
                           poster_file: str = None, fanart_file: str = None,
@@ -1352,73 +1811,63 @@ def import_jellyfin_movie(code: str, metadata: dict, video_path: str,
     
     Returns:
         movie_id 或 -1（失败）、0（跳过）
+
+    注意：存储前统一标准化 code（去零），与 _extract_code_from_filename 保持一致。
     """
     import os
+    # ── 标准化：去零（与 local_videos.code 格式对齐）───────────
+    code = normalize_code(code)
+
     conn = get_db()
     cursor = conn.cursor()
-    
+
     try:
-        # 检查是否已存在
-        cursor.execute("SELECT id, source FROM movies WHERE code = ?", (code,))
+        # 检查是否已存在（同时查 source 和 source_type）
+        cursor.execute("SELECT id, source, source_type FROM movies WHERE code = ?", (code,))
         existing = cursor.fetchone()
-        
+
         if existing:
             movie_id = existing['id']
-            existing_source = existing['source']
-            
-            # 如果已经是 Jellyfin 来源，跳过
-            if existing_source == 'jellyfin':
+            existing_st = existing['source_type']
+
+            # 如果已经是 Jellyfin 来源，跳过（用 source_type 判断，统一口径）
+            # source_type='jellyfin' 意味着该记录已由 Jellyfin NFO 完全填充
+            if existing_st == 'jellyfin':
                 conn.close()
                 return 0  # 跳过
             
-            # 更新现有记录（只更新空值字段）
-            update_fields = []
-            update_values = []
-            
-            for field in ['title', 'title_jp', 'plot', 'release_date', 'studio', 
+            # source_type != 'jellyfin'（如 'web'）：Jellyfin NFO 数据有更高权威
+            # → 强制覆盖所有字段（包括已填写的 web 数据），彻底替换为 Jellyfin 来源
+            update_fields = ["source = ?", "source_type = ?", "video_path = ?",
+                             "scrape_status = ?"]
+            update_values = ['jellyfin', 'jellyfin', video_path, 'complete']
+
+            for field in ['title', 'title_jp', 'plot', 'release_date', 'studio',
                           'maker', 'director']:
-                if metadata.get(field):
-                    update_fields.append(f"{field} = ?")
-                    update_values.append(metadata[field])
-            
-            # 更新演员（JSON）
-            if metadata.get('actors'):
-                update_fields.append("actors = ?")
-                update_values.append(json.dumps(metadata['actors'], ensure_ascii=False))
-            if metadata.get('actors_male'):
-                update_fields.append("actors_male = ?")
-                update_values.append(json.dumps(metadata['actors_male'], ensure_ascii=False))
-            if metadata.get('genres'):
-                update_fields.append("genres = ?")
-                update_values.append(json.dumps(metadata['genres'], ensure_ascii=False))
-            
-            # 更新本地图片路径
-            if poster_file:
-                update_fields.append("poster_path = ?")
-                update_values.append(poster_file)
-            if fanart_file:
-                update_fields.append("fanart_path = ?")
-                update_values.append(fanart_file)
-            if thumb_file:
-                update_fields.append("thumb_path = ?")
-                update_values.append(thumb_file)
-            
-            # 标记来源和刮削状态
-            update_fields.append("source = ?")
-            update_values.append('jellyfin')
-            update_fields.append("source_type = ?")
-            update_values.append('jellyfin')
-            update_fields.append("video_path = ?")
-            update_values.append(video_path)
-            update_fields.append("scrape_status = ?")
-            update_values.append('complete')
-            
+                val = metadata.get(field)
+                update_fields.append(f"{field} = ?")
+                update_values.append(val if val else None)
+
+            # 演员/genres 强制覆盖（JSON）
+            update_fields.append("actors = ?")
+            update_values.append(json.dumps(metadata.get('actors') or [], ensure_ascii=False))
+            update_fields.append("actors_male = ?")
+            update_values.append(json.dumps(metadata.get('actors_male') or [], ensure_ascii=False))
+            update_fields.append("genres = ?")
+            update_values.append(json.dumps(metadata.get('genres') or [], ensure_ascii=False))
+
+            # 本地图片路径强制覆盖
+            update_fields.append("poster_path = ?")
+            update_values.append(poster_file)
+            update_fields.append("fanart_path = ?")
+            update_values.append(fanart_file)
+            update_fields.append("thumb_path = ?")
+            update_values.append(thumb_file)
+
             update_values.append(movie_id)
-            
-            if update_fields:
-                cursor.execute(f"""
-                    UPDATE movies SET {', '.join(update_fields)} WHERE id = ?
-                """, update_values)
+            cursor.execute(f"""
+                UPDATE movies SET {', '.join(update_fields)} WHERE id = ?
+            """, update_values)
         else:
             # 插入新记录
             cursor.execute("""
@@ -1446,12 +1895,28 @@ def import_jellyfin_movie(code: str, metadata: dict, video_path: str,
             ))
             movie_id = cursor.lastrowid
             
-            # 同时插入 local_videos 记录
+            # 同时插入 local_videos 记录（source_id 需从 video_path 反查）
             file_size = os.path.getsize(video_path) if os.path.exists(video_path) else 0
+            video_dir = os.path.dirname(video_path)
+            # 查找对应的 source_id（Jellyfin 扫描时 source_id 由调用方传入，这里简化处理）
             cursor.execute("""
-                INSERT OR IGNORE INTO local_videos (path, name, file_size, code, movie_id, scraped)
-                VALUES (?, ?, ?, ?, ?, 1)
+                INSERT OR IGNORE INTO local_videos
+                (path, name, file_size, code, movie_id, scraped, is_jellyfin)
+                VALUES (?, ?, ?, ?, ?, 1, 1)
             """, (video_path, os.path.basename(video_path), file_size, code, movie_id))
+
+        # 更新关联的 local_videos 记录的 is_jellyfin=1（如果已有记录）
+        # 查找该 movie_id 对应的 local_videos
+        cursor.execute(
+            "SELECT id FROM local_videos WHERE movie_id = ? AND path = ?",
+            (movie_id, video_path)
+        )
+        lv = cursor.fetchone()
+        if lv:
+            cursor.execute(
+                "UPDATE local_videos SET is_jellyfin = 1 WHERE id = ?",
+                (lv['id'],)
+            )
         
         conn.commit()
         return movie_id
@@ -1472,6 +1937,200 @@ def get_jellyfin_count() -> int:
     count = cursor.fetchone()[0]
     conn.close()
     return count
+
+
+def get_jellyfin_incomplete_codes() -> list:
+    """
+    获取 Jellyfin 来源但元数据不完整的影片番号。
+    判断标准：有 video_path（能找到 NFO）+ 缺 maker 或缺 actors。
+    用于批量补全功能。
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT m.code, m.title, m.maker, m.actors, m.video_path,
+               v.path as local_video_path
+        FROM movies m
+        LEFT JOIN local_videos v ON v.movie_id = m.id AND v.is_jellyfin = 1
+        WHERE m.source_type = 'jellyfin'
+          AND (m.maker IS NULL OR m.maker = ''
+               OR m.actors IS NULL OR m.actors = '[]' OR m.actors = '[\"[]\"]')
+        ORDER BY m.code
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    result = []
+    for r in rows:
+        result.append({
+            'code': r[0],
+            'title': r[1],
+            'maker': r[2],
+            'actors': r[3],
+            'video_path': r[4],
+            'local_video_path': r[5],
+        })
+    return result
+
+
+def enrich_jellyfin_movie_from_nfo(code: str) -> dict:
+    """
+    从 Jellyfin NFO 文件补全 movies 表缺失的元数据字段。
+
+    查找逻辑：
+    1. 优先使用 movies.video_path（来自 Jellyfin 导入的路径）
+    2. 备选：local_videos.path（但 is_jellyfin=1 的记录）
+    3. 基础番号推断：去除 -C/-U/-UC/-4K 等后缀，查找同名 .nfo
+
+    返回: {
+        'success': bool,
+        'nfo_found': bool,
+        'nfo_path': str,
+        'fields_updated': list[str],   # 本次更新的字段名
+        'message': str,
+    }
+    """
+    import os, re as _re
+    from jellyfin import parse_jellyfin_nfo
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # 查找 movie
+    cursor.execute("SELECT id, video_path, maker, actors, title FROM movies WHERE code = ?", (code,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return {'success': False, 'nfo_found': False, 'nfo_path': None,
+                'fields_updated': [], 'message': 'movies 表无此番号'}
+
+    movie_id, video_path, existing_maker, existing_actors, title = row
+
+    # 推断 NFO 路径
+    nfo_path = None
+    search_paths = []
+
+    # ① 直接替换扩展名
+    if video_path:
+        for ext in ['.mp4', '.mkv', '.avi', '.wmv', '.mov']:
+            candidate = video_path.replace(ext, '.nfo')
+            search_paths.append(candidate)
+            if os.path.exists(candidate):
+                nfo_path = candidate
+                break
+
+    # ② 基础番号 + 同目录 .nfo（去除 -C/-U/-UC/-4K 后缀）
+    if not nfo_path and video_path:
+        video_dir = os.path.dirname(video_path)
+        base_code = _re.sub(r'[-_](C|U|UC|4K|HD|KT|TT)$', '', code, flags=_re.IGNORECASE)
+        for fname in os.listdir(video_dir) if os.path.isdir(video_dir) else []:
+            if fname.endswith('.nfo'):
+                stem = os.path.splitext(fname)[0]
+                if stem.upper() == base_code.upper() or stem.upper() == code.upper():
+                    nfo_path = os.path.join(video_dir, fname)
+                    break
+
+    # ③ 备选：从 local_videos 查找 is_jellyfin=1 的视频路径
+    if not nfo_path:
+        cursor.execute("""
+            SELECT path FROM local_videos
+            WHERE movie_id = ? AND is_jellyfin = 1
+            LIMIT 1
+        """, (movie_id,))
+        lv_row = cursor.fetchone()
+        if lv_row and lv_row[0]:
+            lv_path = lv_row[0]
+            for ext in ['.mp4', '.mkv', '.avi']:
+                candidate = lv_path.replace(ext, '.nfo')
+                if os.path.exists(candidate):
+                    nfo_path = candidate
+                    break
+            if not nfo_path:
+                lv_dir = os.path.dirname(lv_path)
+                for fname in os.listdir(lv_dir) if os.path.isdir(lv_dir) else []:
+                    if fname.endswith('.nfo'):
+                        nfo_path = os.path.join(lv_dir, fname)
+                        break
+
+    if not nfo_path:
+        conn.close()
+        return {'success': False, 'nfo_found': False, 'nfo_path': None,
+                'fields_updated': [], 'message': '未找到 NFO 文件'}
+
+    # 安全检查：验证文件大小（防止 AVI/MP4 被误当 NFO，如 EBOD-054.AVI → .nfo）
+    try:
+        fsize = os.path.getsize(nfo_path)
+        if fsize > 10 * 1024 * 1024:  # > 10MB 不是正常 NFO
+            conn.close()
+            return {'success': False, 'nfo_found': True, 'nfo_path': nfo_path,
+                    'fields_updated': [],
+                    'message': f'文件过大({fsize//1024//1024}MB)，非NFO，跳过'}
+    except Exception:
+        pass
+
+    # 解析 NFO
+    try:
+        nfo_data = parse_jellyfin_nfo(nfo_path)
+    except Exception as e:
+        conn.close()
+        return {'success': False, 'nfo_found': True, 'nfo_path': nfo_path,
+                'fields_updated': [], 'message': f'NFO 解析失败: {e}'}
+
+    if not nfo_data:
+        conn.close()
+        return {'success': False, 'nfo_found': True, 'nfo_path': nfo_path,
+                'fields_updated': [], 'message': 'NFO 解析结果为空'}
+
+    # 对比现有数据，确定哪些字段需要补充
+    update_fields = []
+    update_values = []
+
+    # maker/studio
+    if nfo_data.get('maker') and not existing_maker:
+        update_fields.append("maker = ?")
+        update_values.append(nfo_data['maker'])
+    if nfo_data.get('studio') and not existing_maker:
+        update_fields.append("studio = ?")
+        update_values.append(nfo_data['studio'])
+
+    # actors（JSON）
+    nfo_actors = nfo_data.get('actors') or []
+    has_existing_actors = existing_actors and existing_actors not in ('[]', '[\"[]\"]', '')
+    if nfo_actors and not has_existing_actors:
+        update_fields.append("actors = ?")
+        update_values.append(json.dumps(nfo_actors, ensure_ascii=False))
+
+    # genres
+    if nfo_data.get('genres'):
+        update_fields.append("genres = ?")
+        update_values.append(json.dumps(nfo_data['genres'], ensure_ascii=False))
+
+    # poster/fanart 路径
+    if nfo_data.get('poster_path') and not nfo_data['poster_path'].startswith('http'):
+        update_fields.append("poster_path = ?")
+        update_values.append(nfo_data['poster_path'])
+    if nfo_data.get('fanart_path') and not nfo_data['fanart_path'].startswith('http'):
+        update_fields.append("fanart_path = ?")
+        update_values.append(nfo_data['fanart_path'])
+
+    if update_fields:
+        update_fields.append("updated_at = ?")
+        update_values.append(datetime.now().isoformat())
+        update_values.append(movie_id)
+        cursor.execute(f"""
+            UPDATE movies SET {', '.join(update_fields)} WHERE id = ?
+        """, update_values)
+        conn.commit()
+
+    field_names = [f.split(' = ')[0] for f in update_fields if 'updated_at' not in f]
+    conn.close()
+
+    return {
+        'success': True,
+        'nfo_found': True,
+        'nfo_path': nfo_path,
+        'fields_updated': field_names,
+        'message': f"更新了 {len(field_names)} 个字段: {', '.join(field_names)}" if field_names else '无字段需要补充',
+    }
 
 
 def mark_source_as_jellyfin(source_path: str, video_count: int = 0) -> bool:
@@ -1864,21 +2523,106 @@ def update_movie_organize_info(movie_id: int, subtitle_type: str, organized_path
     conn.close()
 
 
+def sync_local_video_after_organize(
+    movie_id: int,
+    new_video_path: str,
+    new_code: str,
+    new_name: str,
+    new_extension: str
+) -> int:
+    """
+    整理完成后，同步 local_videos 记录。
+
+    整理（复制/移动）文件到 Jellyfin 目录后：
+      - 如果已有该 movie_id 的 local_videos → 更新 path/code/name/extension
+      - 如果没有 → 新建一条 local_videos
+      - 同时更新 movies.source_type='jellyfin' 和 local_videos.is_jellyfin=1
+      - 通过 new_video_path 查找对应 local_sources 的 source_id 来设置 is_jellyfin
+
+    这样 Jellyfin 扫描时不会再重复创建记录。
+
+    返回: local_videos id
+    """
+    import os as _os
+    conn = get_db()
+    cursor = conn.cursor()
+    new_code_norm = normalize_code(new_code)
+    new_dir = _os.path.dirname(new_video_path)
+
+    # 查找 new_video_path 对应的 source_id（Jellyfin 目录）
+    cursor.execute(
+        "SELECT id, is_jellyfin FROM local_sources WHERE path = ?",
+        (new_dir,)
+    )
+    src_row = cursor.fetchone()
+    if src_row:
+        new_source_id = src_row['id']
+        new_is_jellyfin = src_row['is_jellyfin']
+    else:
+        new_source_id = None
+        new_is_jellyfin = 0
+
+    cursor.execute(
+        "SELECT id FROM local_videos WHERE movie_id = ? LIMIT 1",
+        (movie_id,)
+    )
+    existing_any = cursor.fetchone()
+
+    if existing_any:
+        # 已有记录 → 更新路径和 is_jellyfin
+        cursor.execute("""
+            UPDATE local_videos
+            SET path = ?, code = ?, name = ?, extension = ?,
+                source_id = ?, is_jellyfin = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (new_video_path, new_code_norm, new_name, new_extension,
+              new_source_id, new_is_jellyfin, existing_any['id']))
+        vid_id = existing_any['id']
+    else:
+        # 真没有任何记录 → 新建
+        cursor.execute("""
+            INSERT INTO local_videos
+            (code, name, path, extension, movie_id, scraped, source_id, is_jellyfin)
+            VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+        """, (new_code_norm, new_name, new_video_path, new_extension,
+              movie_id, new_source_id, new_is_jellyfin))
+        vid_id = cursor.lastrowid
+
+    # 同步 movies.source_type（如果整理到 Jellyfin 目录）
+    if new_is_jellyfin:
+        cursor.execute(
+            "UPDATE movies SET source_type = 'jellyfin' WHERE id = ?",
+            (movie_id,)
+        )
+
+    conn.commit()
+    conn.close()
+    return vid_id
+
+
 def get_movies_by_codes(codes: list) -> dict:
     """
     批量根据番号查询影片（整理功能扫描时使用）
     返回: { "IPZZ-792": {id, actors, title, ...}, ... }
+
+    注意：传入的 code 会被标准化后查询（与 upsert_movie 存储格式对齐）。
+    返回字典的 key 统一使用标准化格式（如 IPZZ-792 而非 IPZZ-00792）。
     """
     if not codes:
         return {}
-    placeholders = ",".join(["?"] * len(codes))
+    # 标准化后去重（防止同一标准化格式出现多次）
+    normalized = {normalize_code(c): c for c in codes}  # normalized → original
+    codes_to_query = list(normalized.keys())
+    placeholders = ",".join(["?"] * len(codes_to_query))
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute(
         f"SELECT * FROM movies WHERE code IN ({placeholders})",
-        codes
+        codes_to_query
     )
     rows = cursor.fetchall()
     conn.close()
-    return {dict(r)["code"]: dict(r) for r in rows}
+    # 返回字典的 key 统一用标准化格式（与 _extract_code_from_filename 输出对齐）
+    return {normalize_code(dict(r)["code"]): dict(r) for r in rows}
 
