@@ -343,7 +343,17 @@ def _target_exists(f: dict, movies_map: dict, target_root: str) -> bool:
 
 def _emit_preview_item(f: dict, movies_map: dict, target_root: str,
                        progress_callback: Callable):
-    code = f["code"]
+    code = f.get("code")
+    # 无法识别番号的文件无法整理，直接跳过（不崩溃）
+    if not code:
+        progress_callback(OrganizeProgress(
+            event="found",
+            source_path=f.get("path", ""),
+            code="???",
+            action="skip",
+            reason="无法识别番号",
+        ))
+        return
     movie_data = movies_map.get(code, {})
     target_dir, target_file = build_target_path(
         code,
