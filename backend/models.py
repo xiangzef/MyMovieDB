@@ -227,6 +227,8 @@ class OrganizeProgress(BaseModel):
       - scrape_start : 正在自动刮削（auto_scrape 模式）
       - copied/moved : 文件复制/移动成功
       - cleaned      : 源文件夹清理（已删除或不足100MB）
+      - jellyfin_updated : Jellyfin 扫描记录已更新
+      - scrape_list_updated : 刮削列表已更新
       - skipped      : 目标文件已存在
       - error        : 处理出错
       - done         : 全部完成
@@ -237,6 +239,7 @@ class OrganizeProgress(BaseModel):
     code: Optional[str] = None
     subtitle_type: Optional[str] = None
     subtitle_label: Optional[str] = None
+    disc_label: Optional[str] = None  # 多盘标识 A/B/C
     target_dir: Optional[str] = None
     target_file: Optional[str] = None
     actor_name: Optional[str] = None
@@ -254,6 +257,10 @@ class OrganizeProgress(BaseModel):
     # cleaned 事件
     folder_path: Optional[str] = None
     removed_size: Optional[int] = None
+    # jellyfin_updated 事件
+    jellyfin_updated: Optional[bool] = None
+    # scrape_list_updated 事件
+    scrape_list_updated: Optional[bool] = None
     # done 事件
     success_count: Optional[int] = None
     fail_count: Optional[int] = None

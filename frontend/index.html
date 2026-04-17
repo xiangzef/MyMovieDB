@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
@@ -928,6 +928,9 @@
             <button class="tab" :class="{active: currentTab === 'organize'}" @click="switchTab('organize')">
                 📁 整理
             </button>
+            <button class="tab" :class="{active: currentTab === 'translate'}" @click="switchTab('translate')">
+                🎌 翻译
+            </button>
         </div>
 
         <!-- ========== 影片库 Tab ========== -->
@@ -1509,7 +1512,7 @@
                         <tr v-for="(item, i) in organizeItems.slice(0, 200)" :key="i"
                             style="border-bottom:1px solid #1a1a2e;">
                             <td style="padding:5px 12px;color:#aaa;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
-                                :title="item.source_path">{{ item.source_path.split(/[/\\]/).pop() }}</td>
+                                :title="item.source_path || ''">{{ (item.source_path || '').split(/[/\\]/).pop() || '未知文件' }}</td>
                             <td style="padding:5px 12px;color:#e94560;font-family:monospace;">{{ item.code }}</td>
                             <td style="padding:5px 12px;">
                                 <span v-if="item.subtitle_type && item.subtitle_type !== 'none'"
@@ -1532,38 +1535,154 @@
                 </table>
                 <div v-if="organizeItems.length > 200" style="padding:10px;text-align:center;color:#666;font-size:12px;">
                     仅显示前 200 条，完整结果请查看控制台日志
-                <!-- 整理进度弹窗（position:fixed，不影响 tab 布局） -->
-                <div class="organize-overlay" :class="{active: organizePanel.show}">
-                    <div class="organize-panel">
-                        <div class="organize-panel-header">
-                            <h3>
-                                <span v-if="organizePanel.mode === 'preview'">🔍 预览扫描</span>
-                                <span v-else>📁 文件整理</span>
-                                <span style="color:#666;font-weight:normal;font-size:12px;margin-left:8px;">{{ organizePanel.label }}</span>
-                            </h3>
-                            <button class="btn btn-sm btn-danger" @click="stopOrganize" :disabled="!organizeRunning">⏹ 停止</button>
+                </div>
+            </div><!-- /结果列表 -->
+        </div><!-- /organize tab content -->
+
+        <!-- 整理进度面板：内嵌在页面底部，不弹窗不覆盖 -->
+        <div v-if="organizePanel.show" style="background:#1a1a2e;border:1px solid #333;border-radius:8px;padding:16px;margin-top:16px;color:#ccc;">
+            <div style="margin-bottom:8px;">
+                <span style="font-size:15px;font-weight:bold;color:#f39c12;">{{ organizePanel.mode === 'preview' ? '🔍 预览扫描' : '📁 文件整理' }}</span>
+                <span style="color:#888;font-size:13px;margin-left:8px;">{{ organizePanel.label }}</span>
+                <span v-if="organizeRunning" style="color:#f39c12;font-size:13px;margin-left:8px;">⏳ 进行中</span>
+                <button class="btn btn-sm btn-danger" style="float:right;" @click="stopOrganize" :disabled="!organizeRunning">⏹ 停止</button>
+            </div>
+            <div v-if="organizePanel.currentFile" style="font-size:13px;color:#27ae60;margin-bottom:8px;font-family:monospace;">{{ organizePanel.currentFile }}</div>
+            <div style="max-height:140px;overflow-y:auto;background:#0d0d1a;border-radius:4px;padding:8px;margin-bottom:10px;font-size:12px;font-family:monospace;">
+                <div v-for="(log, idx) in organizePanel.logs.slice(-25)" :key="idx" style="color:#888;">{{ log.text }}</div>
+                <div v-if="organizePanel.logs.length === 0" style="color:#555;">正在连接服务器...</div>
+            </div>
+            <div style="height:6px;background:#333;border-radius:3px;overflow:hidden;margin-bottom:6px;">
+                <div :style="{width:(organizePanel.pct||0)+'%',height:'100%',background:'#e94560',transition:'width 0.3s'}"></div>
+            </div>
+            <div style="font-size:12px;color:#888;">
+                <span style="color:#27ae60">{{ organizePanel.stats.found }}</span> 找到 ·
+                <span style="color:#27ae60">{{ organizePanel.stats.moved + organizePanel.stats.copied }}</span> 迁移 ·
+                <span style="color:#f39c12">{{ organizePanel.stats.skipped }}</span> 跳 ·
+                <span style="color:#e74c3c">{{ organizePanel.stats.fail }}</span> 失败 ·
+                <span style="color:#e94560;margin-left:8px;">{{ organizePanel.pct||0 }}%</span>
+            </div>
+        </div>
+
+        <!-- ========== 语音翻译 Tab ========== -->
+        <div class="tab-panel" :class="{active: currentTab === 'translate'}">
+            <div style="margin-bottom:20px;">
+                <h3 style="margin:0 0 8px 0;color:#e94560;">🎌 日语视频语音提取翻译</h3>
+                <p style="color:#888;font-size:13px;margin:0;">从日语视频中提取语音，识别日语并翻译成中文（生肉熟肉化）</p>
+            </div>
+
+            <!-- 工具状态检查 -->
+            <div v-if="translationTools" class="add-source-form" style="margin-bottom:20px;background:#1a1a2e;border-radius:8px;padding:12px 16px;">
+                <h4 style="margin:0 0 8px 0;font-size:13px;">🔧 工具状态</h4>
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;font-size:12px;">
+                    <div :style="{color: translationTools.whisper ? '#4ade80' : '#f87171'}">
+                        {{ translationTools.whisper ? '✅' : '❌' }} Whisper 语音识别
+                    </div>
+                    <div :style="{color: translationTools.ffmpeg ? '#4ade80' : '#f87171'}">
+                        {{ translationTools.ffmpeg ? '✅' : '❌' }} FFmpeg 音视频处理
+                    </div>
+                    <div :style="{color: translationTools.translator ? '#4ade80' : '#f87171'}">
+                        {{ translationTools.translator ? '✅' : '❌' }} Google 翻译引擎
+                    </div>
+                </div>
+                <div v-if="translationTools.missing && translationTools.missing.length" style="margin-top:8px;font-size:12px;color:#f87171;">
+                    ⚠️ 缺少组件: {{ translationTools.missing.join(', ') }}
+                </div>
+                <div v-else-if="translationTools.ready" style="margin-top:8px;font-size:12px;color:#4ade80;">
+                    ✅ 所有工具就绪，可以开始翻译
+                </div>
+            </div>
+
+            <!-- 单个视频翻译 -->
+            <div class="add-source-form" style="margin-bottom:20px;">
+                <h4 style="margin:0 0 8px 0;">📄 单个视频翻译</h4>
+                <div style="display:flex;gap:8px;margin-bottom:8px;">
+                    <input v-model="translateVideoPath" placeholder="输入视频文件路径，如 D:\Videos\ABC-123.mp4" style="flex:1;padding:8px 12px;border:1px solid #333;border-radius:6px;background:#1a1a2e;color:#fff;" @keyup.enter="startTranslateVideo" />
+                    <button class="btn btn-secondary" @click="browseTranslateVideo">浏览</button>
+                </div>
+                <div style="display:flex;gap:8px;align-items:center;">
+                    <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#aaa;cursor:pointer;">
+                        <input type="checkbox" v-model="translateDoTranslate" style="width:16px;height:16px;" />
+                        翻译成中文
+                    </label>
+                    <button class="btn btn-primary" @click="startTranslateVideo" :disabled="!translateVideoPath || translateRunning">
+                        {{ translateRunning ? '处理中...' : '🎬 开始处理' }}
+                    </button>
+                </div>
+            </div>
+
+            <!-- 单个翻译结果 -->
+            <div v-if="translateResult" class="add-source-form" style="margin-bottom:20px;background:#1a1a2e;border-radius:8px;padding:16px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                    <h4 style="margin:0;font-size:14px;color:#4ade80;">✅ 翻译完成</h4>
+                    <button class="btn btn-sm btn-secondary" @click="translateResult = null">清除</button>
+                </div>
+                <div v-if="translateResult.original_text" style="margin-bottom:12px;">
+                    <div style="font-size:12px;color:#888;margin-bottom:4px;">【原始日语】</div>
+                    <div style="background:#0d0d1a;padding:10px;border-radius:4px;font-size:13px;max-height:150px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;">{{ translateResult.original_text }}</div>
+                </div>
+                <div v-if="translateResult.translated_text">
+                    <div style="font-size:12px;color:#888;margin-bottom:4px;">【中文翻译】</div>
+                    <div style="background:#0d0d1a;padding:10px;border-radius:4px;font-size:13px;max-height:150px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;color:#4ade80;">{{ translateResult.translated_text }}</div>
+                </div>
+                <div v-if="translateResult.segments && translateResult.segments.length" style="margin-top:12px;">
+                    <div style="font-size:12px;color:#888;margin-bottom:4px;">【逐段对照】</div>
+                    <div style="max-height:250px;overflow-y:auto;">
+                        <div v-for="(seg, idx) in translateResult.segments" :key="idx" style="background:#0d0d1a;padding:8px;margin-bottom:6px;border-radius:4px;font-size:12px;">
+                            <div style="color:#888;margin-bottom:4px;">[{{ formatTime(seg.start) }} -> {{ formatTime(seg.end) }}]</div>
+                            <div style="color:#e94560;">{{ seg.japanese || seg.text }}</div>
+                            <div v-if="seg.chinese" style="color:#4ade80;margin-top:4px;">翻译: {{ seg.chinese }}</div>
                         </div>
-                        <div class="organize-panel-body" ref="organizeLogEl">
-                            <div v-for="(log, idx) in organizePanel.logs" :key="idx" class="log-line" :class="log.type">
-                                {{ log.text }}
-                            </div>
-                            <div v-if="organizePanel.logs.length === 0" class="log-line info">正在连接服务器...</div>
+                    </div>
+                </div>
+                <div v-if="translateResult.error" style="color:#f87171;font-size:13px;margin-top:8px;">
+                    错误: {{ translateResult.error }}
+                </div>
+            </div>
+
+            <!-- 批量翻译 -->
+            <div class="add-source-form" style="margin-bottom:20px;">
+                <h4 style="margin:0 0 8px 0;">📚 批量翻译</h4>
+                <div style="display:flex;gap:8px;margin-bottom:8px;">
+                    <input v-model="batchTranslateInput" placeholder="输入多个视频路径，每行一个" style="flex:1;padding:8px 12px;border:1px solid #333;border-radius:6px;background:#1a1a2e;color:#fff;min-height:80px;" />
+                </div>
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                    <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#aaa;cursor:pointer;">
+                        <input type="checkbox" v-model="translateDoTranslate" style="width:16px;height:16px;" />
+                        翻译成中文
+                    </label>
+                    <button class="btn btn-primary" @click="startBatchTranslate" :disabled="!batchTranslateInput.trim() || batchTranslateRunning">
+                        {{ batchTranslateRunning ? '处理中...' : '🚀 开始批量处理' }}
+                    </button>
+                </div>
+            </div>
+
+            <!-- 批量翻译进度 -->
+            <div v-if="batchTranslateRunning || batchTranslateResults.length" class="add-source-form" style="background:#1a1a2e;border-radius:8px;padding:16px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                    <h4 style="margin:0;font-size:14px;">📊 批量处理进度</h4>
+                    <button v-if="batchTranslateRunning" class="btn btn-sm btn-danger" @click="stopBatchTranslate">停止</button>
+                </div>
+                <div v-if="batchTranslateRunning" style="margin-bottom:12px;">
+                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+                        <div class="spinner" style="width:14px;height:14px;"></div>
+                        <span style="color:#e94560;font-size:13px;">{{ batchTranslateStatus }}</span>
+                    </div>
+                    <div style="background:#333;border-radius:4px;height:6px;overflow:hidden;">
+                        <div style="background:#e94560;height:100%;transition:width 0.3s;" :style="{width: batchTranslateProgress + '%'}"></div>
+                    </div>
+                </div>
+                <div style="max-height:300px;overflow-y:auto;">
+                    <div v-for="(item, idx) in batchTranslateResults" :key="idx" style="background:#0d0d1a;padding:8px;margin-bottom:6px;border-radius:4px;font-size:12px;">
+                        <div style="display:flex;justify-content:space-between;color:#888;">
+                            <span>{{ item.video_path }}</span>
+                            <span :style="{color: item.success ? '#4ade80' : '#f87171'}">{{ item.success ? '✅' : '❌' }}</span>
                         </div>
-                        <div class="organize-panel-footer">
-                            <div class="progress-bar-wrap">
-                                <div class="progress-bar-fill" :style="{width: (organizePanel.pct || 0) + '%'}">
-                                    {{ organizePanel.pct || 0 }}%
-                                </div>
-                            </div>
-                            <div class="progress-pct">{{ organizePanel.pct || 0 }}%</div>
-                            <div style="font-size:12px;color:#666;">
-                                <span class="success">{{ organizePanel.stats.found }}</span> 找到 ·
-                                <span class="success">{{ organizePanel.stats.moved + organizePanel.stats.copied }}</span> 迁移 ·
-                                <span class="skipped">{{ organizePanel.stats.skipped }}</span> 跳过 ·
-                                <span class="fail">{{ organizePanel.stats.fail }}</span> 失败 ·
-                                <span class="info" v-if="organizePanel.stats.cleanup > 0">🗑 {{ organizePanel.stats.cleanup }} 清理</span>
-                            </div>
+                        <div v-if="item.success && item.original_length" style="color:#aaa;margin-top:4px;">
+                            原文: {{ item.original_length }} 字符
+                            <span v-if="item.translated_length" style="color:#4ade80;"> | 译文: {{ item.translated_length }} 字符</span>
                         </div>
+                        <div v-if="item.error" style="color:#f87171;margin-top:4px;">{{ item.error }}</div>
                     </div>
                 </div>
             </div>
@@ -2931,6 +3050,19 @@ createApp({
             loadMovies();
             loadSources();
             loadVideoStats();
+
+            // 恢复上次的整理配置
+            try {
+                const savedSources = localStorage.getItem('organizeSources');
+                if (savedSources) {
+                    const arr = JSON.parse(savedSources);
+                    organizeSources.value = arr;
+                }
+                const savedTarget = localStorage.getItem('organizeTargetRoot');
+                if (savedTarget) {
+                    organizeTargetRoot.value = savedTarget;
+                }
+            } catch (e) { /* 忽略解析错误 */ }
             loadJellyfinCount();
 
             document.addEventListener('keydown', (e) => {
@@ -3432,6 +3564,8 @@ createApp({
         };
 
         const parseOrganizeSSE = (text) => {
+            // SSE 格式是多行一组：event:\ndata:\n\n
+            // 必须按完整事件块解析，不能逐行处理
             const lines = text.split('\n');
             let event = 'message';
             let dataStr = '';
@@ -3444,13 +3578,49 @@ createApp({
             catch { return null; }
         };
 
+        // SSE 流读取：按 \n\n 分割事件块，正确处理多行 SSE 格式
+        const readSSEStream = async (res, onEvent, signal) => {
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            try {
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    // 按双换行分割完整事件块
+                    const blocks = buffer.split('\n\n');
+                    // 最后一块可能不完整，留在 buffer
+                    buffer = blocks.pop() || '';
+                    for (const block of blocks) {
+                        if (!block.trim()) continue;
+                        const msg = parseOrganizeSSE(block);
+                        if (msg) onEvent(msg);
+                    }
+                }
+                // 处理最后剩余内容
+                if (buffer.trim()) {
+                    const msg = parseOrganizeSSE(buffer);
+                    if (msg) onEvent(msg);
+                }
+            } finally {
+                reader.releaseLock();
+            }
+        };
+
         const organizePreview = async () => {
             if (!organizeSources.value.length || !organizeTargetRoot.value) return;
+
+            // 保存到 localStorage
+            localStorage.setItem('organizeSources', JSON.stringify(organizeSources.value));
+            localStorage.setItem('organizeTargetRoot', organizeTargetRoot.value);
+
             organizePanel.value.show = true;
             organizePanel.value.mode = 'preview';
             organizePanel.value.label = '';
             organizePanel.value.logs = [];
             organizePanel.value.pct = 0;
+            organizePanel.value.currentFile = '⏳ 正在连接服务器并扫描目录...';
             organizePanel.value.stats = { found: 0, moved: 0, copied: 0, skipped: 0, fail: 0, cleanup: 0 };
             organizeRunning.value = true;
 
@@ -3470,6 +3640,228 @@ createApp({
                 });
 
                 if (!res.ok) throw new Error(`服务器返回错误: ${res.status}`);
+
+                // 使用新的 SSE 流读取函数
+                await readSSEStream(res, (msg) => {
+                    if (msg.event === 'found') {
+                        organizePanel.value.stats.found++;
+                        organizePanel.value.pct = Math.min(98, organizePanel.value.pct + 1);
+                        organizePanel.value.currentFile = `[${organizePanel.value.stats.found}] ${msg.data.display_name || msg.data.code || '未知文件'}`;
+                        addOrganizeLog('scraping', `[${organizePanel.value.stats.found}] ${msg.data.display_name || msg.data.code || '未知文件'}`);
+                    }
+                    if (msg.event === 'summary') {
+                        organizePanel.value.pct = 100;
+                        organizePanel.value.currentFile = `✅ 预览完成，共 ${msg.data.total} 个文件`;
+                        addOrganizeLog('info', `预览完成，共找到 ${msg.data.total} 个文件`);
+                    }
+                    if (msg.event === 'error') {
+                        addOrganizeLog('error', `错误: ${msg.data.message || '未知错误'}`);
+                    }
+                    if (msg.event === 'scan_start') {
+                        addOrganizeLog('scraping', msg.data.message || '开始扫描文件...');
+                    }
+                }, controller.signal);
+            } catch (e) {
+                if (e.name !== 'AbortError') {
+                    addOrganizeLog('error', `预览失败: ${e.message}`);
+                }
+            } finally {
+                organizeAbortController.value = null;
+                organizeRunning.value = false;
+                // 不自动隐藏，等用户确认
+            }
+        };
+
+        const organizeExecute = async (mode) => {
+            if (!organizeSources.value.length || !organizeTargetRoot.value) return;
+            const label = mode === 'copy' ? '复制' : '移动';
+            if (!confirm(`确定以【${label}】模式整理文件到 ${organizeTargetRoot.value}？`)) return;
+
+            // 保存到 localStorage
+            localStorage.setItem('organizeSources', JSON.stringify(organizeSources.value));
+            localStorage.setItem('organizeTargetRoot', organizeTargetRoot.value);
+
+            organizePanel.value.show = true;
+            organizePanel.value.mode = 'execute';
+            organizePanel.value.label = label;
+            organizePanel.value.logs = [];
+            organizePanel.value.pct = 0;
+            organizePanel.value.currentFile = '⏳ 正在连接服务器并扫描目录...';
+            organizePanel.value.stats = { found: 0, moved: 0, copied: 0, skipped: 0, fail: 0, cleanup: 0 };
+            organizeRunning.value = true;
+
+            const controller = new AbortController();
+            organizeAbortController.value = controller;
+
+            try {
+                const res = await fetch(`${API}/organize/execute`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        source_paths: organizeSources.value,
+                        target_root: organizeTargetRoot.value,
+                        mode: mode,
+                    }),
+                    signal: controller.signal,
+                });
+
+                if (!res.ok) throw new Error(`服务器返回错误: ${res.status}`);
+
+                // 使用新的 SSE 流读取函数
+                await readSSEStream(res, (msg) => {
+                    if (msg.event === 'scan_start') {
+                        addOrganizeLog('scraping', msg.data.message || '开始扫描文件...');
+                        organizePanel.value.label = msg.data.message || '开始扫描...';
+                    }
+                    if (msg.event === 'found') {
+                        organizePanel.value.stats.found++;
+                        organizePanel.value.currentFile = `[${organizePanel.value.stats.found}] ${msg.data.display_name || msg.data.code || '未知文件'}`;
+                    }
+                    if (msg.event === 'item_progress' || msg.event === 'file_ready') {
+                        const name = msg.data.actor_name || '';
+                        const code = msg.data.code || '';
+                        organizePanel.value.label = name ? `${name} · ${code}` : code;
+                        organizePanel.value.pct = Math.max(organizePanel.value.pct, 1);
+                    }
+                    if (msg.event === 'copied') {
+                        organizePanel.value.stats.copied++;
+                        const dir = msg.data.target_dir ? msg.data.target_dir.split(/[/\\]/).pop() : '';
+                        organizePanel.value.currentFile = `✅ 已复制 → ${dir}`;
+                        addOrganizeLog('success', `${msg.data.code} → 已复制到 ${msg.data.target_dir}`);
+                    }
+                    if (msg.event === 'moved') {
+                        organizePanel.value.stats.moved++;
+                        const dir = msg.data.target_dir ? msg.data.target_dir.split(/[/\\]/).pop() : '';
+                        organizePanel.value.currentFile = `✂️ 已移动 → ${dir}`;
+                        addOrganizeLog('success', `${msg.data.code} → 已移动到 ${msg.data.target_dir}`);
+                    }
+                    if (msg.event === 'skipped') {
+                        organizePanel.value.stats.skipped++;
+                        const label = msg.data.code || (msg.data.source_path || '').split(/[/\\]/).pop() || '未知文件';
+                        addOrganizeLog('skipped', `${label} → 目标已存在，跳过`);
+                    }
+                    if (msg.event === 'error') {
+                        organizePanel.value.stats.fail++;
+                        const label = msg.data.code || (msg.data.source_path || '').split(/[/\\]/).pop() || '未知文件';
+                        addOrganizeLog('fail', `${label} → ${msg.data.reason || '失败'}`);
+                    }
+                    if (msg.event === 'cleaned') {
+                        organizePanel.value.stats.cleanup++;
+                        addOrganizeLog('cleanup', `已清理空文件夹: ${msg.data.folder_path}`);
+                    }
+                    if (msg.event === 'jellyfin_updated') {
+                        const inJf = msg.data.jellyfin_updated ? '(Jellyfin目录)' : '';
+                        addOrganizeLog('info', `Jellyfin记录已同步 ${inJf}: ${msg.data.code}`);
+                    }
+                    if (msg.event === 'scrape_list_updated') {
+                        addOrganizeLog('info', `刮削列表已清理: ${msg.data.code}`);
+                    }
+                    if (msg.event === 'done') {
+                        organizePanel.value.pct = 100;
+                        organizePanel.value.currentFile = '🎉 整理完成！';
+                        organizePanel.value.label = `完成: ${msg.data.success_count} 成功, ${msg.data.fail_count} 失败`;
+                        addOrganizeLog('info', `整理完成: ${msg.data.success_count} 成功, ${msg.data.fail_count} 失败`);
+                    }
+                }, controller.signal);
+            } catch (e) {
+                if (e.name !== 'AbortError') {
+                    addOrganizeLog('error', `执行失败: ${e.message}`);
+                }
+            } finally {
+                organizeAbortController.value = null;
+                organizeRunning.value = false;
+                // 不自动隐藏
+            }
+        };
+
+        const stopOrganize = async () => {
+            if (!organizeAbortController.value) return;
+            organizeAbortController.value.abort();
+            try { await fetch(`${API}/organize/stop`, { method: 'POST' }); } catch (e) { /* ignore */ }
+            organizeRunning.value = false;
+            addOrganizeLog('info', '已停止');
+        };
+
+        // ── 语音翻译功能 ───────────────────────────────────────────────────
+        const translationTools = ref(null);
+        const translateVideoPath = ref('');
+        const translateDoTranslate = ref(true);
+        const translateRunning = ref(false);
+        const translateResult = ref(null);
+        const batchTranslateInput = ref('');
+        const batchTranslateRunning = ref(false);
+        const batchTranslateProgress = ref(0);
+        const batchTranslateStatus = ref('');
+        const batchTranslateResults = ref([]);
+
+        const loadTranslationTools = async () => {
+            try {
+                const res = await fetch(`${API}/translate/check-tools`);
+                translationTools.value = await res.json();
+            } catch (e) {
+                console.error('检查翻译工具失败:', e);
+            }
+        };
+
+        const formatTime = (seconds) => {
+            if (!seconds && seconds !== 0) return '00:00:00';
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            const s = Math.floor(seconds % 60);
+            return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+        };
+
+        const browseTranslateVideo = () => {
+            const path = prompt('输入视频文件路径（如 D:\\Videos\\ABC-123.mp4）:');
+            if (path && path.trim()) {
+                translateVideoPath.value = path.trim();
+            }
+        };
+
+        const startTranslateVideo = async () => {
+            if (!translateVideoPath.value || translateRunning.value) return;
+
+            translateRunning.value = true;
+            translateResult.value = null;
+
+            try {
+                const res = await fetch(`${API}/translate/video`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        video_path: translateVideoPath.value,
+                        translate: translateDoTranslate.value
+                    })
+                });
+                translateResult.value = await res.json();
+            } catch (e) {
+                translateResult.value = { success: false, error: e.message };
+            } finally {
+                translateRunning.value = false;
+            }
+        };
+
+        const startBatchTranslate = async () => {
+            if (!batchTranslateInput.value.trim() || batchTranslateRunning.value) return;
+
+            const paths = batchTranslateInput.value.trim().split('\n').filter(p => p.trim());
+            if (!paths.length) return;
+
+            batchTranslateRunning.value = true;
+            batchTranslateProgress.value = 0;
+            batchTranslateStatus.value = `准备处理 ${paths.length} 个视频...`;
+            batchTranslateResults.value = [];
+
+            const controller = new AbortController();
+
+            try {
+                const res = await fetch(`${API}/translate/batch`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ video_paths: paths, translate: translateDoTranslate.value }),
+                    signal: controller.signal
+                });
+
                 const reader = res.body.getReader();
                 const decoder = new TextDecoder();
                 let buffer = '';
@@ -3478,145 +3870,50 @@ createApp({
                     const { done, value } = await reader.read();
                     if (done) break;
                     buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop() || '';
-                    for (const line of lines) {
-                        const msg = parseOrganizeSSE(line);
-                        if (!msg) continue;
-                        if (msg.event === 'found') {
-                            organizePanel.value.stats.found++;
-                            organizePanel.value.pct = Math.min(98, organizePanel.value.pct + 1);
-                            // 流式扫描：每个文件实时追加到详情预览框
-                            organizePanel.value.currentFile = `[${organizePanel.value.stats.found}] ${msg.data.display_name || msg.data.code || '未知文件'}`;
-                            addOrganizeLog('scraping', `[${organizePanel.value.stats.found}] ${msg.data.display_name || msg.data.code || '未知文件'}`);
+                    const blocks = buffer.split('\n\n');
+                    buffer = blocks.pop() || '';
+                    for (const block of blocks) {
+                        if (!block.trim()) continue;
+                        const lines = block.split('\n');
+                        let dataStr = '';
+                        for (const line of lines) {
+                            if (line.startsWith('data:')) dataStr = line.slice(5).trim();
                         }
-                        if (msg.event === 'summary') {
-                            organizePanel.value.pct = 100;
-                            addOrganizeLog('info', `预览完成，共找到 ${msg.data.total} 个文件`);
-                        }
-                        if (msg.event === 'error') {
-                            addOrganizeLog('error', `错误: ${msg.data.message || '未知错误'}`);
-                        }
-                        if (msg.event === 'scan_start') {
-                            addOrganizeLog('scraping', msg.data.message || '开始扫描文件...');
-                        }
+                        if (!dataStr) continue;
+                        try {
+                            const data = JSON.parse(dataStr);
+                            if (data.type === 'progress') {
+                                batchTranslateProgress.value = data.pct;
+                                batchTranslateStatus.value = data.status;
+                            } else if (data.type === 'result') {
+                                batchTranslateResults.value.push(data);
+                            } else if (data.type === 'complete') {
+                                batchTranslateRunning.value = false;
+                                batchTranslateStatus.value = `完成！共处理 ${data.total} 个视频`;
+                            } else if (data.type === 'error') {
+                                batchTranslateResults.value.push({ video_path: data.video_path, success: false, error: data.message });
+                            }
+                        } catch (e) { /* ignore parse errors */ }
                     }
                 }
             } catch (e) {
                 if (e.name !== 'AbortError') {
-                    addOrganizeLog('error', `预览失败: ${e.message}`);
+                    console.error('批量翻译失败:', e);
+                    batchTranslateStatus.value = '处理出错';
                 }
-            } finally {
-                organizeAbortController.value = null;
-                organizeRunning.value = false;
-                setTimeout(() => { organizePanel.value.show = false; }, 3000);
+                batchTranslateRunning.value = false;
             }
+
+            batchTranslateRunning.value = false;
         };
 
-        const organizeExecute = async (mode) => {
-    if (!organizeSources.value.length || !organizeTargetRoot.value) return;
-    const label = mode === 'copy' ? '复制' : '移动';
-    if (!confirm(`确定以【${label}】模式整理文件到 ${organizeTargetRoot.value}？`)) return;
+        const stopBatchTranslate = () => {
+            batchTranslateRunning.value = false;
+            batchTranslateStatus.value = '已停止';
+        };
 
-    organizePanel.value.show = true;
-    organizePanel.value.mode = 'execute';
-    organizePanel.value.label = label;
-    organizePanel.value.logs = [];
-    organizePanel.value.pct = 0;
-    organizePanel.value.stats = { found: 0, moved: 0, copied: 0, skipped: 0, fail: 0, cleanup: 0 };
-    organizeRunning.value = true;
-
-    const controller = new AbortController();
-    organizeAbortController.value = controller;
-
-    try {
-        const res = await fetch(`${API}/organize/execute`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                source_paths: organizeSources.value,
-                target_root: organizeTargetRoot.value,
-                mode: mode,
-            }),
-            signal: controller.signal,
-        });
-
-        if (!res.ok) throw new Error(`服务器返回错误: ${res.status}`);
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-            for (const line of lines) {
-                const msg = parseOrganizeSSE(line);
-                if (!msg) continue;
-                if (msg.event === 'scan_start') {
-                    addOrganizeLog('scraping', msg.data.message || '开始扫描文件...');
-                    organizePanel.value.label = msg.data.message || '开始扫描...';
-                }
-                if (msg.event === 'item_progress') {
-                    const name = msg.data.actor_name || '';
-                    const code = msg.data.code || '';
-                    organizePanel.value.label = name ? `${name} · ${code}` : code;
-                    organizePanel.value.pct = Math.max(organizePanel.value.pct, 1);
-                }
-                if (msg.event === 'copied') {
-                    organizePanel.value.stats.copied++;
-                    const dir = msg.data.target_dir ? msg.data.target_dir.split(/[/\\]/).pop() : '';
-                    organizePanel.value.currentFile = `✅ 已复制 → ${dir}`;
-                    addOrganizeLog('success', `${msg.data.code} → 已复制到 ${msg.data.target_dir}`);
-                }
-                if (msg.event === 'moved') {
-                    organizePanel.value.stats.moved++;
-                    const dir = msg.data.target_dir ? msg.data.target_dir.split(/[/\\]/).pop() : '';
-                    organizePanel.value.currentFile = `✂️ 已移动 → ${dir}`;
-                    addOrganizeLog('success', `${msg.data.code} → 已移动到 ${msg.data.target_dir}`);
-                }
-                if (msg.event === 'skipped') {
-                    organizePanel.value.stats.skipped++;
-                    addOrganizeLog('skipped', `${msg.data.code} → 目标已存在，跳过`);
-                }
-                if (msg.event === 'error') {
-                    organizePanel.value.stats.fail++;
-                    addOrganizeLog('fail', `${msg.data.code} → ${msg.data.reason || '失败'}`);
-                }
-                if (msg.event === 'cleaned') {
-                    organizePanel.value.stats.cleanup++;
-                    addOrganizeLog('cleanup', `已清理空目录: ${msg.data.folder_path}`);
-                }
-                if (msg.event === 'done') {
-                    organizePanel.value.pct = 100;
-                    addOrganizeLog('info', msg.data.message || `${label}完成`);
-                    loadMovies();
-                }
-            }
-        }
-    } catch (e) {
-        if (e.name !== 'AbortError') {
-            addOrganizeLog('error', `${label}失败: ${e.message}`);
-        }
-    } finally {
-        organizeAbortController.value = null;
-        organizeRunning.value = false;
-        setTimeout(() => { organizePanel.value.show = false; }, 3000);
-    }
-};
-
-;
-
-        const stopOrganize = async () => {
-    if (!organizeAbortController.value) return;
-    organizeAbortController.value.abort();
-    try { await fetch(`${API}/organize/stop`, { method: 'POST' }); } catch (e) { /* ignore */ }
-    organizeRunning.value = false;
-    addOrganizeLog('info', '已停止');
-};
-;
+        // 初始化时加载翻译工具状态
+        loadTranslationTools();
 
         // Tab 切换
         const switchTab = (tab) => {
@@ -3640,6 +3937,8 @@ createApp({
             organizeErrorCount, organizeProgressPct, organizeStatusText, currentOrganizeItem,
             addOrganizeSource, removeOrganizeSource, browseOrganizeTarget,
             organizePreview, organizeExecute, stopOrganize,
+            organizePanel, organizeLogEl, addOrganizeLog, organizeAbortController,
+
             // Movies
             movies, total, currentPage, pageSize, loading, searchKeyword, scrapeKeyword, scraping, selectedMovie,
             showDetail, scrapeCheckResult,
@@ -3681,7 +3980,13 @@ createApp({
             onCategoryKeywordChange, categoryPrevPage, categoryNextPage, categoryGoToPage,
             openCategoryDetail, closeCategoryDetail,
             categoryDetailPrevPage, categoryDetailNextPage, categoryDetailGoToPage,
-            openCategoryActorPage, getActorAvatarUrl, downloadAllAvatars
+            openCategoryActorPage, getActorAvatarUrl, downloadAllAvatars,
+
+            // Translation
+            translationTools, translateVideoPath, translateDoTranslate, translateRunning,
+            translateResult, batchTranslateInput, batchTranslateRunning, batchTranslateProgress,
+            batchTranslateStatus, batchTranslateResults,
+            formatTime, browseTranslateVideo, startTranslateVideo, startBatchTranslate, stopBatchTranslate
         };
     }
 }).mount('#app');
@@ -3690,5 +3995,7 @@ createApp({
   document.body.insertAdjacentHTML('beforeend', '<div style="color:#e94560;padding:40px;font-size:16px;font-family:monospace;background:#1a1a2e;min-height:100vh;">❌ Vue 初始化失败<br><pre style="color:#f88;">' + e.message + '</pre></div>');
 }
 </script>
+</div><!-- /#app -->
 </body>
 </html>
+

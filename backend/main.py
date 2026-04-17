@@ -35,6 +35,14 @@ from models import (
 from pydantic import BaseModel, Field
 import database as db
 import config as cfg
+import os
+
+try:
+    from translator import JapaneseVideoTranslator, WHISPER_AVAILABLE, TRANSLATOR_AVAILABLE
+except ImportError:
+    JapaneseVideoTranslator = None
+    WHISPER_AVAILABLE = False
+    TRANSLATOR_AVAILABLE = False
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -304,21 +312,32 @@ async def startup_event():
     # ① 同步 is_jellyfin 标识（防止数据库层面的来源不一致）
     try:
         sync_result = db.sync_local_videos_is_jellyfin()
-        if sync_result.get('lv_is_jellyfin_synced', 0) > 0 or \
-           sync_result.get('case_a_fixed', 0) > 0 or \
-           sync_result.get('case_b_fixed', 0) > 0:
+        # 修复：只打印有实际修复的情况；0 表示已同步，无需提示
+        has_actual_fix = (
+            sync_result.get('lv_is_jellyfin_synced', 0) > 0 or
+            sync_result.get('case_a_fixed', 0) > 0 or
+            sync_result.get('case_b_fixed', 0) > 0
+        )
+        if has_actual_fix:
             print(f"[DataSync] is_jellyfin 同步: "
                   f"lv更新={sync_result.get('lv_is_jellyfin_synced', 0)} "
                   f"CaseA修复={sync_result.get('case_a_fixed', 0)} "
                   f"CaseB修复={sync_result.get('case_b_fixed', 0)}")
+        else:
+            print("[DataSync] is_jellyfin 数据已同步")
     except Exception as e:
         print(f"[DataSync] 启动时同步 is_jellyfin 失败: {e}")
 
     # ② 修复 is_jellyfin IS NULL 的孤立记录
     try:
         fix_result = db.fix_is_jellyfin_null_records()
-        if fix_result.get('fixed', 0) > 0 or fix_result.get('remaining_null', 0) > 0:
+        # 只在有修复或仍有残留时打印
+        if fix_result.get('fixed', 0) > 0:
             print(f"[DataSync] is_jellyfin=NULL: {fix_result['message']}")
+        elif fix_result.get('remaining_null', 0) > 0:
+            print(f"[DataSync] is_jellyfin=NULL: {fix_result['message']}")
+        else:
+            print("[DataSync] is_jellyfin=NULL 无孤立记录")
     except Exception as e:
         print(f"[DataSync] 启动时修复孤立记录失败: {e}")
 
@@ -3113,12 +3132,144 @@ async def mark_directory_as_jellyfin(request: Request):
     """标记本地目录为 Jellyfin 格式"""
     body = await request.json()
     directory = body.get("directory")
-    
+
     if not directory:
         return {"success": False, "error": "目录路径不能为空"}
-    
+
     success = db.mark_source_as_jellyfin(directory)
     return {"success": success}
+
+
+# ===============================================================================
+# 日语语音翻译 API - 从视频中提取日语语音并翻译成中文
+# ===============================================================================
+
+@app.post("/translate/video", tags=["语音翻译"])
+async def translate_video(request: Request):
+    """
+    处理视频文件，提取日语语音并翻译成中文
+
+    请求体: { "video_path": "Z:\\视频\\movie.mp4", "translate": true }
+    """
+    body = await request.json()
+    video_path = body.get("video_path")
+    do_translate = body.get("translate", True)
+
+    if not video_path:
+        raise HTTPException(status_code=400, detail="视频路径不能为空")
+
+    if not os.path.isfile(video_path):
+        raise HTTPException(status_code=404, detail=f"视频文件不存在: {video_path}")
+
+    def run_translation():
+        try:
+            translator = JapaneseVideoTranslator(model_size="base")
+            result = translator.process_video(video_path, translate=do_translate)
+            return result
+        except Exception as e:
+            logger.error(f"[translate_video] 翻译失败: {str(e)}", exc_info=True)
+            return {
+                "success": False,
+                "video_path": video_path,
+                "original_text": "",
+                "translated_text": "",
+                "segments": [],
+                "error": str(e)
+            }
+
+    result = await asyncio.to_thread(run_translation)
+    return result
+
+
+@app.post("/translate/batch", tags=["语音翻译"])
+async def translate_batch(request: Request):
+    """
+    批量处理多个视频文件（SSE 实时进度）
+
+    请求体: { "video_paths": ["Z:\\视频\\1.mp4", "Z:\\视频\\2.mp4"], "translate": true }
+    """
+    body = await request.json()
+    video_paths = body.get("video_paths", [])
+    do_translate = body.get("translate", True)
+
+    if not video_paths:
+        raise HTTPException(status_code=400, detail="视频路径列表不能为空")
+
+    async def generate():
+        total = len(video_paths)
+        translator = JapaneseVideoTranslator(model_size="base")
+
+        for i, video_path in enumerate(video_paths):
+            yield _send_sse({
+                "type": "progress",
+                "current": i + 1,
+                "total": total,
+                "video_path": video_path,
+                "pct": int((i + 1) / total * 100),
+                "status": f"正在处理 {i+1}/{total}..."
+            })
+
+            try:
+                if not os.path.isfile(video_path):
+                    yield _send_sse({
+                        "type": "error",
+                        "video_path": video_path,
+                        "message": "文件不存在"
+                    })
+                    continue
+
+                result = translator.process_video(video_path, translate=do_translate)
+                yield _send_sse({
+                    "type": "result",
+                    "video_path": video_path,
+                    "success": result['success'],
+                    "original_length": len(result.get('original_text', '')),
+                    "translated_length": len(result.get('translated_text', '')),
+                    "error": result.get('error')
+                })
+            except Exception as e:
+                logger.error(f"[translate_batch] 处理失败 {video_path}: {str(e)}")
+                yield _send_sse({
+                    "type": "error",
+                    "video_path": video_path,
+                    "message": str(e)
+                })
+
+        yield _send_sse({
+            "type": "complete",
+            "total": total
+        })
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@app.get("/translate/check-tools", tags=["语音翻译"])
+async def check_translation_tools():
+    """
+    检查翻译工具的可用性
+
+    返回: { "whisper": true, "ffmpeg": true, "translator": true }
+    """
+    import shutil
+
+    result = {
+        "whisper": WHISPER_AVAILABLE,
+        "ffmpeg": shutil.which("ffmpeg") is not None,
+        "translator": TRANSLATOR_AVAILABLE
+    }
+
+    missing = []
+    if not result["whisper"]:
+        missing.append("openai-whisper")
+    if not result["ffmpeg"]:
+        missing.append("ffmpeg")
+    if not result["translator"]:
+        missing.append("deep-translator")
+
+    result["ready"] = len(missing) == 0
+    result["missing"] = missing
+
+    return result
 
 
 @app.get("/local-image", tags=["本地文件"])

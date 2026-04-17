@@ -1148,6 +1148,8 @@ def sync_local_videos_is_jellyfin():
     cursor = conn.cursor()
 
     # Step 1: 同步 local_videos.is_jellyfin
+    # 正确做法：JOIN local_sources，只更新值真正不同的行（SQLite 3.21 兼容写法）
+    # 避免 IS NOT (subquery) 在找不到匹配行时把孤立记录也纳入更新（rowcount 虚高到 401）
     cursor.execute("""
         UPDATE local_videos
         SET is_jellyfin = (
@@ -1156,12 +1158,19 @@ def sync_local_videos_is_jellyfin():
             WHERE ls.id = local_videos.source_id
         )
         WHERE source_id IS NOT NULL
+          AND source_id IN (SELECT id FROM local_sources)
+          AND COALESCE(is_jellyfin, -1) != (
+              SELECT COALESCE(ls.is_jellyfin, 0)
+              FROM local_sources ls
+              WHERE ls.id = local_videos.source_id
+          )
     """)
     lv_updated = cursor.rowcount
 
     # Step 2: Case B 修复 - is_jellyfin=0 但 source_type='jellyfin' 的影片
-    #         这些是错误标记（来自非 Jellyfin 目录），强制改回 web
-    #         使用显式 JOIN movies m2 确保 subquery 正确引用
+    # 关键修复：排除同时在 Jellyfin 目录中存在的电影（双目录情形）
+    # 如果一部电影同时存在于 Jellyfin 目录（is_jellyfin=1）和普通目录（is_jellyfin=0），
+    # source_type 应保持 'jellyfin'，CaseB 不应覆盖 CaseA 的结果。
     cursor.execute("""
         UPDATE movies
         SET source_type = 'web'
@@ -1169,18 +1178,25 @@ def sync_local_videos_is_jellyfin():
             SELECT lv.movie_id
             FROM local_videos lv
             JOIN local_sources ls ON lv.source_id = ls.id
-            JOIN movies m2 ON lv.movie_id = m2.id
             WHERE ls.is_jellyfin = 0
+              AND lv.is_jellyfin = 0
               AND lv.movie_id IS NOT NULL
-              AND m2.source_type = 'jellyfin'
         )
         AND source_type = 'jellyfin'
+        AND id NOT IN (
+            -- 排除同时在 Jellyfin 目录里存在记录的电影
+            SELECT DISTINCT lv2.movie_id
+            FROM local_videos lv2
+            JOIN local_sources ls2 ON lv2.source_id = ls2.id
+            WHERE ls2.is_jellyfin = 1
+              AND lv2.is_jellyfin = 1
+              AND lv2.movie_id IS NOT NULL
+        )
     """)
     case_b_fixed = cursor.rowcount
 
     # Step 3: Case A 修复 - is_jellyfin=1 但 source_type='web' 的影片
-    #         这些是被批量刮削污染的 Jellyfin 影片，改为 jellyfin（保护来源）
-    #         注意：只改 source_type，不改 scrape_status（由 jellyfin_status 单独跟踪）
+    # 修复：移除 subquery 中对外层 movies 表的引用（SQLite 不支持该语法，会导致全表扫描）
     cursor.execute("""
         UPDATE movies
         SET source_type = 'jellyfin'
@@ -1189,9 +1205,8 @@ def sync_local_videos_is_jellyfin():
             FROM local_videos lv
             JOIN local_sources ls ON lv.source_id = ls.id
             WHERE ls.is_jellyfin = 1
+              AND lv.is_jellyfin = 1
               AND lv.movie_id IS NOT NULL
-              AND movies.source_type = 'web'
-              AND movies.id = lv.movie_id
         )
         AND source_type = 'web'
     """)
@@ -2599,6 +2614,31 @@ def sync_local_video_after_organize(
     conn.commit()
     conn.close()
     return vid_id
+
+
+def get_organized_movies_without_info() -> list:
+    """
+    获取已整理但缺少刮削信息的电影（organized_path 非空，但 title/actors 为空）
+    用于批量刮削这些迁移后丢失信息的电影
+    """
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, code, title, title_jp, actors, organized_path
+        FROM movies
+        WHERE organized_path IS NOT NULL 
+          AND organized_path != ''
+          AND (title IS NULL OR title = ''
+               OR title_jp IS NULL OR title_jp = ''
+               OR actors IS NULL OR actors = '[]' OR actors = '')
+        ORDER BY id DESC
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    
+    if rows:
+        return [dict(row) for row in rows]
+    return []
 
 
 def get_movies_by_codes(codes: list) -> dict:
