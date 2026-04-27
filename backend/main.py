@@ -47,6 +47,14 @@ except ImportError:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# 文件日志：只记录 ERROR 和 WARNING 级别，避免冗余
+_LOG_FILE = Path(__file__).parent.parent / "logs" / "mymoviedb.log"
+_LOG_FILE.parent.mkdir(exist_ok=True)
+_file_handler = logging.FileHandler(_LOG_FILE, encoding="utf-8")
+_file_handler.setLevel(logging.WARNING)
+_file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+logging.getLogger().addHandler(_file_handler)
+
 # ============================================================
 # AV 番号识别配置
 # 参考来源: JavSP (https://github.com/Yuukiy/JavSP)
@@ -590,6 +598,340 @@ async def delete_user(user_id: int, token: str = Query(None)):
     conn.close()
 
     return ApiSuccess(success=True, message="删除成功")
+
+
+# ========== 数据工具 API ==========
+
+def _audit_database() -> dict:
+    """审计数据库健康度"""
+    conn = db.get_db()
+    cursor = conn.cursor()
+    results = {
+        "total_movies": 0, "total_videos": 0,
+        "complete": 0, "scraped_only": 0, "orphan": 0, "stale": 0,
+        "missing_cover": 0, "actors_without_avatar": 0,
+    }
+    cursor.execute("SELECT COUNT(*) FROM movies")
+    results["total_movies"] = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM local_videos")
+    results["total_videos"] = cursor.fetchone()[0]
+    cursor.execute("""
+        SELECT id, code, title, actors, cover_url, local_cover_path,
+               poster_path, fanart_path, thumb_path,
+               (SELECT COUNT(*) FROM local_videos WHERE movie_id = movies.id) as video_count
+        FROM movies
+    """)
+    movies = cursor.fetchall()
+    cursor.execute("SELECT DISTINCT movie_id FROM local_videos WHERE movie_id IS NOT NULL")
+    movies_with_videos = set(row[0] for row in cursor.fetchall())
+    cursor.execute("SELECT actors FROM movies WHERE actors IS NOT NULL AND actors != ''")
+    all_actors = set()
+    for row in cursor.fetchall():
+        if row[0]:
+            for actor in row[0].split(","):
+                actor = actor.strip()
+                if actor:
+                    all_actors.add(actor)
+    avatar_dir = db.DATABASE_PATH.parent / "avatars"
+    actors_with_avatar = set()
+    if avatar_dir.exists():
+        for f in avatar_dir.iterdir():
+            if f.is_file():
+                actors_with_avatar.add(f.stem)
+    results["actors_without_avatar"] = len(all_actors - actors_with_avatar)
+    for movie in movies:
+        movie_id, code, title, actors = movie[0], movie[1], movie[2], movie[3]
+        local_cover_path, cover_url = movie[5], movie[4]
+        video_count = movie[9]
+        has_actors = bool(actors and actors.strip())
+        has_title = bool(title and title.strip())
+        if video_count > 0:
+            results["complete" if (has_actors and has_title) else "stale"] += 1
+        else:
+            results["scraped_only" if (has_actors or has_title) else "orphan"] += 1
+        if not local_cover_path and not cover_url:
+            results["missing_cover"] += 1
+    conn.close()
+    total = results["total_movies"]
+    if total > 0:
+        for key in ["complete", "scraped_only", "orphan", "stale"]:
+            results[f"{key}_pct"] = round(results[key] / total * 100, 1)
+    return results
+
+
+@app.get("/api/admin/audit")
+async def admin_audit():
+    """数据库健康度审计"""
+    return _audit_database()
+
+
+@app.get("/api/admin/check")
+async def admin_check(type: str = Query(...)):
+    """数据质量检查"""
+    conn = db.get_db()
+    cursor = conn.cursor()
+    result = {}
+    if type == "orphans":
+        cursor.execute("""
+            SELECT id, code, title, actors, created_at FROM movies
+            WHERE (SELECT COUNT(*) FROM local_videos WHERE movie_id = movies.id) = 0
+            AND (actors IS NULL OR actors = '') AND (title IS NULL OR title = '')
+        """)
+        result["orphans"] = [dict(zip(['id','code','title','actors','created_at'], row)) for row in cursor.fetchall()]
+    elif type == "duplicates":
+        cursor.execute("""
+            SELECT code, COUNT(*) as cnt, GROUP_CONCAT(id) as ids FROM movies
+            WHERE code IS NOT NULL AND code != '' GROUP BY code HAVING cnt > 1
+        """)
+        result["duplicates"] = [{"code": r[0], "count": r[1], "ids": r[2].split(",")} for r in cursor.fetchall()]
+    elif type == "missing_videos":
+        cursor.execute("""
+            SELECT id, code, title, actors FROM movies
+            WHERE (SELECT COUNT(*) FROM local_videos WHERE movie_id = movies.id) = 0
+            AND actors IS NOT NULL AND actors != ''
+        """)
+        result["missing_videos"] = [dict(zip(['id','code','title','actors'], row)) for row in cursor.fetchall()]
+    elif type == "missing_covers":
+        cursor.execute("""
+            SELECT DISTINCT m.id, m.code, m.title FROM movies m
+            INNER JOIN local_videos lv ON lv.movie_id = m.id
+            WHERE (m.local_cover_path IS NULL OR m.local_cover_path = '')
+            AND (m.cover_url IS NULL OR m.cover_url = '')
+        """)
+        result["missing_covers"] = [dict(zip(['id','code','title'], row)) for row in cursor.fetchall()]
+    elif type == "invalid_codes":
+        cursor.execute("SELECT id, code, title FROM movies WHERE code IS NOT NULL")
+        invalid = []
+        for row in cursor.fetchall():
+            code = row[1] or ""
+            if " " in code or any(c in code for c in ['(', ')', '[', ']', '（', '）']):
+                invalid.append({"id": row[0], "code": row[1], "title": row[2]})
+        result["invalid_codes"] = invalid
+    elif type == "video_path_status":
+        import shutil
+        cursor.execute("""
+            SELECT lv.id, lv.movie_id, lv.path, lv.name, lv.extension,
+                   m.code, m.title, m.actors, m.organized_path
+            FROM local_videos lv
+            LEFT JOIN movies m ON lv.movie_id = m.id
+        """)
+        videos = cursor.fetchall()
+        cursor.execute("SELECT path FROM local_sources WHERE is_jellyfin = 1")
+        jellyfin_sources = [str(r[0]).replace("\\", "/").rstrip("/") for r in cursor.fetchall() if r[0]]
+        valid, missing, jellyfin_moved = [], [], []
+        for video in videos:
+            video_id, movie_id, path, name = video[0], video[1], video[2], video[3]
+            extension = video[4]
+            code, title, actors, organized_path = video[5], video[6], video[7], video[8]
+            path_str = str(path) if path else ""
+            if path_str and Path(path_str).exists():
+                valid.append({"video_id": video_id, "movie_id": movie_id, "code": code, "title": title, "path": path_str})
+            elif path_str:
+                found = False
+                if code and jellyfin_sources:
+                    for jf_src in jellyfin_sources:
+                        jf_path = Path(jf_src)
+                        if jf_path.exists():
+                            possible = [jf_path / "jellyfin" / (actors or "未知演员") / code / f"{code}{extension}"]
+                            for p in possible:
+                                if p.exists():
+                                    jellyfin_moved.append({"video_id": video_id, "movie_id": movie_id, "code": code, "title": title, "actors": actors, "old_path": path_str, "new_path": str(p)})
+                                    found = True
+                                    break
+                if not found:
+                    missing.append({"video_id": video_id, "movie_id": movie_id, "code": code, "title": title, "actors": actors, "old_path": path_str, "organized_path": organized_path})
+        result["video_path_status"] = {"valid": valid[:50], "missing": missing[:50], "jellyfin_moved": jellyfin_moved[:50]}
+    conn.close()
+    return result
+
+
+@app.get("/api/admin/video-path-status")
+async def admin_video_path_status():
+    """检查 local_videos 表中视频路径的有效性"""
+    import shutil
+    conn = db.get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT lv.id, lv.movie_id, lv.path, lv.name, lv.extension,
+               m.code, m.title, m.actors, m.organized_path
+        FROM local_videos lv
+        LEFT JOIN movies m ON lv.movie_id = m.id
+    """)
+    videos = cursor.fetchall()
+    cursor.execute("SELECT path FROM local_sources WHERE is_jellyfin = 1")
+    jellyfin_sources = [str(r[0]).replace("\\", "/").rstrip("/") for r in cursor.fetchall() if r[0]]
+    conn.close()
+
+    valid, missing, jellyfin_moved = [], [], []
+    for video in videos:
+        video_id, movie_id, path, name = video[0], video[1], video[2], video[3]
+        extension = video[4]
+        code, title, actors, organized_path = video[5], video[6], video[7], video[8]
+        path_str = str(path) if path else ""
+
+        if path_str and Path(path_str).exists():
+            valid.append({"video_id": video_id, "movie_id": movie_id, "code": code, "title": title, "path": path_str})
+        elif path_str:
+            found = False
+            if code and jellyfin_sources:
+                for jf_src in jellyfin_sources:
+                    jf_path = Path(jf_src)
+                    if jf_path.exists():
+                        possible = [
+                            jf_path / "jellyfin" / (actors or "未知演员") / code / f"{code}{extension}",
+                        ]
+                        for p in possible:
+                            if p.exists():
+                                jellyfin_moved.append({
+                                    "video_id": video_id, "movie_id": movie_id, "code": code,
+                                    "title": title, "actors": actors, "old_path": path_str, "new_path": str(p)
+                                })
+                                found = True
+                                break
+            if not found:
+                missing.append({
+                    "video_id": video_id, "movie_id": movie_id, "code": code,
+                    "title": title, "actors": actors, "old_path": path_str,
+                    "organized_path": organized_path
+                })
+
+    return {"valid_count": len(valid), "missing_count": len(missing), "jellyfin_moved_count": len(jellyfin_moved),
+            "missing": missing[:50], "jellyfin_moved": jellyfin_moved[:50]}
+
+
+@app.get("/api/admin/no-video-movies")
+async def admin_no_video_movies():
+    """查找无视频的影片（分孤儿和待整理）"""
+    conn = db.get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, code, title, title_cn, actors, release_date, created_at
+        FROM movies
+        WHERE (SELECT COUNT(*) FROM local_videos WHERE movie_id = movies.id) = 0
+        ORDER BY created_at DESC
+    """)
+    scraped_only = []
+    orphan = []
+    for row in cursor.fetchall():
+        item = dict(zip(['id','code','title','title_cn','actors','release_date','created_at'], row))
+        has_info = bool((item.get('title') and item['title'].strip()) or
+                        (item.get('title_cn') and item['title_cn'].strip()) or
+                        (item.get('actors') and item['actors'].strip()))
+        if has_info:
+            scraped_only.append(item)
+        else:
+            orphan.append(item)
+    conn.close()
+    return {"scraped_only": scraped_only, "orphan": orphan}
+
+
+@app.get("/api/admin/cleanup")
+async def admin_cleanup_preview(mode: str = Query("preview")):
+    """预览或执行孤儿记录清理"""
+    conn = db.get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, code, title, actors FROM movies
+        WHERE (SELECT COUNT(*) FROM local_videos WHERE movie_id = movies.id) = 0
+        AND (actors IS NULL OR actors = '') AND (title IS NULL OR title = '')
+    """)
+    orphans = [{"id": r[0], "code": r[1], "title": r[2]} for r in cursor.fetchall()]
+    conn.close()
+    if mode == "preview":
+        return {"dry_run": True, "count": len(orphans), "ids": [o["id"] for o in orphans]}
+    # execute
+    if not orphans:
+        return {"dry_run": False, "deleted": 0}
+    conn = db.get_db()
+    cursor = conn.cursor()
+    ids = [o["id"] for o in orphans]
+    placeholders = ",".join("?" * len(ids))
+    cursor.execute(f"DELETE FROM movies WHERE id IN ({placeholders})", ids)
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return {"dry_run": False, "deleted": deleted}
+
+
+@app.post("/api/admin/fix-codes")
+async def admin_fix_codes():
+    """修复番号格式（去除空格和特殊字符）"""
+    conn = db.get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, code FROM movies WHERE code IS NOT NULL")
+    updated = 0
+    for row in cursor.fetchall():
+        code_id, code = row[0], row[1]
+        if code and (" " in code or any(c in code for c in ['(', ')', '[', ']', '（', '）'])):
+            new_code = re.sub(r'[\s()（）\[\]]+', '', code)
+            cursor.execute("UPDATE movies SET code = ? WHERE id = ?", (new_code, code_id))
+            updated += 1
+    conn.commit()
+    conn.close()
+    return {"updated": updated}
+
+
+@app.get("/api/admin/export-missing-videos")
+async def admin_export_missing_videos():
+    """导出有刮削但无视频的记录"""
+    conn = db.get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, code, title, title_cn, actors, release_date, created_at
+        FROM movies
+        WHERE (SELECT COUNT(*) FROM local_videos WHERE movie_id = movies.id) = 0
+        AND (actors IS NOT NULL AND actors != '')
+        ORDER BY created_at DESC
+    """)
+    result = [dict(zip(['id','code','title','title_cn','actors','release_date','created_at'], row)) for row in cursor.fetchall()]
+    conn.close()
+    return result
+
+
+class SqlRequest(BaseModel):
+    query: str
+
+
+@app.post("/api/admin/sql")
+async def admin_sql(req: SqlRequest):
+    """执行只读 SQL 查询"""
+    q = req.query.strip().upper()
+    if not q.startswith("SELECT"):
+        return {"error": "只支持 SELECT 查询"}
+    try:
+        conn = db.get_db()
+        cursor = conn.cursor()
+        cursor.execute(req.query)
+        columns = [d[0] for d in cursor.description] if cursor.description else []
+        rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        conn.close()
+        return {"columns": columns, "rows": rows}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/admin/logs")
+async def get_logs(lines: int = Query(50, ge=10, le=500)):
+    """读取系统日志（仅 ERROR/WARNING）"""
+    log_path = Path(__file__).parent.parent / "logs" / "mymoviedb.log"
+    if not log_path.exists():
+        return {"logs": [], "total": 0}
+    try:
+        with open(log_path, "r", encoding="utf-8") as f:
+            all_lines = f.readlines()
+        recent = all_lines[-lines:] if len(all_lines) > lines else all_lines
+        return {"logs": [l.strip() for l in recent if l.strip()], "total": len(all_lines)}
+    except Exception as e:
+        return {"logs": [], "total": 0, "error": str(e)}
+
+
+@app.post("/api/admin/logs/clear")
+async def clear_logs():
+    """清空日志文件"""
+    log_path = Path(__file__).parent.parent / "logs" / "mymoviedb.log"
+    if log_path.exists():
+        log_path.write_text("", encoding="utf-8")
+    return {"success": True, "message": "日志已清空"}
 
 
 # ========== 前端页面路由 ==========

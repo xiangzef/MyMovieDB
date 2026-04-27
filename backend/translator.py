@@ -2,16 +2,15 @@
 ================================================================================
 日语语音提取翻译模块 - 从视频中提取日语语音并翻译成中文
 ================================================================================
-文件路径: F:\github\MyMovieDB\backend\translator.py
+文件路径: F:\\github\\MyMovieDB\\backend\\translator.py
 功能说明:
     1. 从视频文件中提取音频
-    2. 使用 Whisper AI 进行日语语音识别
+    2. 使用 Faster-Whisper 进行日语语音识别
     3. 使用 deep-translator 翻译日文到中文
 依赖库:
-    - whisper: OpenAI 的 Whisper 语音识别模型
-    - moviepy: 视频音频提取 (可选，如果 ffprobe/ffmpeg 可用则不需要)
-    - deep-translator: 谷歌翻译 API
-    - subprocess: 调用系统 ffmpeg
+    - faster-whisper: CTranslate2 优化的 Whisper（推荐，比原版快4倍）
+    - deep-translator: 翻译引擎（Google/DeepL）
+    - ffmpeg: 音频提取
 ================================================================================
 """
 
@@ -25,19 +24,31 @@ import re
 
 logger = logging.getLogger(__name__)
 
+# 优先使用 faster-whisper（已安装），回退到 openai-whisper
+WHISPER_AVAILABLE = False
+FASTER_WHISPER_AVAILABLE = False
+
 try:
-    import whisper
+    from faster_whisper import WhisperModel
+    FASTER_WHISPER_AVAILABLE = True
     WHISPER_AVAILABLE = True
+    logger.info("使用 Faster-Whisper (CTranslate2 优化版)")
 except ImportError:
-    WHISPER_AVAILABLE = False
-    logger.warning("Whisper 未安装，语音识别功能不可用。请运行: pip install openai-whisper")
+    try:
+        import whisper
+        WHISPER_AVAILABLE = True
+        FASTER_WHISPER_AVAILABLE = False
+        logger.info("使用 OpenAI Whisper (原版)")
+    except ImportError:
+        WHISPER_AVAILABLE = False
+        logger.warning("Whisper 未安装，语音识别功能不可用")
 
 try:
     from deep_translator import GoogleTranslator
     TRANSLATOR_AVAILABLE = True
 except ImportError:
     TRANSLATOR_AVAILABLE = False
-    logger.warning("deep-translator 未安装，翻译功能不可用。请运行: pip install deep-translator")
+    logger.warning("deep-translator 未安装，翻译功能不可用")
 
 
 class JapaneseVideoTranslator:
@@ -54,21 +65,32 @@ class JapaneseVideoTranslator:
         self.model_size = model_size
         self.model = None
         self.translator = None
+        self.use_faster = FASTER_WHISPER_AVAILABLE
 
     def _load_whisper_model(self):
         """加载 Whisper 模型（延迟加载）"""
         if not WHISPER_AVAILABLE:
-            raise RuntimeError("Whisper 未安装，请运行: pip install openai-whisper")
+            raise RuntimeError("Whisper 未安装，请运行: py -3.14 -m pip install faster-whisper")
 
         if self.model is None:
             logger.info(f"正在加载 Whisper {self.model_size} 模型...")
-            self.model = whisper.load_model(self.model_size)
+            if self.use_faster:
+                # Faster-Whisper: 使用 CPU int8 量化，速度快内存占用低
+                self.model = WhisperModel(
+                    self.model_size,
+                    device="cpu",
+                    compute_type="int8"
+                )
+            else:
+                # 原版 Whisper
+                import whisper
+                self.model = whisper.load_model(self.model_size)
             logger.info("Whisper 模型加载完成")
 
     def _load_translator(self):
         """加载翻译器（延迟加载）"""
         if not TRANSLATOR_AVAILABLE:
-            raise RuntimeError("deep-translator 未安装，请运行: pip install deep-translator")
+            raise RuntimeError("deep-translator 未安装，请运行: py -3.14 -m pip install deep-translator")
 
         if self.translator is None:
             self.translator = GoogleTranslator(source='ja', target='zh-CN')
@@ -91,7 +113,7 @@ class JapaneseVideoTranslator:
                 audio_path
             ]
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=300
+                cmd, capture_output=True, text=True, timeout=600
             )
             if result.returncode != 0:
                 logger.error(f"FFmpeg 音频提取失败: {result.stderr}")
@@ -105,27 +127,6 @@ class JapaneseVideoTranslator:
             return False
         except Exception as e:
             logger.error(f"音频提取失败: {str(e)}")
-            return False
-
-    def _extract_audio_with_moviepy(self, video_path: str, audio_path: str) -> bool:
-        """
-        使用 moviepy 从视频中提取音频（备选方案）
-
-        Args:
-            video_path: 视频文件路径
-            audio_path: 输出音频文件路径
-
-        Returns:
-            bool: 提取是否成功
-        """
-        try:
-            from moviepy.editor import VideoFileClip
-            video = VideoFileClip(video_path)
-            video.audio.write_audiofile(audio_path, fps=16000, codec='pcm_s16le')
-            video.close()
-            return True
-        except Exception as e:
-            logger.error(f"MoviePy 音频提取失败: {str(e)}")
             return False
 
     def transcribe_audio(self, audio_path: str, language: str = "ja") -> Dict:
@@ -142,19 +143,40 @@ class JapaneseVideoTranslator:
         self._load_whisper_model()
 
         logger.info(f"正在转录音频: {audio_path}")
-        result = self.model.transcribe(audio_path, language=language)
 
-        return {
-            'text': result['text'].strip(),
-            'segments': [
-                {
-                    'start': seg['start'],
-                    'end': seg['end'],
-                    'text': seg['text'].strip()
-                }
-                for seg in result.get('segments', [])
-            ]
-        }
+        if self.use_faster:
+            # Faster-Whisper API
+            segments, info = self.model.transcribe(
+                audio_path,
+                language=language,
+                beam_size=5,
+                vad_filter=True
+            )
+            segments_list = []
+            for seg in segments:
+                segments_list.append({
+                    'start': seg.start,
+                    'end': seg.end,
+                    'text': seg.text.strip()
+                })
+            return {
+                'text': ' '.join(s['text'] for s in segments_list),
+                'segments': segments_list
+            }
+        else:
+            # 原版 Whisper API
+            result = self.model.transcribe(audio_path, language=language)
+            return {
+                'text': result['text'].strip(),
+                'segments': [
+                    {
+                        'start': seg['start'],
+                        'end': seg['end'],
+                        'text': seg['text'].strip()
+                    }
+                    for seg in result.get('segments', [])
+                ]
+            }
 
     def translate_text(self, japanese_text: str) -> str:
         """
@@ -233,8 +255,6 @@ class JapaneseVideoTranslator:
             logger.info(f"开始处理视频: {video_path}")
 
             extract_success = self._extract_audio(video_path, audio_path)
-            if not extract_success:
-                extract_success = self._extract_audio_with_moviepy(video_path, audio_path)
 
             if not extract_success:
                 result['error'] = "音频提取失败，请确保已安装 ffmpeg"

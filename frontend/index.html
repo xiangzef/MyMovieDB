@@ -1092,6 +1092,9 @@
                         <button class="btn btn-sm btn-secondary" @click="scanJellyfinFolders" :disabled="scanning">
                             📂 检查目录结构
                         </button>
+                        <a href="tools.html" class="btn btn-sm" style="text-decoration:none;background:#16213e;color:#00d4ff;border:1px solid #00d4ff;">
+                            🔧 数据工具箱
+                        </a>
                     </div>
 
                     <!-- Jellyfin 校验结果 -->
@@ -1598,7 +1601,8 @@
                 <h4 style="margin:0 0 8px 0;">📄 单个视频翻译</h4>
                 <div style="display:flex;gap:8px;margin-bottom:8px;">
                     <input v-model="translateVideoPath" placeholder="输入视频文件路径，如 D:\Videos\ABC-123.mp4" style="flex:1;padding:8px 12px;border:1px solid #333;border-radius:6px;background:#1a1a2e;color:#fff;" @keyup.enter="startTranslateVideo" />
-                    <button class="btn btn-secondary" @click="browseTranslateVideo">浏览</button>
+                    <input type="file" ref="translateFileInput" accept="video/*,.mp4,.mkv,.avi,.mov" style="display:none;" @change="onTranslateFileSelected" />
+                    <button class="btn btn-secondary" @click="triggerTranslateFileBrowse">📁 浏览</button>
                 </div>
                 <div style="display:flex;gap:8px;align-items:center;">
                     <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#aaa;cursor:pointer;">
@@ -1608,6 +1612,12 @@
                     <button class="btn btn-primary" @click="startTranslateVideo" :disabled="!translateVideoPath || translateRunning">
                         {{ translateRunning ? '处理中...' : '🎬 开始处理' }}
                     </button>
+                </div>
+                <!-- 翻译进度日志 -->
+                <div v-if="translateProgress.length" style="margin-top:12px;background:#0a0a1a;border-radius:6px;padding:10px;max-height:180px;overflow-y:auto;font-size:12px;font-family:Consolas,monospace;">
+                    <div v-for="(line, idx) in translateProgress" :key="idx" :style="{color: line.color || '#aaa'}">
+                        <span style="color:#666;">[{{ line.time }}]</span> {{ line.msg }}
+                    </div>
                 </div>
             </div>
 
@@ -3788,6 +3798,8 @@ createApp({
         const translateDoTranslate = ref(true);
         const translateRunning = ref(false);
         const translateResult = ref(null);
+        const translateProgress = ref([]);
+        const translateFileInput = ref(null);
         const batchTranslateInput = ref('');
         const batchTranslateRunning = ref(false);
         const batchTranslateProgress = ref(0);
@@ -3812,32 +3824,59 @@ createApp({
         };
 
         const browseTranslateVideo = () => {
-            const path = prompt('输入视频文件路径（如 D:\\Videos\\ABC-123.mp4）:');
+            const path = prompt('输入视频文件路径（D:\\Videos\\ABC-123.mp4）:');
             if (path && path.trim()) {
                 translateVideoPath.value = path.trim();
+                addTranslateLog('已输入路径: ' + translateVideoPath.value, '#00d4ff');
+            }
+        };
+
+        const addTranslateLog = (msg, color = '#aaa') => {
+            const now = new Date();
+            const time = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}`;
+            translateProgress.value.push({ time, msg, color });
+            if (translateProgress.value.length > 100) translateProgress.value = translateProgress.value.slice(-100);
+        };
+
+        const triggerTranslateFileBrowse = () => translateFileInput.value?.click();
+
+        const onTranslateFileSelected = (e) => {
+            const file = e.target.files?.[0];
+            if (file) {
+                translateVideoPath.value = file.path || file.name;
+                addTranslateLog('已选择文件: ' + translateVideoPath.value, '#00d4ff');
             }
         };
 
         const startTranslateVideo = async () => {
             if (!translateVideoPath.value || translateRunning.value) return;
-
             translateRunning.value = true;
             translateResult.value = null;
-
+            translateProgress.value = [];
+            addTranslateLog('开始处理: ' + translateVideoPath.value, '#00d4ff');
             try {
+                addTranslateLog('正在提取音频...', '#ffa502');
                 const res = await fetch(`${API}/translate/video`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        video_path: translateVideoPath.value,
-                        translate: translateDoTranslate.value
-                    })
+                    body: JSON.stringify({ video_path: translateVideoPath.value, translate: translateDoTranslate.value })
                 });
-                translateResult.value = await res.json();
+                const data = await res.json();
+                if (data.error) {
+                    addTranslateLog('错误: ' + data.error, '#ff4757');
+                    translateResult.value = data;
+                } else {
+                    addTranslateLog('语音识别完成，识别 ' + (data.original_text?.length||0) + ' 字符', '#4ade80');
+                    if (data.translated_text) addTranslateLog('翻译完成，中文 ' + data.translated_text.length + ' 字符', '#4ade80');
+                    else addTranslateLog('已跳过翻译', '#888');
+                    translateResult.value = data;
+                }
             } catch (e) {
+                addTranslateLog('请求失败: ' + e.message, '#ff4757');
                 translateResult.value = { success: false, error: e.message };
             } finally {
                 translateRunning.value = false;
+                addTranslateLog('处理完成', '#4ade80');
             }
         };
 
@@ -3984,9 +4023,11 @@ createApp({
 
             // Translation
             translationTools, translateVideoPath, translateDoTranslate, translateRunning,
-            translateResult, batchTranslateInput, batchTranslateRunning, batchTranslateProgress,
+            translateResult, translateProgress, translateFileInput,
+            batchTranslateInput, batchTranslateRunning, batchTranslateProgress,
             batchTranslateStatus, batchTranslateResults,
-            formatTime, browseTranslateVideo, startTranslateVideo, startBatchTranslate, stopBatchTranslate
+            formatTime, triggerTranslateFileBrowse, onTranslateFileSelected, addTranslateLog,
+            browseTranslateVideo, startTranslateVideo, startBatchTranslate, stopBatchTranslate
         };
     }
 }).mount('#app');

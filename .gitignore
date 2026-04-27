@@ -38,6 +38,8 @@ data\avatars
 
 # Logs
 *.log
+logs/*.log
+!logs/.gitkeep
 
 # OS
 .DS_Store

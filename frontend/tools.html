@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>数据工具箱 - MyMovieDB</title>
+    <script src="vue.global.min.js"></script>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔧</text></svg>">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; background: #1a1a2e; color: #eee; min-height: 100vh; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        h1 { color: #00d4ff; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; font-size: 22px; }
+        .tabs { display: flex; gap: 5px; margin-bottom: 20px; flex-wrap: wrap; }
+        .tab { padding: 10px 20px; background: #16213e; border: none; color: #aaa; cursor: pointer; border-radius: 8px 8px 0 0; transition: 0.3s; font-size: 14px; }
+        .tab:hover { background: #0f3460; color: #fff; }
+        .tab.active { background: #0f3460; color: #00d4ff; border-bottom: 2px solid #00d4ff; }
+        .panel { background: #16213e; padding: 20px; border-radius: 0 8px 8px 8px; min-height: 400px; }
+        .section { margin-bottom: 30px; }
+        .section h2 { color: #00d4ff; margin-bottom: 15px; font-size: 1.1em; display: flex; align-items: center; gap: 8px; }
+        .btn { padding: 10px 20px; background: #0f3460; color: #00d4ff; border: 1px solid #00d4ff; border-radius: 6px; cursor: pointer; transition: 0.3s; margin: 5px; font-size: 14px; }
+        .btn:hover { background: #00d4ff; color: #1a1a2e; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-danger { border-color: #ff4757; color: #ff4757; }
+        .btn-danger:hover { background: #ff4757; color: #fff; }
+        .btn-success { border-color: #2ed573; color: #2ed573; }
+        .btn-success:hover { background: #2ed573; color: #1a1a2e; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 15px; }
+        .card { background: #0f3460; padding: 15px; border-radius: 8px; border-left: 3px solid #00d4ff; }
+        .card h3 { color: #fff; margin-bottom: 8px; font-size: 15px; }
+        .card p { color: #aaa; font-size: 0.9em; margin-bottom: 10px; }
+        .card .meta { font-size: 0.8em; color: #888; }
+        .stat { display: flex; justify-content: space-between; padding: 10px; background: #0f3460; margin: 5px 0; border-radius: 6px; }
+        .stat-label { color: #aaa; }
+        .stat-value { color: #00d4ff; font-weight: bold; }
+        .stat-value.danger { color: #ff4757; }
+        .stat-value.success { color: #2ed573; }
+        .result-box { background: #0a0a1a; padding: 15px; border-radius: 8px; margin-top: 15px; max-height: 500px; overflow-y: auto; font-family: 'Consolas', monospace; font-size: 0.85em; white-space: pre-wrap; color: #aaa; line-height: 1.5; }
+        .result-box .success { color: #2ed573; }
+        .result-box .danger { color: #ff4757; }
+        .result-box .info { color: #00d4ff; }
+        .loading { text-align: center; padding: 40px; color: #00d4ff; }
+        .spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid #00d4ff; border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; margin-right: 10px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .sql-editor { width: 100%; background: #0a0a1a; border: 1px solid #0f3460; border-radius: 8px; padding: 15px; color: #00d4ff; font-family: 'Consolas', monospace; min-height: 120px; resize: vertical; font-size: 14px; }
+        .sql-result { margin-top: 15px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #0f3460; font-size: 13px; }
+        th { background: #0f3460; color: #00d4ff; }
+        tr:hover { background: rgba(0, 212, 255, 0.1); }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; }
+        .badge-success { background: #2ed573; color: #1a1a2e; }
+        .badge-danger { background: #ff4757; color: #fff; }
+        .badge-warning { background: #ffa502; color: #1a1a2e; }
+        .badge-info { background: #00d4ff; color: #1a1a2e; }
+        .intro { background: #0f3460; padding: 20px; border-radius: 8px; margin-bottom: 20px; line-height: 1.6; }
+        .intro h2 { color: #00d4ff; margin-bottom: 10px; font-size: 16px; }
+        .intro p { margin-bottom: 8px; color: #ccc; }
+        .danger-zone { border: 1px solid #ff4757; padding: 15px; border-radius: 8px; margin-top: 20px; }
+        .danger-zone h3 { color: #ff4757; margin-bottom: 10px; }
+        .back-link { color: #00d4ff; text-decoration: none; font-size: 14px; }
+        .back-link:hover { text-decoration: underline; }
+        .pagination { display: flex; gap: 5px; margin-top: 10px; }
+        .page-btn { padding: 5px 12px; background: #0f3460; border: none; color: #aaa; border-radius: 4px; cursor: pointer; }
+        .page-btn:hover { color: #00d4ff; }
+        .page-btn.active { background: #00d4ff; color: #1a1a2e; }
+        .log-box { background: #0a0a1a; padding: 12px; border-radius: 6px; margin-top: 10px; max-height: 300px; overflow-y: auto; font-family: Consolas, monospace; font-size: 12px; white-space: pre-wrap; line-height: 1.6; }
+        .log-line { padding: 2px 0; border-bottom: 1px solid #111; }
+        .log-warn { color: #ffa502; }
+        .log-error { color: #ff4757; }
+        .log-info { color: #00d4ff; }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <div class="container">
+            <a href="index.html" class="back-link">← 返回影片库</a>
+            <h1>🔧 数据工具箱</h1>
+
+            <div class="intro">
+                <h2>欢迎使用数据工具箱</h2>
+                <p>提供数据库审计、清理和问题诊断功能。执行清理操作前请先使用「审计」和「检查」功能了解数据状况。</p>
+                <p><strong>注意：</strong>所有操作需要后端 API 支持，请确保后端已启动。</p>
+            </div>
+
+            <div class="tabs">
+                <button class="tab" :class="{active: activeTab === 'audit'}" @click="activeTab = 'audit'">📊 数据审计</button>
+                <button class="tab" :class="{active: activeTab === 'check'}" @click="activeTab = 'check'">🔍 数据检查</button>
+                <button class="tab" :class="{active: activeTab === 'fix'}" @click="activeTab = 'fix'">🧹 数据修复</button>
+                <button class="tab" :class="{active: activeTab === 'sql'}" @click="activeTab = 'sql'">📝 SQL 执行器</button>
+                <button class="tab" :class="{active: activeTab === 'logs'}" @click="loadLogs">📋 系统日志</button>
+            </div>
+
+            <div class="panel">
+                <!-- 数据审计 -->
+                <div v-if="activeTab === 'audit'">
+                    <div class="section">
+                        <h2>📊 数据库健康度审计</h2>
+                        <p style="color:#888;margin-bottom:15px;">扫描 movies 和 local_videos 表，统计各状态数据量分布</p>
+                        <button class="btn" @click="runAudit" :disabled="loading">
+                            <span v-if="loading"><span class="spinner"></span>审计中...</span>
+                            <span v-else>▶ 执行审计</span>
+                        </button>
+
+                        <div v-if="auditResult" style="margin-top:20px;">
+                            <h3 style="color:#00d4ff;margin-bottom:10px;">审计结果</h3>
+
+                            <div class="stat">
+                                <span class="stat-label">影片总数</span>
+                                <span class="stat-value">{{ auditResult.total_movies || 0 }}</span>
+                            </div>
+                            <div class="stat">
+                                <span class="stat-label">视频总数</span>
+                                <span class="stat-value">{{ auditResult.total_videos || 0 }}</span>
+                            </div>
+                            <div class="stat">
+                                <span class="stat-label">✅ 正常 (complete)</span>
+                                <span class="stat-value success">{{ auditResult.complete || 0 }} ({{ auditResult.complete_pct || 0 }}%)</span>
+                            </div>
+                            <div class="stat">
+                                <span class="stat-label">📦 待整理 (scraped_only)</span>
+                                <span class="stat-value">{{ auditResult.scraped_only || 0 }} ({{ auditResult.scraped_only_pct || 0 }}%)</span>
+                            </div>
+                            <div class="stat">
+                                <span class="stat-label">🔧 待刮削 (stale)</span>
+                                <span class="stat-value">{{ auditResult.stale || 0 }} ({{ auditResult.stale_pct || 0 }}%)</span>
+                            </div>
+                            <div class="stat">
+                                <span class="stat-label">🗑️ 孤儿 (orphan)</span>
+                                <span class="stat-value danger">{{ auditResult.orphan || 0 }} ({{ auditResult.orphan_pct || 0 }}%)</span>
+                            </div>
+                            <div class="stat">
+                                <span class="stat-label">🖼️ 缺封面</span>
+                                <span class="stat-value">{{ auditResult.missing_cover || 0 }}</span>
+                            </div>
+                            <div class="stat">
+                                <span class="stat-label">👤 演员缺头像</span>
+                                <span class="stat-value">{{ auditResult.actors_without_avatar || 0 }}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 数据检查 -->
+                <div v-if="activeTab === 'check'">
+                    <div class="section">
+                        <h2>🔍 数据质量检查</h2>
+                        <p style="color:#888;margin-bottom:15px;">找出具体数据问题：孤儿记录、重复番号、缺失资源等</p>
+
+                        <div class="grid">
+                            <div class="card">
+                                <h3>🗑️ 孤儿记录</h3>
+                                <p>无视频且无有效刮削信息的记录，可能是废料</p>
+                                <button class="btn" @click="checkOrphans" :disabled="loading">检查</button>
+                            </div>
+                            <div class="card">
+                                <h3>🔄 重复番号</h3>
+                                <p>同一番号出现多次的记录，需要合并或删除</p>
+                                <button class="btn" @click="checkDuplicates" :disabled="loading">检查</button>
+                            </div>
+                            <div class="card">
+                                <h3>📦 无视频影片</h3>
+                                <p>有刮削信息但没有关联本地视频的影片</p>
+                                <button class="btn" @click="checkMissingVideos" :disabled="loading">检查</button>
+                            </div>
+                            <div class="card">
+                                <h3>🖼️ 缺封面影片</h3>
+                                <p>有视频但缺少封面图片的影片</p>
+                                <button class="btn" @click="checkMissingCovers" :disabled="loading">检查</button>
+                            </div>
+                            <div class="card">
+                                <h3>⚠️ 番号格式异常</h3>
+                                <p>包含空格或特殊字符的番号记录</p>
+                                <button class="btn" @click="checkInvalidCodes" :disabled="loading">检查</button>
+                            </div>
+                            <div class="card">
+                                <h3>🎬 无视频影片详情</h3>
+                                <p>列出所有无视频关联的影片（可查看所有）</p>
+                                <button class="btn" @click="findNoVideoMovies" :disabled="loading">查看全部</button>
+                            </div>
+                            <div class="card">
+                                <h3>🔗 视频路径状态</h3>
+                                <p>检查 local_videos 中的路径是否还存在，识别已移除或已整理到 Jellyfin 的记录</p>
+                                <button class="btn" @click="checkVideoPathStatus" :disabled="loading">检查</button>
+                            </div>
+                        </div>
+
+                        <div v-if="checkResult" style="margin-top:20px;">
+                            <h3 style="color:#00d4ff;margin-bottom:10px;">检查结果 - {{ checkResult.type }}</h3>
+                            <p v-if="checkResult.summary" style="color:#888;margin-bottom:10px;">{{ checkResult.summary }}</p>
+                            <p style="color:#888;margin-bottom:10px;">共 <strong>{{ checkResult.data.length }}</strong> 条记录</p>
+
+                            <div v-if="checkResult.data.length > 0" style="overflow-x:auto;">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th v-for="col in Object.keys(checkResult.data[0])" :key="col">{{ col }}</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr v-for="(row, idx) in checkResult.data.slice(0, 100)" :key="idx">
+                                            <td v-for="(val, key) in row" :key="key">{{ val || '—' }}</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <div v-if="checkResult.data.length > 100" style="margin-top:10px;color:#888;">
+                                仅显示前 100 条，还有 {{ checkResult.data.length - 100 }} 条未显示
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 数据修复 -->
+                <div v-if="activeTab === 'fix'">
+                    <div class="section">
+                        <h2>🧹 数据修复与清理</h2>
+                        <p style="color:#888;margin-bottom:15px;">执行数据清理和修复操作</p>
+
+                        <div class="grid">
+                            <div class="card">
+                                <h3>🗑️ 预览清理孤儿</h3>
+                                <p>预览要清理的孤儿记录（不实际删除）</p>
+                                <button class="btn" @click="previewCleanup" :disabled="loading">预览</button>
+                            </div>
+                            <div class="card">
+                                <h3>🔧 修复番号格式</h3>
+                                <p>标准化异常番号格式（去除空格等）</p>
+                                <button class="btn" @click="fixCodeFormats" :disabled="loading">修复</button>
+                            </div>
+                            <div class="card">
+                                <h3>📦 导出待整理列表</h3>
+                                <p>将有刮削但无视频的记录导出为 CSV</p>
+                                <button class="btn" @click="exportMissingVideos" :disabled="loading">导出</button>
+                            </div>
+                        </div>
+
+                        <div v-if="fixResult" style="margin-top:20px;">
+                            <h3 style="color:#00d4ff;margin-bottom:10px;">执行结果</h3>
+                            <div class="result-box" v-html="formatLog(fixResult)"></div>
+                        </div>
+
+                        <div class="danger-zone">
+                            <h3>⚠️ 危险操作</h3>
+                            <p style="color:#888;margin-bottom:10px;">以下操作不可逆，执行前请确保已了解数据状况</p>
+                            <button class="btn btn-danger" @click="executeCleanup" :disabled="loading || !cleanupPreview">
+                                🗑️ 执行清理（删除孤儿记录）
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SQL 执行器 -->
+                <div v-if="activeTab === 'sql'">
+                    <div class="section">
+                        <h2>📝 SQL 执行器</h2>
+                        <p style="color:#888;margin-bottom:15px;">直接执行 SQL 查询语句（只读操作 SELECT）</p>
+
+                        <textarea class="sql-editor" v-model="sqlQuery" placeholder="输入 SQL 查询语句，例如：
+SELECT code, title, actors FROM movies LIMIT 10;
+SELECT COUNT(*) FROM movies;
+SELECT * FROM movies WHERE code = 'WAT-005';" @keydown.ctrl.enter="executeSql"></textarea>
+
+                        <div style="margin-top:10px;">
+                            <button class="btn btn-success" @click="executeSql" :disabled="loading || !sqlQuery.trim()">▶ 执行查询 (Ctrl+Enter)</button>
+                            <button class="btn" @click="sqlQuery = ''">清空</button>
+                            <span style="color:#666;margin-left:20px;font-size:13px;">提示：只支持 SELECT 查询，UPDATE/DELETE 需要管理员工具</span>
+                        </div>
+
+                        <div v-if="sqlResult" class="sql-result">
+                            <h3 style="color:#00d4ff;margin-bottom:10px;">
+                                查询结果
+                                <template v-if="sqlResult.rows"> ({{ sqlResult.rows.length }} 行)</template>
+                            </h3>
+
+                            <div v-if="sqlResult.rows && sqlResult.rows.length > 0" style="overflow-x:auto;">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th v-for="col in sqlResult.columns" :key="col">{{ col }}</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr v-for="(row, idx) in sqlResult.rows" :key="idx">
+                                            <td v-for="(val, col) in row" :key="col">{{ val }}</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <div v-if="sqlResult.error" class="result-box" style="color:#ff4757;">
+                                {{ sqlResult.error }}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 系统日志 -->
+                <div v-if="activeTab === 'logs'">
+                    <div class="section">
+                        <h2>📋 系统日志</h2>
+                        <p style="color:#888;margin-bottom:15px;">查看后端的错误和警告日志（不含正常操作记录）</p>
+                        <div style="display:flex;gap:10px;margin-bottom:15px;">
+                            <button class="btn" @click="loadLogs" :disabled="loading">🔄 刷新</button>
+                            <button class="btn btn-danger" @click="clearSystemLogs">🗑️ 清空日志</button>
+                        </div>
+                        <div v-if="systemLogs.length" class="log-box">
+                            <div v-for="(line, idx) in systemLogs" :key="idx" class="log-line" :class="getLogClass(line)">
+                                {{ line }}
+                            </div>
+                        </div>
+                        <div v-else-if="loading" class="loading">加载中...</div>
+                        <div v-else style="color:#888;padding:20px;text-align:center;">暂无日志记录</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createApp } = Vue;
+
+        createApp({
+            data() {
+                return {
+                    activeTab: 'audit',
+                    loading: false,
+                    auditResult: null,
+                    checkResult: null,
+                    fixResult: null,
+                    cleanupPreview: null,
+                    sqlQuery: '',
+                    sqlResult: null,
+                    systemLogs: [],
+                };
+            },
+            methods: {
+                async loadLogs() {
+                    this.loading = true;
+                    try {
+                        const res = await fetch('/api/admin/logs?lines=100');
+                        const data = await res.json();
+                        this.systemLogs = data.logs || [];
+                    } catch (e) {
+                        this.systemLogs = ['加载失败: ' + e.message];
+                    }
+                    this.loading = false;
+                },
+                async clearSystemLogs() {
+                    if (!confirm('确定要清空所有日志吗？')) return;
+                    try {
+                        await fetch('/api/admin/logs/clear', { method: 'POST' });
+                        this.systemLogs = [];
+                    } catch (e) {
+                        alert('清空失败: ' + e.message);
+                    }
+                },
+                getLogClass(line) {
+                    if (line.includes('[ERROR]')) return 'log-error';
+                    if (line.includes('[WARNING]')) return 'log-warn';
+                    return 'log-info';
+                },
+                async runAudit() {
+                    this.loading = true;
+                    try {
+                        const response = await fetch('/api/admin/audit');
+                        if (!response.ok) throw new Error('API 不可用');
+                        this.auditResult = await response.json();
+                    } catch (e) {
+                        this.auditResult = { error: e.message };
+                    }
+                    this.loading = false;
+                },
+
+                async checkOrphans() {
+                    this.loading = true;
+                    try {
+                        const response = await fetch('/api/admin/check?type=orphans');
+                        const data = await response.json();
+                        this.checkResult = { type: 'orphans', data: data.orphans || [] };
+                    } catch (e) {
+                        this.checkResult = { type: 'orphans', data: [], error: e.message };
+                    }
+                    this.loading = false;
+                },
+
+                async checkDuplicates() {
+                    this.loading = true;
+                    try {
+                        const response = await fetch('/api/admin/check?type=duplicates');
+                        const data = await response.json();
+                        this.checkResult = { type: 'duplicates', data: data.duplicates || [] };
+                    } catch (e) {
+                        this.checkResult = { type: 'duplicates', data: [], error: e.message };
+                    }
+                    this.loading = false;
+                },
+
+                async checkMissingVideos() {
+                    this.loading = true;
+                    try {
+                        const response = await fetch('/api/admin/check?type=missing_videos');
+                        const data = await response.json();
+                        this.checkResult = { type: 'missing_videos', data: data.missing_videos || [] };
+                    } catch (e) {
+                        this.checkResult = { type: 'missing_videos', data: [], error: e.message };
+                    }
+                    this.loading = false;
+                },
+
+                async checkMissingCovers() {
+                    this.loading = true;
+                    try {
+                        const response = await fetch('/api/admin/check?type=missing_covers');
+                        const data = await response.json();
+                        this.checkResult = { type: 'missing_covers', data: data.missing_covers || [] };
+                    } catch (e) {
+                        this.checkResult = { type: 'missing_covers', data: [], error: e.message };
+                    }
+                    this.loading = false;
+                },
+
+                async checkInvalidCodes() {
+                    this.loading = true;
+                    try {
+                        const response = await fetch('/api/admin/check?type=invalid_codes');
+                        const data = await response.json();
+                        this.checkResult = { type: 'invalid_codes', data: data.invalid_codes || [] };
+                    } catch (e) {
+                        this.checkResult = { type: 'invalid_codes', data: [], error: e.message };
+                    }
+                    this.loading = false;
+                },
+
+                async findNoVideoMovies() {
+                    this.loading = true;
+                    try {
+                        const response = await fetch('/api/admin/no-video-movies');
+                        const data = await response.json();
+                        this.checkResult = { type: 'no_video_movies', data: data.scraped_only || [] };
+                    } catch (e) {
+                        this.checkResult = { type: 'no_video_movies', data: [], error: e.message };
+                    }
+                    this.loading = false;
+                },
+
+                async checkVideoPathStatus() {
+                    this.loading = true;
+                    try {
+                        const response = await fetch('/api/admin/video-path-status');
+                        const data = await response.json();
+                        // 合并 missing 和 jellyfin_moved 显示
+                        const allIssues = [
+                            ...(data.missing || []).map(item => ({...item, path_status: 'missing'})),
+                            ...(data.jellyfin_moved || []).map(item => ({...item, path_status: 'jellyfin_moved'}))
+                        ];
+                        this.checkResult = {
+                            type: 'video_path_status',
+                            data: allIssues,
+                            summary: `有效: ${data.valid_count || 0} | 路径不存在: ${data.missing_count || 0} | 可能在Jellyfin: ${data.jellyfin_moved_count || 0}`
+                        };
+                    } catch (e) {
+                        this.checkResult = { type: 'video_path_status', data: [], error: e.message };
+                    }
+                    this.loading = false;
+                },
+
+                async previewCleanup() {
+                    this.loading = true;
+                    try {
+                        const response = await fetch('/api/admin/cleanup?mode=preview');
+                        const data = await response.json();
+                        this.cleanupPreview = data;
+                        this.fixResult = `<span class="info">预览模式：找到 ${data.count || 0} 条孤儿记录\n`;
+                        if (data.ids) {
+                            this.fixResult += '将删除 IDs: ' + data.ids.slice(0, 20).join(', ');
+                            if (data.ids.length > 20) this.fixResult += ' ...';
+                        }
+                        this.fixResult += '</span>';
+                    } catch (e) {
+                        this.fixResult = '<span class="danger">错误: ' + e.message + '</span>';
+                    }
+                    this.loading = false;
+                },
+
+                async executeCleanup() {
+                    if (!confirm('确定要删除这些孤儿记录吗？此操作不可恢复！')) return;
+                    this.loading = true;
+                    try {
+                        const response = await fetch('/api/admin/cleanup?mode=execute', { method: 'POST' });
+                        const data = await response.json();
+                        this.fixResult = `<span class="success">已删除 ${data.deleted || 0} 条孤儿记录</span>`;
+                        this.cleanupPreview = null;
+                    } catch (e) {
+                        this.fixResult = '<span class="danger">错误: ' + e.message + '</span>';
+                    }
+                    this.loading = false;
+                },
+
+                async fixCodeFormats() {
+                    this.loading = true;
+                    try {
+                        const response = await fetch('/api/admin/fix-codes', { method: 'POST' });
+                        const data = await response.json();
+                        this.fixResult = `<span class="success">修复完成: 更新了 ${data.updated || 0} 条记录</span>`;
+                    } catch (e) {
+                        this.fixResult = '<span class="danger">错误: ' + e.message + '</span>';
+                    }
+                    this.loading = false;
+                },
+
+                async exportMissingVideos() {
+                    this.loading = true;
+                    try {
+                        const response = await fetch('/api/admin/export-missing-videos');
+                        const data = await response.json();
+                        const csv = this.arrayToCSV(data);
+                        this.downloadFile('missing_videos.csv', csv);
+                        this.fixResult = `<span class="success">已导出 ${data.length} 条记录到 missing_videos.csv</span>`;
+                    } catch (e) {
+                        this.fixResult = '<span class="danger">错误: ' + e.message + '</span>';
+                    }
+                    this.loading = false;
+                },
+
+                async executeSql() {
+                    if (!this.sqlQuery.trim()) return;
+                    if (!this.sqlQuery.trim().toUpperCase().startsWith('SELECT')) {
+                        this.sqlResult = { error: '只支持 SELECT 查询语句' };
+                        return;
+                    }
+                    this.loading = true;
+                    try {
+                        const response = await fetch('/api/admin/sql', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ query: this.sqlQuery })
+                        });
+                        const data = await response.json();
+                        this.sqlResult = data;
+                    } catch (e) {
+                        this.sqlResult = { error: e.message };
+                    }
+                    this.loading = false;
+                },
+
+                formatLog(log) {
+                    if (typeof log !== 'string') log = JSON.stringify(log, null, 2);
+                    return log.replace(/\n/g, '<br>');
+                },
+
+                arrayToCSV(arr) {
+                    if (!arr || !arr.length) return '';
+                    const headers = Object.keys(arr[0]);
+                    const rows = [headers.join(',')];
+                    arr.forEach(item => {
+                        rows.push(headers.map(h => {
+                            let val = item[h] || '';
+                            val = String(val).replace(/"/g, '""');
+                            if (val.includes(',') || val.includes('"') || val.includes('\n')) {
+                                val = '"' + val + '"';
+                            }
+                            return val;
+                        }).join(','));
+                    });
+                    return rows.join('\n');
+                },
+
+                downloadFile(filename, content) {
+                    const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(blob);
+                    link.download = filename;
+                    link.click();
+                }
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
