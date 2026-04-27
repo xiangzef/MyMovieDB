@@ -1,6 +1,6 @@
 # MyMovieDB - AI 开发助手上下文
 
-> ⚠️ **开始任何开发工作前，请先阅读 `PROJECT_PLAN.md` 全文。**
+> ⚠️ **开始任何开发工作前，请先阅读 `docs/PROJECT_PLAN.md` 全文。**
 
 ---
 
