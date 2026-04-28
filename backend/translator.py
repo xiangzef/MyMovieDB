@@ -50,6 +50,14 @@ except ImportError:
     TRANSLATOR_AVAILABLE = False
     logger.warning("deep-translator 未安装，翻译功能不可用")
 
+try:
+    import vosk
+    VOSK_AVAILABLE = True
+    logger.info("Vosk 日语语音识别可用")
+except ImportError:
+    VOSK_AVAILABLE = False
+    logger.warning("Vosk 未安装，语音识别功能不可用")
+
 
 class JapaneseVideoTranslator:
     """日语视频语音提取翻译器"""
@@ -131,7 +139,7 @@ class JapaneseVideoTranslator:
 
     def transcribe_audio(self, audio_path: str, language: str = "ja") -> Dict:
         """
-        使用 Whisper 转录音频
+        使用 Vosk 转录音频
 
         Args:
             audio_path: 音频文件路径
@@ -140,43 +148,64 @@ class JapaneseVideoTranslator:
         Returns:
             Dict: 包含 'text', 'segments' 的转录结果
         """
-        self._load_whisper_model()
+        if not VOSK_AVAILABLE:
+            raise RuntimeError("Vosk 未安装，请运行: py -3.14 -m pip install vosk")
 
-        logger.info(f"正在转录音频: {audio_path}")
+        import wave, json, os
 
-        if self.use_faster:
-            # Faster-Whisper API
-            segments, info = self.model.transcribe(
-                audio_path,
-                language=language,
-                beam_size=5,
-                vad_filter=True
-            )
-            segments_list = []
-            for seg in segments:
-                segments_list.append({
-                    'start': seg.start,
-                    'end': seg.end,
-                    'text': seg.text.strip()
-                })
-            return {
-                'text': ' '.join(s['text'] for s in segments_list),
-                'segments': segments_list
-            }
-        else:
-            # 原版 Whisper API
-            result = self.model.transcribe(audio_path, language=language)
-            return {
-                'text': result['text'].strip(),
-                'segments': [
-                    {
-                        'start': seg['start'],
-                        'end': seg['end'],
-                        'text': seg['text'].strip()
-                    }
-                    for seg in result.get('segments', [])
-                ]
-            }
+        logger.info(f"正在用 Vosk 转录音频: {audio_path}")
+
+        # 确保音频格式正确（Vosk 需要 16kHz mono PCM）
+        pcm_path = audio_path + ".pcm"
+        try:
+            # 转换音频为 16kHz mono PCM
+            cmd = [
+                'ffmpeg', '-y', '-i', audio_path,
+                '-ar', '16000', '-ac', '1', '-acodec', 'pcm_s16le',
+                '-f', 's16le', pcm_path
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            if result.returncode != 0:
+                raise RuntimeError(f"音频转换失败: {result.stderr}")
+        except Exception as e:
+            raise RuntimeError(f"音频转换失败: {e}")
+
+        # 加载 Vosk 模型
+        model_path = r"C:\vosk-model-ja-0.22"
+        if not os.path.exists(model_path):
+            raise RuntimeError(f"Vosk 模型不存在: {model_path}")
+
+        if self.model is None:
+            logger.info("正在加载 Vosk 模型...")
+            self.model = vosk.Model(model_path)
+            logger.info("Vosk 模型加载完成")
+
+        recognizer = vosk.KaldiRecognizer(self.model, 16000)
+
+        # 分块读取并识别
+        with open(pcm_path, "rb") as f:
+            while True:
+                data = f.read(2000)  # 每次读 2000 字节
+                if not data:
+                    break
+                recognizer.AcceptWaveform(data)
+
+        result_json = recognizer.FinalResult()
+        result_dict = json.loads(result_json)
+
+        # 清理临时文件
+        try:
+            os.remove(pcm_path)
+        except:
+            pass
+
+        text = result_dict.get("text", "").strip()
+        logger.info(f"Vosk 转录完成，识别文字: {len(text)} 字符")
+
+        return {
+            "text": text,
+            "segments": []  # Vosk 不提供时间戳，这里留空
+        }
 
     def translate_text(self, japanese_text: str) -> str:
         """
@@ -249,35 +278,38 @@ class JapaneseVideoTranslator:
             'error': None
         }
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            audio_path = os.path.join(temp_dir, "audio.wav")
+        video_dir = os.path.dirname(video_path)
+        video_name = os.path.splitext(os.path.basename(video_path))[0]
+        audio_path = os.path.join(video_dir, f"{video_name}_audio.wav")
 
-            logger.info(f"开始处理视频: {video_path}")
+        logger.info(f"开始处理视频: {video_path}")
 
+        if not os.path.exists(audio_path):
+            logger.info(f"音频文件不存在，正在提取...")
             extract_success = self._extract_audio(video_path, audio_path)
-
             if not extract_success:
                 result['error'] = "音频提取失败，请确保已安装 ffmpeg"
                 return result
+        else:
+            logger.info(f"使用已有音频: {audio_path}")
+        try:
+            transcription = self.transcribe_audio(audio_path)
+            result['original_text'] = transcription['text']
+            result['segments'] = transcription['segments']
 
-            try:
-                transcription = self.transcribe_audio(audio_path)
-                result['original_text'] = transcription['text']
-                result['segments'] = transcription['segments']
+            if translate and transcription['text']:
+                result['translated_text'] = self.translate_text(transcription['text'])
 
-                if translate and transcription['text']:
-                    result['translated_text'] = self.translate_text(transcription['text'])
+                translated_segments = self.translate_segments(transcription['segments'])
+                for i, seg in enumerate(translated_segments):
+                    result['segments'][i]['chinese'] = seg['chinese']
 
-                    translated_segments = self.translate_segments(transcription['segments'])
-                    for i, seg in enumerate(translated_segments):
-                        result['segments'][i]['chinese'] = seg['chinese']
+            result['success'] = True
+            logger.info(f"视频处理完成，识别文字长度: {len(result['original_text'])}")
 
-                result['success'] = True
-                logger.info(f"视频处理完成，识别文字长度: {len(result['original_text'])}")
-
-            except Exception as e:
-                result['error'] = str(e)
-                logger.error(f"视频处理失败: {str(e)}")
+        except Exception as e:
+            result['error'] = str(e)
+            logger.error(f"视频处理失败: {str(e)}")
 
         return result
 
