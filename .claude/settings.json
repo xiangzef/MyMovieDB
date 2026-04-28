@@ -6,7 +6,6 @@
       "Bash(git commit -m ' *)",
       "Bash(py -3.14 -c \"import vosk; print\\('vosk OK'\\)\")",
       "Read(//c/vosk-model-ja-0.22/**)",
-      "Bash(py -3.14 ../test_translate.py \"X:\\\\jellyfin\\\\明日花キララ\\\\HODV-20574\\\\HODV-20574.avi\")",
       "Bash(py -3.14 tests/test_translate.py \"X:\\\\jellyfin\\\\明日花キララ\\\\HODV-20574\\\\HODV-20574.avi\")"
     ],
     "additionalDirectories": [

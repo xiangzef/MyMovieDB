@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
 from pathlib import Path
 from typing import Optional, List
+from collections import deque
 import logging
 import threading
 import re
@@ -21,6 +22,8 @@ import asyncio
 from hashlib import sha256
 import secrets
 import json
+import sqlite3
+import sqlparse
 from datetime import datetime, timedelta
 
 from models import (
@@ -410,10 +413,16 @@ def verify_token(token: str) -> dict:
 def get_current_user(token: str = Query(None, alias="token")):
     """FastAPI 依赖项：获取当前登录用户"""
     if not token:
-        # 尝试从 header 获取
-        from fastapi import Request
         raise HTTPException(status_code=401, detail="缺少 token")
     return verify_token(token)
+
+
+def require_admin(token: str = Query(None, alias="token")):
+    """验证当前用户是否为管理员"""
+    user = get_current_user(token)
+    if user.get('role') != 'admin':
+        raise HTTPException(status_code=403, detail="权限不足")
+    return user
 
 
 @app.post("/auth/login", response_model=LoginResponse)
@@ -660,13 +669,15 @@ def _audit_database() -> dict:
 
 
 @app.get("/api/admin/audit")
-async def admin_audit():
+async def admin_audit(token: str = Query(None, alias="token")):
     """数据库健康度审计"""
+    require_admin(token)
     return _audit_database()
 
 
 @app.get("/api/admin/check")
-async def admin_check(type: str = Query(...)):
+async def admin_check(type: str = Query(...), token: str = Query(None, alias="token")):
+    require_admin(token)
     """数据质量检查"""
     conn = db.get_db()
     cursor = conn.cursor()
@@ -800,8 +811,9 @@ async def admin_video_path_status():
 
 
 @app.get("/api/admin/no-video-movies")
-async def admin_no_video_movies():
+async def admin_no_video_movies(token: str = Query(None, alias="token")):
     """查找无视频的影片（分孤儿和待整理）"""
+    require_admin(token)
     conn = db.get_db()
     cursor = conn.cursor()
     cursor.execute("""
@@ -825,9 +837,10 @@ async def admin_no_video_movies():
     return {"scraped_only": scraped_only, "orphan": orphan}
 
 
-@app.get("/api/admin/cleanup")
-async def admin_cleanup_preview(mode: str = Query("preview")):
+@app.api_route("/api/admin/cleanup", methods=["GET", "POST"])
+async def admin_cleanup_preview(request: Request, mode: str = Query("preview"), token: str = Query(None, alias="token")):
     """预览或执行孤儿记录清理"""
+    user = require_admin(token)
     conn = db.get_db()
     cursor = conn.cursor()
     cursor.execute("""
@@ -839,40 +852,71 @@ async def admin_cleanup_preview(mode: str = Query("preview")):
     conn.close()
     if mode == "preview":
         return {"dry_run": True, "count": len(orphans), "ids": [o["id"] for o in orphans]}
-    # execute
+    if mode != "execute":
+        raise HTTPException(status_code=400, detail="mode 必须是 'preview' 或 'execute'")
     if not orphans:
         return {"dry_run": False, "deleted": 0}
+    ids = [o["id"] for o in orphans]
+    log_dir = Path(__file__).parent.parent / "logs"
+    audit_path = log_dir / "audit.log"
+    audit_entry = {
+        "action": "cleanup_execute",
+        "user": user.get("username"),
+        "role": user.get("role"),
+        "client": request.client.host if request.client else None,
+        "to_delete": ids,
+        "timestamp": datetime.now().isoformat()
+    }
+    try:
+        audit_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(audit_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(audit_entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logging.warning(f"未能写入清理审计日志: {e}")
     conn = db.get_db()
     cursor = conn.cursor()
-    ids = [o["id"] for o in orphans]
     placeholders = ",".join("?" * len(ids))
     cursor.execute(f"DELETE FROM movies WHERE id IN ({placeholders})", ids)
     deleted = cursor.rowcount
     conn.commit()
     conn.close()
+    audit_entry["deleted"] = deleted
+    audit_entry["completed_at"] = datetime.now().isoformat()
+    try:
+        with open(audit_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(audit_entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logging.warning(f"未能写入清理完成审计日志: {e}")
     return {"dry_run": False, "deleted": deleted}
 
 
 @app.post("/api/admin/fix-codes")
-async def admin_fix_codes():
+async def admin_fix_codes(token: str = Query(None, alias="token")):
     """修复番号格式（去除空格和特殊字符）"""
+    require_admin(token)
     conn = db.get_db()
     cursor = conn.cursor()
     cursor.execute("SELECT id, code FROM movies WHERE code IS NOT NULL")
     updated = 0
+    conflicts = 0
     for row in cursor.fetchall():
         code_id, code = row[0], row[1]
         if code and (" " in code or any(c in code for c in ['(', ')', '[', ']', '（', '）'])):
             new_code = re.sub(r'[\s()（）\[\]]+', '', code)
-            cursor.execute("UPDATE movies SET code = ? WHERE id = ?", (new_code, code_id))
-            updated += 1
+            if new_code and new_code != code:
+                cursor.execute("SELECT id FROM movies WHERE code = ? AND id != ?", (new_code, code_id))
+                if cursor.fetchone():
+                    conflicts += 1
+                    continue
+                cursor.execute("UPDATE movies SET code = ? WHERE id = ?", (new_code, code_id))
+                updated += 1
     conn.commit()
     conn.close()
-    return {"updated": updated}
+    return {"updated": updated, "conflicts": conflicts}
 
 
 @app.get("/api/admin/export-missing-videos")
-async def admin_export_missing_videos():
+async def admin_export_missing_videos(token: str = Query(None, alias="token")):
     """导出有刮削但无视频的记录"""
     conn = db.get_db()
     cursor = conn.cursor()
@@ -892,46 +936,114 @@ class SqlRequest(BaseModel):
     query: str
 
 
+FORBIDDEN_SQL_TABLES = {"users", "auth", "tokens", "secrets", "local_videos", "local_videos", "sqlite_master"}
+MAX_SQL_ROWS = 500
+DEFAULT_SQL_LIMIT = 200
+
+
+def _validate_admin_sql(query: str) -> str:
+    normalized = query.strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="SQL 语句不能为空")
+    if ";" in normalized:
+        raise HTTPException(status_code=400, detail="禁止使用分号或多条语句")
+    cleaned = sqlparse.format(normalized, strip_comments=True).strip()
+    statements = [s for s in sqlparse.parse(cleaned) if s.tokens and not s.is_whitespace]
+    if len(statements) != 1:
+        raise HTTPException(status_code=400, detail="仅允许单条 SQL 语句")
+    statement = statements[0]
+    first_token = next((token for token in statement.tokens if not token.is_whitespace and token.ttype != sqlparse.tokens.Comment), None)
+    if not first_token or first_token.normalized.upper() != "SELECT":
+        raise HTTPException(status_code=400, detail="只支持 SELECT 查询")
+    lower_sql = cleaned.lower()
+    if re.search(r"\b(insert|update|delete|drop|create|alter|attach|detach|pragma|replace|vacuum)\b", lower_sql):
+        raise HTTPException(status_code=400, detail="禁止执行写操作或危险 SQL")
+    for forbidden in FORBIDDEN_SQL_TABLES:
+        if re.search(rf"\b{re.escape(forbidden)}\b", lower_sql):
+            raise HTTPException(status_code=400, detail=f"禁止访问敏感表: {forbidden}")
+    limit_match = re.search(r"\blimit\s+(\d+)\b", lower_sql)
+    if limit_match:
+        if int(limit_match.group(1)) > MAX_SQL_ROWS:
+            raise HTTPException(status_code=400, detail=f"LIMIT 限制不能超过 {MAX_SQL_ROWS}")
+    else:
+        cleaned = cleaned.rstrip("; ") + f" LIMIT {DEFAULT_SQL_LIMIT}"
+    return cleaned
+
+
 @app.post("/api/admin/sql")
-async def admin_sql(req: SqlRequest):
+async def admin_sql(req: SqlRequest, token: str = Query(None, alias="token")):
     """执行只读 SQL 查询"""
-    q = req.query.strip().upper()
-    if not q.startswith("SELECT"):
-        return {"error": "只支持 SELECT 查询"}
+    require_admin(token)
     try:
-        conn = db.get_db()
+        query = _validate_admin_sql(req.query)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        conn = sqlite3.connect(f"file:{db.DATABASE_PATH}?mode=ro", uri=True, check_same_thread=False)
         cursor = conn.cursor()
-        cursor.execute(req.query)
+        cursor.execute(query)
         columns = [d[0] for d in cursor.description] if cursor.description else []
-        rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        rows = [dict(zip(columns, row)) for row in cursor.fetchmany(MAX_SQL_ROWS)]
         conn.close()
         return {"columns": columns, "rows": rows}
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/api/admin/logs")
-async def get_logs(lines: int = Query(50, ge=10, le=500)):
+async def get_logs(lines: int = Query(50, ge=10, le=500), token: str = Query(None, alias="token")):
     """读取系统日志（仅 ERROR/WARNING）"""
+    require_admin(token)
     log_path = Path(__file__).parent.parent / "logs" / "mymoviedb.log"
     if not log_path.exists():
         return {"logs": [], "total": 0}
     try:
+        recent = deque(maxlen=lines)
+        total_lines = 0
         with open(log_path, "r", encoding="utf-8") as f:
-            all_lines = f.readlines()
-        recent = all_lines[-lines:] if len(all_lines) > lines else all_lines
-        return {"logs": [l.strip() for l in recent if l.strip()], "total": len(all_lines)}
+            for line in f:
+                total_lines += 1
+                if line.strip():
+                    recent.append(line.rstrip("\n"))
+        return {"logs": list(recent), "total": total_lines}
     except Exception as e:
         return {"logs": [], "total": 0, "error": str(e)}
 
 
 @app.post("/api/admin/logs/clear")
-async def clear_logs():
+async def clear_logs(request: Request, token: str = Query(None, alias="token")):
     """清空日志文件"""
+    user = require_admin(token)
     log_path = Path(__file__).parent.parent / "logs" / "mymoviedb.log"
+    audit_path = log_path.parent / "audit.log"
     if log_path.exists():
+        backup_path = log_path.parent / f"mymoviedb.log.{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        try:
+            log_path.rename(backup_path)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"日志归档失败: {e}")
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text("", encoding="utf-8")
-    return {"success": True, "message": "日志已清空"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"日志清空失败: {e}")
+    audit_entry = {
+        "action": "clear_logs",
+        "user": user.get("username"),
+        "role": user.get("role"),
+        "client": request.client.host if request.client else None,
+        "backup": backup_path.name if log_path.exists() else None,
+        "timestamp": datetime.now().isoformat()
+    }
+    try:
+        audit_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(audit_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(audit_entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logging.warning(f"未能写入审计日志: {e}")
+    return {"success": True, "message": "日志已清空并归档"}
 
 
 # ========== 前端页面路由 ==========
