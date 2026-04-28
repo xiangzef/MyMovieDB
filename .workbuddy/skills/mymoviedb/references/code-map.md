@@ -18,7 +18,7 @@ MyMovieDB/
 │   ├── jellyfin.py            # Jellyfin NFO 解析 & 扫描
 │   ├── gfriends.py            # 演员头像下载（gfriends 仓库）
 │   ├── config.py              # 配置读取（config.ini）
-│   ├── translator.py          # 字幕翻译（Whisper + 翻译 API）
+│   ├── translator.py          # 字幕翻译（Vosk日语识别 + Ollama qwen翻译 + ffmpeg）
 │   ├── migrate.py             # 数据库迁移脚本
 │   ├── models.py              # 所有 Pydantic 请求/响应模型
 │   └── config.ini             # 运行配置
@@ -513,6 +513,36 @@ Step3: 调用 _extract_code() 提取番号
 | `get_avatar_dir()` | 获取头像存储目录路径 |
 
 **重要规范**：头像文件名使用**演员真实名字**（如 `三上悠亜.jpg`），不使用 URL 编码，防止大小写不一致问题。
+
+---
+
+### `translator.py` — 日语语音翻译模块
+
+离线日语视频翻译管道，使用本地模型。
+
+**翻译管道**：
+```
+视频 → ffmpeg 音频提取(16kHz mono PCM) → Vosk 日语识别 → Ollama qwen2.5:7b 翻译 → SRT 字幕
+```
+
+| 类/函数 | 说明 |
+|---|---|
+| `JapaneseVideoTranslator` | 主翻译器类 |
+| `JapaneseVideoTranslator.__init__(model_size)` | 初始化，默认 `base` |
+| `JapaneseVideoTranslator.process_video(video_path, translate)` | 执行完整翻译流程 |
+| `JapaneseVideoTranslator._extract_audio(video_path, audio_path)` | 用 ffmpeg 提取音频 |
+| `JapaneseVideoTranslator.transcribe_audio(audio_path, language)` | 用 Vosk 转录音频 |
+| `JapaneseVideoTranslator._translate_with_ollama(text)` | 用 Ollama qwen2.5:7b 翻译日文→中文 |
+| `JapaneseVideoTranslator.translate_text(japanese_text)` | 翻译文本（对外接口） |
+| `JapaneseVideoTranslator.translate_segments(segments)` | 翻译片段列表 |
+| `format_time(seconds)` | 秒数转 SRT 时间戳 `HH:MM:SS,mmm` |
+| `format_transcript(segments, include_translation)` | 格式化转录文本 |
+
+**关键行为**：
+- 音频持久化存储在视频同目录：`{video_name}_audio.wav`（下次跳过提取）
+- Vosk 模型路径：`C:\vosk-model-ja-0.22`
+- Ollama API：`http://localhost:11434/api/generate`，超时 120s
+- `transcribe_audio()` 返回 `{ text, segments }`，segments 每个元素含 `start/end/text`
 
 ---
 

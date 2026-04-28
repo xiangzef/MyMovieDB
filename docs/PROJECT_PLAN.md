@@ -463,6 +463,33 @@ data: {"path": "...", "reason": "目标路径权限不足"}
   - `organizer.py` 使用 SSE 回调架构（参考 jellyfin.py 的 SSE 模式）
   - 封面/NFO 复制：`_copy_asset_files()` 从 movie_data 已有路径复制（不再重复下载）
 
+---
+
+### 2026-04-28 22:55 — 翻译模块重构 + 文件整理 ✅
+
+- **执行者**: 小尼克 (WorkBuddy AI)
+- **变更文件**:
+  - `backend/translator.py` — 重构翻译模块，改用 Ollama qwen2.5:7b 本地模型翻译；移除 Google/DeepL API 依赖
+  - `tests/test_translate.py` — 重构测试脚本，统一工作流程：音频持久化 → 语音识别 → 翻译 → SRT生成 → 音频清理
+  - `backend/main.py` — 修改（翻译相关）
+  - `.claude/settings.json` — 清理过时的权限规则
+  - `SKILL.md` — 更新目录结构，translator.py 不再标注"勿动"
+  - `code-map.md` — 更新 translator.py 说明
+
+- **翻译模块新架构**:
+  - 音频: `{视频名}_audio.wav` 本地持久化存储
+  - 语音识别: Faster-Whisper（带时间戳 segments）
+  - 翻译: Ollama qwen2.5:7b 本地模型（http://localhost:11434）
+  - SRT字幕: 带时间戳的 SRT 文件
+  - 流程: 提取音频 → 识别 → 翻译 → 生成SRT → 成功后删除音频；中途失败保留音频供断点续传
+
+- **文件整理**:
+  - `frontend/debug_indent.py` → `tests/debug_indent.py`
+  - `frontend/debug_out.txt` → `logs/debug_out.txt`
+  - `frontend/index.html.orig` + `frontend/index.html.bak20260401` → `backups/`
+
+- **提交**: git commit -m "feat: 翻译模块重构 + 文件整理"
+
 
 ---
 

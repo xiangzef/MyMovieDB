@@ -2,25 +2,22 @@
 ================================================================================
 日语语音提取翻译模块 - 从视频中提取日语语音并翻译成中文
 ================================================================================
-文件路径: F:\\github\\MyMovieDB\\backend\\translator.py
+文件路径: F:\github\MyMovieDB\backend\translator.py
 功能说明:
-    1. 从视频文件中提取音频
-    2. 使用 Faster-Whisper 进行日语语音识别
-    3. 使用 deep-translator 翻译日文到中文
-依赖库:
-    - faster-whisper: CTranslate2 优化的 Whisper（推荐，比原版快4倍）
-    - deep-translator: 翻译引擎（Google/DeepL）
-    - ffmpeg: 音频提取
+    1. 从视频文件中提取音频（持久化存储，不自动删除）
+    2. 使用 Faster-Whisper 进行日语语音识别（带时间戳）
+    3. 使用 Ollama 本地模型翻译日文到中文
+    4. 生成带时间戳的 SRT 字幕文件
+    5. 音频仅在 SRT 成功生成后才删除
 ================================================================================
 """
 
 import os
 import subprocess
-import tempfile
 import logging
 from pathlib import Path
 from typing import Optional, List, Dict
-import re
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -43,21 +40,6 @@ except ImportError:
         WHISPER_AVAILABLE = False
         logger.warning("Whisper 未安装，语音识别功能不可用")
 
-try:
-    from deep_translator import GoogleTranslator
-    TRANSLATOR_AVAILABLE = True
-except ImportError:
-    TRANSLATOR_AVAILABLE = False
-    logger.warning("deep-translator 未安装，翻译功能不可用")
-
-try:
-    import vosk
-    VOSK_AVAILABLE = True
-    logger.info("Vosk 日语语音识别可用")
-except ImportError:
-    VOSK_AVAILABLE = False
-    logger.warning("Vosk 未安装，语音识别功能不可用")
-
 
 class JapaneseVideoTranslator:
     """日语视频语音提取翻译器"""
@@ -72,7 +54,7 @@ class JapaneseVideoTranslator:
         """
         self.model_size = model_size
         self.model = None
-        self.translator = None
+        self.ollama_translator = None
         self.use_faster = FASTER_WHISPER_AVAILABLE
 
     def _load_whisper_model(self):
@@ -95,13 +77,35 @@ class JapaneseVideoTranslator:
                 self.model = whisper.load_model(self.model_size)
             logger.info("Whisper 模型加载完成")
 
-    def _load_translator(self):
-        """加载翻译器（延迟加载）"""
-        if not TRANSLATOR_AVAILABLE:
-            raise RuntimeError("deep-translator 未安装，请运行: py -3.14 -m pip install deep-translator")
+    def _translate_with_ollama(self, text: str) -> str:
+        """使用 Ollama qwen2.5:7b 翻译日文到中文"""
+        import urllib.request
+        import json
 
-        if self.translator is None:
-            self.translator = GoogleTranslator(source='ja', target='zh-CN')
+        prompt = f"""你是一个专业的日语翻译。请将下面的日语翻译成中文，只输出翻译结果，不要解释。
+
+日语：{text}
+
+中文："""
+
+        req_data = {
+            "model": "qwen2.5:7b",
+            "prompt": prompt,
+            "stream": False
+        }
+
+        try:
+            req = urllib.request.Request(
+                "http://localhost:11434/api/generate",
+                data=json.dumps(req_data).encode("utf-8"),
+                headers={"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=120) as response:
+                result = json.loads(response.read().decode("utf-8"))
+                return result.get("response", "").strip()
+        except Exception as e:
+            logger.error(f"Ollama 翻译失败: {e}")
+            return text
 
     def _extract_audio(self, video_path: str, audio_path: str) -> bool:
         """
@@ -139,77 +143,57 @@ class JapaneseVideoTranslator:
 
     def transcribe_audio(self, audio_path: str, language: str = "ja") -> Dict:
         """
-        使用 Vosk 转录音频
+        使用 Faster-Whisper 转录音频（带时间戳）
 
         Args:
             audio_path: 音频文件路径
             language: 音频语言代码，默认日语 (ja)
 
         Returns:
-            Dict: 包含 'text', 'segments' 的转录结果
+            Dict: 包含 'text', 'segments' 的转录结果，每个 segment 有 start/end/text
         """
-        if not VOSK_AVAILABLE:
-            raise RuntimeError("Vosk 未安装，请运行: py -3.14 -m pip install vosk")
+        self._load_whisper_model()
 
-        import wave, json, os
+        logger.info(f"正在用 Faster-Whisper 转录音频: {audio_path}")
 
-        logger.info(f"正在用 Vosk 转录音频: {audio_path}")
-
-        # 确保音频格式正确（Vosk 需要 16kHz mono PCM）
-        pcm_path = audio_path + ".pcm"
         try:
-            # 转换音频为 16kHz mono PCM
-            cmd = [
-                'ffmpeg', '-y', '-i', audio_path,
-                '-ar', '16000', '-ac', '1', '-acodec', 'pcm_s16le',
-                '-f', 's16le', pcm_path
-            ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-            if result.returncode != 0:
-                raise RuntimeError(f"音频转换失败: {result.stderr}")
+            # 转录，vad_filter=True 启用语音活动检测，过滤静音
+            segments, info = self.model.transcribe(
+                audio_path,
+                language=language,
+                vad_filter=True,
+                vad_min_silence_duration_ms=500
+            )
+
+            # 收集结果
+            segment_list = []
+            full_text = []
+
+            for seg in segments:
+                seg_text = seg.text.strip()
+                if seg_text:
+                    full_text.append(seg_text)
+                    segment_list.append({
+                        'start': round(seg.start, 2),
+                        'end': round(seg.end, 2),
+                        'text': seg_text
+                    })
+
+            result_text = ' '.join(full_text)
+            logger.info(f"转录完成，识别文字: {len(result_text)} 字符，片段数: {len(segment_list)}")
+
+            return {
+                'text': result_text,
+                'segments': segment_list
+            }
+
         except Exception as e:
-            raise RuntimeError(f"音频转换失败: {e}")
-
-        # 加载 Vosk 模型
-        model_path = r"C:\vosk-model-ja-0.22"
-        if not os.path.exists(model_path):
-            raise RuntimeError(f"Vosk 模型不存在: {model_path}")
-
-        if self.model is None:
-            logger.info("正在加载 Vosk 模型...")
-            self.model = vosk.Model(model_path)
-            logger.info("Vosk 模型加载完成")
-
-        recognizer = vosk.KaldiRecognizer(self.model, 16000)
-
-        # 分块读取并识别
-        with open(pcm_path, "rb") as f:
-            while True:
-                data = f.read(2000)  # 每次读 2000 字节
-                if not data:
-                    break
-                recognizer.AcceptWaveform(data)
-
-        result_json = recognizer.FinalResult()
-        result_dict = json.loads(result_json)
-
-        # 清理临时文件
-        try:
-            os.remove(pcm_path)
-        except:
-            pass
-
-        text = result_dict.get("text", "").strip()
-        logger.info(f"Vosk 转录完成，识别文字: {len(text)} 字符")
-
-        return {
-            "text": text,
-            "segments": []  # Vosk 不提供时间戳，这里留空
-        }
+            logger.error(f"转录失败: {e}")
+            raise RuntimeError(f"转录失败: {e}")
 
     def translate_text(self, japanese_text: str) -> str:
         """
-        翻译日文文本到中文
+        翻译日文文本到中文（使用 Ollama 本地模型）
 
         Args:
             japanese_text: 日文文本
@@ -220,11 +204,8 @@ class JapaneseVideoTranslator:
         if not japanese_text or not japanese_text.strip():
             return ""
 
-        self._load_translator()
-
         try:
-            result = self.translator.translate(japanese_text)
-            return result
+            return self._translate_with_ollama(japanese_text)
         except Exception as e:
             logger.error(f"翻译失败: {str(e)}")
             return japanese_text
@@ -258,6 +239,7 @@ class JapaneseVideoTranslator:
     def process_video(self, video_path: str, translate: bool = True) -> Dict:
         """
         处理视频：提取音频 -> 语音识别 -> 翻译
+        注意：音频文件持久化存储，除非明确调用 delete_audio() 否则不删除
 
         Args:
             video_path: 视频文件路径
@@ -275,51 +257,119 @@ class JapaneseVideoTranslator:
             'original_text': '',
             'translated_text': '',
             'segments': [],
+            'audio_path': None,
+            'srt_path': None,
             'error': None
         }
 
         video_dir = os.path.dirname(video_path)
         video_name = os.path.splitext(os.path.basename(video_path))[0]
         audio_path = os.path.join(video_dir, f"{video_name}_audio.wav")
+        result['audio_path'] = audio_path
 
         logger.info(f"开始处理视频: {video_path}")
 
+        # 步骤1：提取音频（持久化存储）
         if not os.path.exists(audio_path):
             logger.info(f"音频文件不存在，正在提取...")
             extract_success = self._extract_audio(video_path, audio_path)
             if not extract_success:
                 result['error'] = "音频提取失败，请确保已安装 ffmpeg"
                 return result
+            logger.info(f"音频已提取: {audio_path}")
         else:
             logger.info(f"使用已有音频: {audio_path}")
+
+        # 步骤2：语音转文字（带时间戳）
         try:
             transcription = self.transcribe_audio(audio_path)
             result['original_text'] = transcription['text']
             result['segments'] = transcription['segments']
+        except Exception as e:
+            result['error'] = f"语音识别失败: {str(e)}"
+            logger.error(result['error'])
+            return result
 
-            if translate and transcription['text']:
+        # 步骤3：翻译
+        if translate and transcription['text']:
+            try:
                 result['translated_text'] = self.translate_text(transcription['text'])
 
+                # 翻译每个片段
                 translated_segments = self.translate_segments(transcription['segments'])
                 for i, seg in enumerate(translated_segments):
-                    result['segments'][i]['chinese'] = seg['chinese']
+                    if i < len(result['segments']):
+                        result['segments'][i]['chinese'] = seg['chinese']
+            except Exception as e:
+                result['error'] = f"翻译失败: {str(e)}"
+                logger.error(result['error'])
+                return result
 
-            result['success'] = True
-            logger.info(f"视频处理完成，识别文字长度: {len(result['original_text'])}")
-
-        except Exception as e:
-            result['error'] = str(e)
-            logger.error(f"视频处理失败: {str(e)}")
+        result['success'] = True
+        logger.info(f"视频处理完成，识别文字长度: {len(result['original_text'])}")
 
         return result
 
+    def get_audio_path(self, video_path: str) -> str:
+        """获取音频文件路径（不提取，只计算路径）"""
+        video_dir = os.path.dirname(video_path)
+        video_name = os.path.splitext(os.path.basename(video_path))[0]
+        return os.path.join(video_dir, f"{video_name}_audio.wav")
+
+    def delete_audio(self, video_path: str) -> bool:
+        """删除视频对应的音频文件"""
+        audio_path = self.get_audio_path(video_path)
+        try:
+            if os.path.exists(audio_path):
+                os.remove(audio_path)
+                logger.info(f"已删除音频: {audio_path}")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"删除音频失败: {e}")
+            return False
+
 
 def format_time(seconds: float) -> str:
-    """将秒数转换为时间戳格式 HH:MM:SS"""
+    """将秒数转换为 SRT 时间戳格式 HH:MM:SS,mmm"""
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
     secs = int(seconds % 60)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    millis = int((seconds % 1) * 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def generate_srt(segments: List[Dict], output_path: str) -> bool:
+    """
+    生成 SRT 字幕文件
+
+    Args:
+        segments: 片段列表，每个包含 start, end, text, chinese
+        output_path: 输出 SRT 文件路径
+
+    Returns:
+        bool: 是否成功
+    """
+    if not segments:
+        return False
+
+    try:
+        with open(output_path, 'w', encoding='utf-8') as f:
+            for i, seg in enumerate(segments):
+                text = seg.get('text', seg.get('japanese', '')).strip()
+                if not text:
+                    continue
+                chinese = seg.get('chinese', '')
+                f.write(f"{i+1}\n")
+                f.write(f"{format_time(seg['start'])} --> {format_time(seg['end'])}\n")
+                if chinese:
+                    f.write(f"{text}\n{chinese}\n\n")
+                else:
+                    f.write(f"{text}\n\n")
+        return True
+    except Exception as e:
+        logger.error(f"生成 SRT 失败: {e}")
+        return False
 
 
 def format_transcript(segments: List[Dict], include_translation: bool = True) -> str:

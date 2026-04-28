@@ -526,3 +526,49 @@ except Exception:
 finally:
     conn.close()
 ```
+
+---
+
+## 十三、翻译模块技术规范
+
+### 规则：翻译模块必须使用本地模型
+
+`translator.py` 翻译管道：
+
+| 步骤 | 工具 | 说明 |
+|------|------|------|
+| 音频提取 | ffmpeg | 从视频提取 16kHz mono PCM |
+| 日语识别 | Vosk | 离线识别，无时间戳 |
+| 日文翻译 | Ollama qwen2.5:7b | 本地 HTTP API (`localhost:11434`) |
+
+**禁止使用联网翻译**（deep-translator / GoogleTranslator）。
+
+### 规则：音频持久化存储
+
+`process_video()` 中的音频文件存储在**视频同目录**下：
+```
+{video_dir}/{video_name}_audio.wav
+```
+
+下次运行时如果音频已存在，跳过提取步骤。
+
+### 规则：Ollama 翻译调用格式
+
+```python
+req_data = {
+    "model": "qwen2.5:7b",
+    "prompt": prompt,
+    "stream": False
+}
+# POST http://localhost:11434/api/generate
+# timeout=120s（大文本翻译需要时间）
+```
+
+### 规则：Vosk 模型路径
+
+```python
+model_path = r"C:\vosk-model-ja-0.22"
+```
+
+必须确保模型存在，否则抛出 `RuntimeError`。
+

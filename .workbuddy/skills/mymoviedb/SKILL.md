@@ -56,7 +56,7 @@ MyMovieDB/
 │   ├── jellyfin.py           # Jellyfin 格式目录扫描
 │   ├── models.py             # Pydantic v2 数据模型
 │   ├── config.py             # 全局配置（HOST/PORT/路径等）
-│   ├── translator.py         # 翻译模块（勿改动）⚠️
+│   ├── translator.py         # 翻译模块（Vosk日语识别 + Ollama qwen翻译 + ffmpeg）⭐
 │   ├── migrate.py            # 数据库迁移脚本
 │   ├── tray_launcher.py      # 系统托盘启动器（PyInstaller 打包用）
 │   └── requirements.txt      # Python 依赖
@@ -78,6 +78,8 @@ MyMovieDB/
 │   ├── OPTIMIZATION_PLAN.md  # 优化计划
 │   └── 项目规范.md            # 目录规范
 ├── tests/                    # 测试脚本（test_*.py / check_*.py）
+├── logs/                     # 日志文件（debug_out.txt 等）
+├── backups/                  # 备份文件（index.html.bak20260401 等）
 ├── .workbuddy/skills/mymoviedb/  # 本 Skill 目录
 │   ├── SKILL.md              # 本文件
 │   └── references/           # 详细参考文档
