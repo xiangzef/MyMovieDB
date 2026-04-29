@@ -2,10 +2,11 @@
 ================================================================================
 日语语音提取翻译模块 - 从视频中提取日语语音并翻译成中文
 ================================================================================
-文件路径: F:\github\MyMovieDB\backend\translator.py
+文件路径: F:\\github\\MyMovieDB\\backend\\translator.py
 功能说明:
     1. 从视频文件中提取音频（持久化存储，不自动删除）
     2. 使用 Faster-Whisper 进行日语语音识别（带时间戳）
+      - 若 Whisper 不可用或下载模型失败，回退使用 Vosk 日语模型
     3. 使用 Ollama 本地模型翻译日文到中文
     4. 生成带时间戳的 SRT 字幕文件
     5. 音频仅在 SRT 成功生成后才删除
@@ -15,15 +16,18 @@
 import os
 import subprocess
 import logging
+import urllib.request
 from pathlib import Path
 from typing import Optional, List, Dict
 import json
 
 logger = logging.getLogger(__name__)
 
-# 优先使用 faster-whisper（已安装），回退到 openai-whisper
+# 组件可用性状态
 WHISPER_AVAILABLE = False
 FASTER_WHISPER_AVAILABLE = False
+VOSK_AVAILABLE = False
+TRANSLATOR_AVAILABLE = True  # Ollama 模式，代码加载即认为可用
 
 try:
     from faster_whisper import WhisperModel
@@ -39,6 +43,19 @@ except ImportError:
     except ImportError:
         WHISPER_AVAILABLE = False
         logger.warning("Whisper 未安装，语音识别功能不可用")
+
+# 检查 Vosk（用于 Whisper 不可用时的备选）
+try:
+    import vosk
+    # 检查模型是否存在
+    VOSK_MODEL_PATH = r"C:\vosk-model-ja-0.22"
+    if os.path.exists(VOSK_MODEL_PATH):
+        VOSK_AVAILABLE = True
+        logger.info(f"Vosk 日语模型可用: {VOSK_MODEL_PATH}")
+    else:
+        logger.warning(f"Vosk 模型不存在: {VOSK_MODEL_PATH}")
+except ImportError:
+    logger.warning("Vosk 未安装")
 
 
 class JapaneseVideoTranslator:
@@ -79,7 +96,6 @@ class JapaneseVideoTranslator:
 
     def _translate_with_ollama(self, text: str) -> str:
         """使用 Ollama qwen2.5:7b 翻译日文到中文"""
-        import urllib.request
         import json
 
         prompt = f"""你是一个专业的日语翻译。请将下面的日语翻译成中文，只输出翻译结果，不要解释。
@@ -141,9 +157,59 @@ class JapaneseVideoTranslator:
             logger.error(f"音频提取失败: {str(e)}")
             return False
 
+    def _transcribe_with_vosk(self, audio_path: str) -> Dict:
+        """使用 Vosk 日语模型转录（Whisper 不可用时的备选方案）"""
+        import vosk
+        import wave
+
+        # 转换为 16kHz mono PCM
+        pcm_path = audio_path + ".pcm"
+        try:
+            cmd = [
+                'ffmpeg', '-y', '-i', audio_path,
+                '-ar', '16000', '-ac', '1', '-acodec', 'pcm_s16le',
+                '-f', 's16le', pcm_path
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            if result.returncode != 0:
+                raise RuntimeError(f"音频转换失败: {result.stderr}")
+        except Exception as e:
+            raise RuntimeError(f"Vosk 音频转换失败: {e}")
+
+        # 加载模型并转录
+        model_path = r"C:\vosk-model-ja-0.22"
+        model = vosk.Model(model_path)
+        recognizer = vosk.KaldiRecognizer(model, 16000)
+
+        with open(pcm_path, "rb") as f:
+            while True:
+                data = f.read(2000)
+                if not data:
+                    break
+                recognizer.AcceptWaveform(data)
+
+        result_json = recognizer.FinalResult()
+        result_dict = json.loads(result_json)
+
+        # 清理临时文件
+        try:
+            os.remove(pcm_path)
+        except:
+            pass
+
+        text = result_dict.get("text", "").strip()
+        logger.info(f"Vosk 转录完成，识别文字: {len(text)} 字符")
+
+        # Vosk 不提供时间戳，返回空 segments
+        return {
+            'text': text,
+            'segments': []
+        }
+
     def transcribe_audio(self, audio_path: str, language: str = "ja") -> Dict:
         """
         使用 Faster-Whisper 转录音频（带时间戳）
+        若 Whisper 不可用或失败，回退使用 Vosk 日语模型
 
         Args:
             audio_path: 音频文件路径
@@ -152,44 +218,49 @@ class JapaneseVideoTranslator:
         Returns:
             Dict: 包含 'text', 'segments' 的转录结果，每个 segment 有 start/end/text
         """
-        self._load_whisper_model()
+        # 优先尝试 Whisper
+        if WHISPER_AVAILABLE:
+            try:
+                self._load_whisper_model()
+                logger.info(f"正在用 Faster-Whisper 转录音频: {audio_path}")
 
-        logger.info(f"正在用 Faster-Whisper 转录音频: {audio_path}")
+                segments, info = self.model.transcribe(
+                    audio_path,
+                    language=language,
+                    vad_filter=True,
+                    vad_min_silence_duration_ms=500
+                )
 
-        try:
-            # 转录，vad_filter=True 启用语音活动检测，过滤静音
-            segments, info = self.model.transcribe(
-                audio_path,
-                language=language,
-                vad_filter=True,
-                vad_min_silence_duration_ms=500
-            )
+                segment_list = []
+                full_text = []
 
-            # 收集结果
-            segment_list = []
-            full_text = []
+                for seg in segments:
+                    seg_text = seg.text.strip()
+                    if seg_text:
+                        full_text.append(seg_text)
+                        segment_list.append({
+                            'start': round(seg.start, 2),
+                            'end': round(seg.end, 2),
+                            'text': seg_text
+                        })
 
-            for seg in segments:
-                seg_text = seg.text.strip()
-                if seg_text:
-                    full_text.append(seg_text)
-                    segment_list.append({
-                        'start': round(seg.start, 2),
-                        'end': round(seg.end, 2),
-                        'text': seg_text
-                    })
+                result_text = ' '.join(full_text)
+                logger.info(f"转录完成，识别文字: {len(result_text)} 字符，片段数: {len(segment_list)}")
 
-            result_text = ' '.join(full_text)
-            logger.info(f"转录完成，识别文字: {len(result_text)} 字符，片段数: {len(segment_list)}")
+                return {
+                    'text': result_text,
+                    'segments': segment_list
+                }
+            except Exception as e:
+                logger.warning(f"Faster-Whisper 转录失败，回退到 Vosk: {e}")
 
-            return {
-                'text': result_text,
-                'segments': segment_list
-            }
+        # Whisper 不可用或失败，使用 Vosk
+        if VOSK_AVAILABLE:
+            logger.info("使用 Vosk 日语模型转录")
+            return self._transcribe_with_vosk(audio_path)
 
-        except Exception as e:
-            logger.error(f"转录失败: {e}")
-            raise RuntimeError(f"转录失败: {e}")
+        # 两者都不可用
+        raise RuntimeError("Whisper 和 Vosk 都不可用，无法进行语音识别")
 
     def translate_text(self, japanese_text: str) -> str:
         """
