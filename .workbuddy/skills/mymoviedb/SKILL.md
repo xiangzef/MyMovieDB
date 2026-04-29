@@ -56,7 +56,7 @@ MyMovieDB/
 │   ├── jellyfin.py           # Jellyfin 格式目录扫描
 │   ├── models.py             # Pydantic v2 数据模型
 │   ├── config.py             # 全局配置（HOST/PORT/路径等）
-│   ├── translator.py         # 翻译模块（Vosk日语识别 + Ollama qwen翻译 + ffmpeg）⭐
+│   ├── translator.py         # 翻译模块（Faster-Whisper VAD + Ollama qwen2.5翻译）⭐
 │   ├── migrate.py            # 数据库迁移脚本
 │   ├── tray_launcher.py      # 系统托盘启动器（PyInstaller 打包用）
 │   └── requirements.txt      # Python 依赖

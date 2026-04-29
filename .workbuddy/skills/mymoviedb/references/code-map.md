@@ -522,8 +522,13 @@ Step3: 调用 _extract_code() 提取番号
 
 **翻译管道**：
 ```
-视频 → ffmpeg 音频提取(16kHz mono PCM) → Vosk 日语识别 → Ollama qwen2.5:7b 翻译 → SRT 字幕
+视频 → ffmpeg 音频提取 → Faster-Whisper VAD 识别(句级时间戳) → Ollama qwen2.5:7b 翻译 → 双语SRT
 ```
+
+**回退机制**：
+- 优先：Faster-Whisper（Silero VAD，精确句级时间戳）
+- 回退：能量检测 VAD + Vosk 分段识别
+- HuggingFace 镜像：`https://hf-mirror.com` 解决网络问题
 
 | 类/函数 | 说明 |
 |---|---|
@@ -531,7 +536,9 @@ Step3: 调用 _extract_code() 提取番号
 | `JapaneseVideoTranslator.__init__(model_size)` | 初始化，默认 `base` |
 | `JapaneseVideoTranslator.process_video(video_path, translate)` | 执行完整翻译流程 |
 | `JapaneseVideoTranslator._extract_audio(video_path, audio_path)` | 用 ffmpeg 提取音频 |
-| `JapaneseVideoTranslator.transcribe_audio(audio_path, language)` | 用 Vosk 转录音频 |
+| `JapaneseVideoTranslator.transcribe_audio(audio_path, language)` | 用 Faster-Whisper 转录音频 |
+| `JapaneseVideoTranslator._energy_based_vad(audio_path)` | 能量检测 VAD（备选方案）|
+| `JapaneseVideoTranslator._transcribe_with_vosk_vad(audio_path)` | Vosk VAD 分段识别（备选方案）|
 | `JapaneseVideoTranslator._translate_with_ollama(text)` | 用 Ollama qwen2.5:7b 翻译日文→中文 |
 | `JapaneseVideoTranslator.translate_text(japanese_text)` | 翻译文本（对外接口） |
 | `JapaneseVideoTranslator.translate_segments(segments)` | 翻译片段列表 |
@@ -540,9 +547,11 @@ Step3: 调用 _extract_code() 提取番号
 
 **关键行为**：
 - 音频持久化存储在视频同目录：`{video_name}_audio.wav`（下次跳过提取）
+- Faster-Whisper 模型：约 75MB（base），缓存本地
 - Vosk 模型路径：`C:\vosk-model-ja-0.22`
 - Ollama API：`http://localhost:11434/api/generate`，超时 120s
 - `transcribe_audio()` 返回 `{ text, segments }`，segments 每个元素含 `start/end/text`
+- SRT 生成成功后自动删除音频文件
 
 ---
 
