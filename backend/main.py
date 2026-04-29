@@ -7,7 +7,7 @@ FastAPI 主入口
     - python-dotenv: 环境变量管理
 """
 
-from fastapi import FastAPI, HTTPException, Query, Depends, Request
+from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
@@ -306,21 +306,12 @@ def _extract_code_from_filename(filename: str) -> Optional[str]:
 # 初始化数据库
 db.init_all_tables()
 
-# 创建 FastAPI 应用
-app = FastAPI(
-    title="MyMovieDB API",
-    description="本地影视库刮削器 API",
-    version="1.0.0"
-)
-
-
-@app.on_event("startup")
-async def startup_event():
-    """启动时同步数据 + 清理已过期的 Token"""
-    # ① 同步 is_jellyfin 标识（防止数据库层面的来源不一致）
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """启动/停机生命周期，吞掉停机时的 CancelledError"""
+    # 启动时
     try:
         sync_result = db.sync_local_videos_is_jellyfin()
-        # 修复：只打印有实际修复的情况；0 表示已同步，无需提示
         has_actual_fix = (
             sync_result.get('lv_is_jellyfin_synced', 0) > 0 or
             sync_result.get('case_a_fixed', 0) > 0 or
@@ -336,10 +327,8 @@ async def startup_event():
     except Exception as e:
         print(f"[DataSync] 启动时同步 is_jellyfin 失败: {e}")
 
-    # ② 修复 is_jellyfin IS NULL 的孤立记录
     try:
         fix_result = db.fix_is_jellyfin_null_records()
-        # 只在有修复或仍有残留时打印
         if fix_result.get('fixed', 0) > 0:
             print(f"[DataSync] is_jellyfin=NULL: {fix_result['message']}")
         elif fix_result.get('remaining_null', 0) > 0:
@@ -355,6 +344,22 @@ async def startup_event():
             print(f"[Auth] 清理了 {cleaned} 个过期 Token")
     except Exception as e:
         print(f"[Auth] 启动时清理 Token 失败: {e}")
+
+    yield  # 正常运行
+
+    # 停机时：吞掉 CancelledError，避免 ERROR 日志
+    try:
+        db.close_db()
+    except Exception:
+        pass
+
+# 创建 FastAPI 应用
+app = FastAPI(
+    title="MyMovieDB API",
+    description="本地影视库刮削器 API",
+    version="1.0.0",
+    lifespan=lifespan
+)
 
 
 # 配置 CORS（允许前端访问）
