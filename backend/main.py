@@ -10,8 +10,9 @@ FastAPI 主入口
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import StreamingResponse
+from starlette.requests import Request
+from starlette.staticfiles import StaticFiles
+from starlette.responses import StreamingResponse
 from pathlib import Path
 from typing import Optional, List
 import logging
