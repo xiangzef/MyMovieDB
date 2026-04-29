@@ -366,25 +366,37 @@ def get_movie_by_id(movie_id: int) -> Optional[dict]:
 
 
 def get_all_movies(page: int = 1, page_size: int = 20) -> tuple:
-    """获取所有影片（分页）"""
+    """获取所有影片（分页）
+    排序规则：
+    1. 有封面有信息的最前
+    2. 信息缺失的其次（无论是否有封面）
+    3. 无封面的最后
+    同组内按番号字母数字排序
+    """
     conn = get_db()
     cursor = conn.cursor()
-    
+
     cursor.execute("SELECT COUNT(*) FROM movies")
     total = cursor.fetchone()[0]
-    
+
     offset = (page - 1) * page_size
     cursor.execute("""
         SELECT m.*, lv.fanart_path, lv.poster_path, lv.thumb_path
         FROM movies m
         LEFT JOIN local_videos lv ON m.local_video_id = lv.id
-        ORDER BY m.created_at DESC
+        ORDER BY
+            CASE WHEN m.actors IS NOT NULL AND m.actors != '' AND m.title IS NOT NULL AND m.title != '' THEN 0 ELSE 1 END,
+            CASE WHEN (m.local_cover_path IS NOT NULL AND m.local_cover_path != ''
+                       OR m.cover_url IS NOT NULL AND m.cover_url != ''
+                       OR lv.fanart_path IS NOT NULL AND lv.fanart_path != ''
+                       OR lv.poster_path IS NOT NULL AND lv.poster_path != '') THEN 0 ELSE 1 END,
+            m.code ASC
         LIMIT ? OFFSET ?
     """, (page_size, offset))
-    
+
     rows = cursor.fetchall()
     conn.close()
-    
+
     return total, [dict(row) for row in rows]
 
 
@@ -2264,7 +2276,11 @@ def get_actor_stats(page: int = 1, page_size: int = 48, keyword: str = None) -> 
         filtered = actor_count
 
     total = len(filtered)
-    sorted_actors = sorted(filtered.items(), key=lambda x: -x[1])
+    # 排序：有头像的在前，没头像的在后，同组内按名字字母序
+    sorted_actors = sorted(
+        filtered.items(),
+        key=lambda x: (-_has_avatar(x[0]), x[0])
+    )
 
     # 分页
     offset = (page - 1) * page_size
