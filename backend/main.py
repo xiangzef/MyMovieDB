@@ -641,7 +641,7 @@ def _audit_database() -> dict:
     results["actors_without_avatar"] = len(all_actors - actors_with_avatar)
     for movie in movies:
         movie_id, code, title, actors = movie[0], movie[1], movie[2], movie[3]
-        local_cover_path, cover_url = movie[5], movie[4]
+        local_cover_path, cover_url, fanart_path, poster_path = movie[5], movie[4], movie[6], movie[7]
         video_count = movie[9]
         has_actors = bool(actors and actors.strip())
         has_title = bool(title and title.strip())
@@ -649,7 +649,9 @@ def _audit_database() -> dict:
             results["complete" if (has_actors and has_title) else "stale"] += 1
         else:
             results["scraped_only" if (has_actors or has_title) else "orphan"] += 1
-        if not local_cover_path and not cover_url:
+        # Jellyfin 迁移的影片封面在原始文件夹，不在 data/covers/
+        has_cover = bool(local_cover_path or cover_url or fanart_path or poster_path)
+        if not has_cover:
             results["missing_cover"] += 1
     conn.close()
     total = results["total_movies"]
@@ -693,10 +695,14 @@ async def admin_check(type: str = Query(...)):
         result["missing_videos"] = [dict(zip(['id','code','title','actors'], row)) for row in cursor.fetchall()]
     elif type == "missing_covers":
         cursor.execute("""
-            SELECT DISTINCT m.id, m.code, m.title FROM movies m
+            SELECT DISTINCT m.id, m.code, m.title, m.fanart_path, m.poster_path,
+                   m.local_cover_path, m.cover_url
+            FROM movies m
             INNER JOIN local_videos lv ON lv.movie_id = m.id
             WHERE (m.local_cover_path IS NULL OR m.local_cover_path = '')
             AND (m.cover_url IS NULL OR m.cover_url = '')
+            AND (m.fanart_path IS NULL OR m.fanart_path = '')
+            AND (m.poster_path IS NULL OR m.poster_path = '')
         """)
         result["missing_covers"] = [dict(zip(['id','code','title'], row)) for row in cursor.fetchall()]
     elif type == "invalid_codes":
@@ -1020,7 +1026,7 @@ async def open_folder(path: str = Query(..., description="要打开的文件夹�
 
     # 2. 检查是否在已注册目录下
     if not is_allowed:
-        sources = db.get_all_sources()
+        sources = db.get_local_sources()
         norm_path = os.path.normpath(path)
         for s in sources:
             if s.get("path") and norm_path.startswith(os.path.normpath(s["path"])):
@@ -1063,21 +1069,25 @@ async def play_video(path: str = Query(..., description="要播放的视频文�
 
     # 安全检查（与 open-folder 相同）
     is_allowed = False
-    conn = db.get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT path FROM local_videos WHERE path = ?", (path,))
-    if cursor.fetchone():
-        is_allowed = True
+    try:
+        conn = db.get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT path FROM local_videos WHERE path = ?", (path,))
+        if cursor.fetchone():
+            is_allowed = True
 
-    if not is_allowed:
-        sources = db.get_all_sources()
-        norm_path = os.path.normpath(path)
-        for s in sources:
-            if s.get("path") and norm_path.startswith(os.path.normpath(s["path"])):
-                is_allowed = True
-                break
+        if not is_allowed:
+            sources = db.get_local_sources()
+            norm_path = os.path.normpath(path)
+            for s in sources:
+                if s.get("path") and norm_path.startswith(os.path.normpath(s["path"])):
+                    is_allowed = True
+                    break
 
-    conn.close()
+        conn.close()
+    except Exception as e:
+        logging.error(f"[play_video] 安全检查失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="服务器内部错误")
 
     if not is_allowed:
         raise HTTPException(status_code=403, detail="路径不在允许访问的范围内")
@@ -1441,7 +1451,8 @@ async def scrape_batch(req: ScrapeRequest):
                                 missing_fields.append("制作商")
                             if not movie.get("actors"):
                                 missing_fields.append("演员")
-                            if not movie.get("local_cover_path") and not movie.get("cover_url"):
+                            if not movie.get("local_cover_path") and not movie.get("cover_url") \
+                                    and not movie.get("fanart_path") and not movie.get("poster_path"):
                                 missing_fields.append("封面")
                             if not movie.get("release_date"):
                                 missing_fields.append("发布日期")
