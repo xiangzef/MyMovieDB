@@ -21,6 +21,9 @@ from pathlib import Path
 from typing import Optional, List, Dict
 import json
 
+# 设置 Hugging Face 镜像源（解决国内网络超时问题）
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+
 logger = logging.getLogger(__name__)
 
 # 组件可用性状态
@@ -206,6 +209,187 @@ class JapaneseVideoTranslator:
             'segments': []
         }
 
+    def _energy_based_vad(self, audio_path: str, frame_ms: int = 30,
+                           energy_threshold: float = 0.005,
+                           min_speech_ms: int = 200,
+                           min_silence_ms: int = 150) -> List[Dict]:
+        """
+        基于能量的语音活动检测 (VAD)
+
+        Args:
+            audio_path: 16kHz mono WAV 文件路径
+            frame_ms: 每帧时长(毫秒)
+            energy_threshold: 能量阈值
+            min_speech_ms: 最小语音时长(毫秒)
+            min_silence_ms: 最小静音时长(毫秒)
+
+        Returns:
+            List[Dict]: 语音段列表 [{start, end, duration}]
+        """
+        import wave
+        import array
+
+        sample_rate = 16000
+        frame_samples = int(sample_rate * frame_ms / 1000)
+
+        with wave.open(audio_path, 'rb') as wf:
+            n_frames = wf.getnframes()
+            frames = wf.readframes(n_frames)
+
+        if not frames:
+            return []
+
+        audio_data = array.array('h', frames)
+
+        # 计算每帧的能量
+        energies = []
+        for i in range(0, len(audio_data) - frame_samples, frame_samples):
+            frame = audio_data[i:i + frame_samples]
+            rms = (sum(sample * sample for sample in frame) / len(frame)) ** 0.5
+            energies.append(rms)
+
+        if not energies:
+            return []
+
+        # 自适应阈值
+        sorted_energies = sorted(energies)
+        median_energy = sorted_energies[len(sorted_energies) // 2]
+        threshold = max(energy_threshold, median_energy * 0.1)
+
+        speech_frames = [e > threshold for e in energies]
+
+        min_speech_frames = int(min_speech_ms / frame_ms)
+        min_silence_frames = int(min_silence_ms / frame_ms)
+
+        speech_segments = []
+        in_speech = False
+        segment_start = 0
+
+        for i, is_speech in enumerate(speech_frames):
+            if is_speech and not in_speech:
+                in_speech = True
+                segment_start = i
+            elif not is_speech and in_speech:
+                silence_count = 0
+                for j in range(i, len(speech_frames)):
+                    if not speech_frames[j]:
+                        silence_count += 1
+                    else:
+                        break
+                if silence_count >= min_silence_frames:
+                    start_time = segment_start * frame_ms / 1000.0
+                    end_time = i * frame_ms / 1000.0
+                    duration_ms = (i - segment_start) * frame_ms
+                    if duration_ms >= min_speech_ms:
+                        speech_segments.append({
+                            'start': start_time,
+                            'end': end_time,
+                            'duration': end_time - start_time
+                        })
+                    in_speech = False
+
+        if in_speech:
+            start_time = segment_start * frame_ms / 1000.0
+            end_time = len(speech_frames) * frame_ms / 1000.0
+            speech_segments.append({
+                'start': start_time,
+                'end': end_time,
+                'duration': end_time - start_time
+            })
+
+        logger.info(f"VAD 检测到 {len(speech_segments)} 个语音段")
+        return speech_segments
+
+    def _transcribe_vosk_segment(self, audio_path: str, start_sec: float,
+                                 end_sec: float, model) -> str:
+        """识别单个音频片段的文字"""
+        import vosk
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix='.pcm', delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            cmd = [
+                'ffmpeg', '-y', '-i', audio_path,
+                '-ss', str(start_sec), '-to', str(end_sec),
+                '-ar', '16000', '-ac', '1', '-acodec', 'pcm_s16le',
+                '-f', 's16le', tmp_path
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            if result.returncode != 0:
+                return ''
+
+            recognizer = vosk.KaldiRecognizer(model, 16000)
+            with open(tmp_path, 'rb') as f:
+                while True:
+                    data = f.read(2000)
+                    if not data:
+                        break
+                    recognizer.AcceptWaveform(data)
+
+            result_json = recognizer.FinalResult()
+            result_dict = json.loads(result_json)
+            return result_dict.get('text', '').strip()
+        finally:
+            try:
+                os.remove(tmp_path)
+            except:
+                pass
+
+    def _transcribe_with_vosk_vad(self, audio_path: str) -> Dict:
+        """
+        使用 Vosk 日语模型 + VAD 分段转录（带时间戳）
+        替代方案：能量检测 VAD + 逐段 Vosk 识别
+        """
+        import vosk
+
+        # 1. VAD 检测语音段
+        speech_segments = self._energy_based_vad(
+            audio_path,
+            frame_ms=30,
+            energy_threshold=0.005,
+            min_speech_ms=200,
+            min_silence_ms=150
+        )
+
+        if not speech_segments:
+            return {'text': '', 'segments': []}
+
+        # 2. 加载 Vosk 模型（一次）
+        model_path = r"C:\vosk-model-ja-0.22"
+        model = vosk.Model(model_path)
+
+        # 3. 逐段识别
+        segment_list = []
+        full_text = []
+        total = len(speech_segments)
+
+        logger.info(f"开始 Vosk 分段识别，共 {total} 段...")
+
+        for i, seg in enumerate(speech_segments):
+            start, end = seg['start'], seg['end']
+            text = self._transcribe_vosk_segment(audio_path, start, end, model)
+
+            if text:
+                full_text.append(text)
+                segment_list.append({
+                    'start': round(start, 2),
+                    'end': round(end, 2),
+                    'text': text
+                })
+
+            if (i + 1) % 50 == 0 or (i + 1) == total:
+                logger.info(f"  Vosk 识别进度: {i+1}/{total}")
+
+        result_text = ' '.join(full_text)
+        logger.info(f"Vosk VAD 转录完成: {len(result_text)} 字符, {len(segment_list)} 片段")
+
+        return {
+            'text': result_text,
+            'segments': segment_list
+        }
+
     def transcribe_audio(self, audio_path: str, language: str = "ja") -> Dict:
         """
         使用 Faster-Whisper 转录音频（带时间戳）
@@ -228,7 +412,7 @@ class JapaneseVideoTranslator:
                     audio_path,
                     language=language,
                     vad_filter=True,
-                    vad_min_silence_duration_ms=500
+                    vad_parameters=dict(min_silence_duration_ms=500)
                 )
 
                 segment_list = []
@@ -254,10 +438,10 @@ class JapaneseVideoTranslator:
             except Exception as e:
                 logger.warning(f"Faster-Whisper 转录失败，回退到 Vosk: {e}")
 
-        # Whisper 不可用或失败，使用 Vosk
+        # Whisper 不可用或失败，使用 Vosk VAD 分段识别
         if VOSK_AVAILABLE:
-            logger.info("使用 Vosk 日语模型转录")
-            return self._transcribe_with_vosk(audio_path)
+            logger.info("使用 Vosk 日语模型 + VAD 分段转录")
+            return self._transcribe_with_vosk_vad(audio_path)
 
         # 两者都不可用
         raise RuntimeError("Whisper 和 Vosk 都不可用，无法进行语音识别")

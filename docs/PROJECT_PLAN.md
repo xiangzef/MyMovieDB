@@ -506,16 +506,61 @@ data: {"path": "...", "reason": "目标路径权限不足"}
 
 ---
 
+### 2026-04-29 23:05 — 翻译模块完成 Faster-Whisper VAD + Ollama 两步流程 ✅
+
+- **执行者**: 小尼克 (WorkBuddy AI)
+- **变更文件**:
+  - `backend/translator.py` — 添加 HuggingFace 镜像源(HF_ENDPOINT)、能量检测 VAD(`_energy_based_vad`)、Vosk VAD 分段识别(`_transcribe_with_vosk_vad`)
+  - `tests/test_translate.py` — 重写为 Faster-Whisper VAD 工作流
+
+- **翻译模块最终架构**:
+  ```
+  视频 → ffmpeg提取音频 → Faster-Whisper VAD 识别（句级时间戳）→ 日语SRT
+                                                                        ↓
+                                                              Ollama qwen2.5:7b 逐句翻译
+                                                                        ↓
+                                                              生成双语SRT + 文本对照
+  ```
+  - 优先使用 Faster-Whisper（带 Silero VAD，精确句级时间戳）
+  - 若 Whisper 不可用/网络不通 → 回退到 能量检测VAD + Vosk 分段识别
+  - 镜像源: `https://hf-mirror.com` 解决国内网络问题
+
+- **实测结果（2小时视频 HODV-20574）**:
+  | 项目 | 数值 |
+  |------|------|
+  | 视频总时长 | 2小时4分 (7447秒) |
+  | VAD过滤后语音 | ~9分钟 (594秒) |
+  | 识别片段数 | 374个 |
+  | 日文字符 | 2970 |
+  | 生成文件 | `_ja.srt` (23KB), `.srt` (30KB双语), `_translated.txt` (16KB) |
+
+- **Token 消耗**: 约 ~3M
+- **备注**:
+  - faster-whisper base 模型约 75MB，已缓存本地
+  - VAD 参数 `vad_parameters=dict(min_silence_duration_ms=500)` 正确写法
+  - 音频文件在 SRT 生成成功后自动删除
+  - tests/ 目录已在 .gitignore，不纳入版本控制
+
+---
+
 ## 📋 待办事项（下次继续）
 
-### 🔴 紧急（下次会话优先处理）2026.04.29
+### 🟢 已完成（本次完成）
+
+| 任务 | 说明 |
+|------|------|
+| ✅ 翻译模块完整工作流 | Faster-Whisper VAD + Ollama 两步流程 |
+| ✅ 生成日语 SRT | `xxx_ja.srt` |
+| ✅ 生成双语 SRT | `xxx.srt` (日语+中文) |
+| ✅ 测试完整翻译流程 | 2小时视频验证成功 |
+
+### 🔴 继续优化（可选）
 
 | 优先级 | 任务 | 说明 |
 |--------|------|------|
-| P0 | 翻译功能断点续传 | 音频持久化 + 中断后从已有音频继续 |
-| P0 | 生成日语 SRT | 两步流程第一步：视频 → 日语 SRT |
-| P1 | 生成双语 SRT | 两步流程第二步：日语 SRT → 双语 SRT |
-| P1 | 测试完整翻译流程 | 用测试视频验证完整工作流 | |
+| P1 | 断点续传 | 音频持久化 + 中断后从已有音频继续 |
+| P1 | SSE进度反馈 | 翻译进度实时推送到前端 |
+| P2 | 批量翻译 | 多个视频排队处理 |
 
 ### 🟡 中期（Phase 1 范畴）
 
@@ -523,16 +568,6 @@ data: {"path": "...", "reason": "目标路径权限不足"}
 |--------|------|------|
 | P1 | Phase 1 安全稳定 | googletrans 异常隔离、全局异常处理 |
 | P1 | 主程序重构 | main.py 路由拆分（routes/） |
-| P1 | 翻译功能增强 | 支持批量翻译、SSE进度反馈 |
-
-### 📝 待整理的文件夹清单
-
-```
-tests/       # 待清理：保留 test_*.py，删除临时脚本
-logs/        # 待清理：只保留 debug_out.txt 等日志
-backups/     # 已整理：index.html.bak20260401, index.html.orig
-根目录/      # 待清理：检查是否有散落文件
-```
 
 ---
 
