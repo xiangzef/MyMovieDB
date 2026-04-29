@@ -1577,15 +1577,20 @@
             <!-- 工具状态检查 -->
             <div v-if="translationTools" class="add-source-form" style="margin-bottom:20px;background:#1a1a2e;border-radius:8px;padding:12px 16px;">
                 <h4 style="margin:0 0 8px 0;font-size:13px;">🔧 工具状态</h4>
-                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;font-size:12px;">
-                    <div :style="{color: translationTools.whisper ? '#4ade80' : '#f87171'}">
-                        {{ translationTools.whisper ? '✅' : '❌' }} Whisper 语音识别
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;font-size:12px;">
+                    <div :style="{color: translationTools.faster_whisper ? '#4ade80' : translationTools.vosk ? '#facc15' : '#f87171'}">
+                        {{ translationTools.faster_whisper ? '✅' : translationTools.vosk ? '⚠️' : '❌' }} Faster-Whisper
+                        <span v-if="translationTools.faster_whisper" style="color:#4ade80;font-size:10px;">(推荐)</span>
+                    </div>
+                    <div :style="{color: translationTools.vosk ? '#4ade80' : '#f87171'}">
+                        {{ translationTools.vosk ? '✅' : '❌' }} Vosk 日语识别
+                        <span v-if="translationTools.vosk" style="color:#facc15;font-size:10px;">(备选)</span>
+                    </div>
+                    <div :style="{color: translationTools.ollama ? '#4ade80' : '#f87171'}">
+                        {{ translationTools.ollama ? '✅' : '❌' }} Ollama 翻译
                     </div>
                     <div :style="{color: translationTools.ffmpeg ? '#4ade80' : '#f87171'}">
-                        {{ translationTools.ffmpeg ? '✅' : '❌' }} FFmpeg 音视频处理
-                    </div>
-                    <div :style="{color: translationTools.translator ? '#4ade80' : '#f87171'}">
-                        {{ translationTools.translator ? '✅' : '❌' }} Google 翻译引擎
+                        {{ translationTools.ffmpeg ? '✅' : '❌' }} FFmpeg
                     </div>
                 </div>
                 <div v-if="translationTools.missing && translationTools.missing.length" style="margin-top:8px;font-size:12px;color:#f87171;">
@@ -1593,6 +1598,22 @@
                 </div>
                 <div v-else-if="translationTools.ready" style="margin-top:8px;font-size:12px;color:#4ade80;">
                     ✅ 所有工具就绪，可以开始翻译
+                </div>
+                <!-- 工具选择下拉菜单 -->
+                <div style="display:flex;gap:16px;margin-top:12px;flex-wrap:wrap;">
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <span style="font-size:12px;color:#888;">语音识别:</span>
+                        <select v-model="translateAsrTool" :disabled="translateRunning" style="padding:4px 8px;border-radius:4px;border:1px solid #333;background:#1a1a2e;color:#fff;font-size:12px;">
+                            <option value="whisper" :disabled="!translationTools?.faster_whisper">Faster-Whisper (推荐)</option>
+                            <option value="vosk" :disabled="!translationTools?.vosk">Vosk (备选)</option>
+                        </select>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <span style="font-size:12px;color:#888;">翻译引擎:</span>
+                        <select v-model="translateEngine" :disabled="translateRunning" style="padding:4px 8px;border-radius:4px;border:1px solid #333;background:#1a1a2e;color:#fff;font-size:12px;">
+                            <option value="ollama" :disabled="!translationTools?.ollama">Ollama qwen2.5 (本地)</option>
+                        </select>
+                    </div>
                 </div>
             </div>
 
@@ -3800,6 +3821,8 @@ createApp({
         const translateResult = ref(null);
         const translateProgress = ref([]);
         const translateFileInput = ref(null);
+        const translateAsrTool = ref('whisper');  // whisper / vosk
+        const translateEngine = ref('ollama');    // ollama
         const batchTranslateInput = ref('');
         const batchTranslateRunning = ref(false);
         const batchTranslateProgress = ref(0);

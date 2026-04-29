@@ -40,11 +40,13 @@ import config as cfg
 import os
 
 try:
-    from translator import JapaneseVideoTranslator, WHISPER_AVAILABLE, TRANSLATOR_AVAILABLE
+    from translator import JapaneseVideoTranslator, WHISPER_AVAILABLE, TRANSLATOR_AVAILABLE, VOSK_AVAILABLE, FASTER_WHISPER_AVAILABLE
 except ImportError:
     JapaneseVideoTranslator = None
     WHISPER_AVAILABLE = False
     TRANSLATOR_AVAILABLE = False
+    VOSK_AVAILABLE = False
+    FASTER_WHISPER_AVAILABLE = False
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -3608,23 +3610,31 @@ async def check_translation_tools():
     """
     检查翻译工具的可用性
 
-    返回: { "whisper": true, "ffmpeg": true, "translator": true }
+    返回: {
+        "faster_whisper": true,  # Faster-Whisper 可用（推荐）
+        "vosk": true,           # Vosk 可用（备选）
+        "ollama": true,         # Ollama 翻译可用
+        "ffmpeg": true,         # FFmpeg 可用
+        "ready": true           # 是否就绪
+    }
     """
     import shutil
 
     result = {
+        "faster_whisper": FASTER_WHISPER_AVAILABLE,
         "whisper": WHISPER_AVAILABLE,
+        "vosk": VOSK_AVAILABLE,
+        "ollama": TRANSLATOR_AVAILABLE,
         "ffmpeg": shutil.which("ffmpeg") is not None,
-        "translator": TRANSLATOR_AVAILABLE
     }
 
     missing = []
-    if not result["whisper"]:
-        missing.append("openai-whisper")
+    if not result["faster_whisper"] and not result["vosk"]:
+        missing.append("语音识别(Whisper/Vosk)")
+    if not result["ollama"]:
+        missing.append("Ollama翻译")
     if not result["ffmpeg"]:
         missing.append("ffmpeg")
-    if not result["translator"]:
-        missing.append("deep-translator")
 
     result["ready"] = len(missing) == 0
     result["missing"] = missing
