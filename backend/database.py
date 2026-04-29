@@ -2237,6 +2237,26 @@ def get_actor_stats(page: int = 1, page_size: int = 48, keyword: str = None) -> 
             result = result.replace(ch, '_')
         return result.strip() or None
 
+    def _clean_actor_name(name: str) -> str | None:
+        """清洗演员姓名：去除 []\" 等残留符号，返回干净姓名或 None"""
+        if not name or not isinstance(name, str):
+            return None
+        raw = name.strip()
+        # 跳过明显无效值
+        if raw in ("", "[]", "佚名", "null", "None"):
+            return None
+        # 去除首尾的 [] " ' 空白字符
+        cleaned = raw.strip().strip("'\"").strip()
+        # 如果清洗后是 [] 或空，跳过
+        if cleaned in ("", "[]"):
+            return None
+        # 去除所有残留的 [ ] " 字符
+        cleaned = cleaned.replace("[", "").replace("]", "").replace('"', "").replace("'", "")
+        cleaned = cleaned.strip()
+        if not cleaned or cleaned in ("[]", "佚名"):
+            return None
+        return cleaned
+
     def _has_avatar(name: str) -> bool:
         """O(1) 判断演员是否有本地头像（直接文件名匹配）"""
         safe_name = _safe_filename(name)
@@ -2263,15 +2283,20 @@ def get_actor_stats(page: int = 1, page_size: int = 48, keyword: str = None) -> 
     for code, actors_str in rows:
         try:
             actors = json.loads(actors_str)
-            for a in actors:
-                if a and a.strip() and a != "佚名" and a != "[]":
-                    actor_count[a] = actor_count.get(a, 0) + 1
+            for raw_name in actors:
+                name = _clean_actor_name(raw_name)
+                if name:
+                    actor_count[name] = actor_count.get(name, 0) + 1
         except Exception:
             pass
 
     # 过滤关键词
     if keyword:
-        filtered = {k: v for k, v in actor_count.items() if keyword.lower() in k.lower()}
+        # 过滤时同时用干净名字和原始名字匹配
+        filtered = {
+            k: v for k, v in actor_count.items()
+            if keyword.lower() in k.lower()
+        }
     else:
         filtered = actor_count
 
@@ -2331,6 +2356,21 @@ def get_actors_without_avatars(page: int = 1, page_size: int = None) -> tuple:
             result = result.replace(ch, '_')
         return result.strip() or None
 
+    def _clean_actor_name(name: str) -> str | None:
+        """清洗演员姓名：去除 []\" 等残留符号，返回干净姓名或 None"""
+        if not name or not isinstance(name, str):
+            return None
+        raw = name.strip()
+        if raw in ("", "[]", "佚名", "null", "None"):
+            return None
+        cleaned = raw.strip().strip("'\"").strip()
+        if cleaned in ("", "[]"):
+            return None
+        cleaned = cleaned.replace("[", "").replace("]", "").replace('"', "").replace("'", "").strip()
+        if not cleaned or cleaned in ("[]", "佚名"):
+            return None
+        return cleaned
+
     def _has_avatar(name: str):
         """O(1) 判断演员是否有本地头像"""
         # 1) 真实名字格式（当前格式）
@@ -2366,9 +2406,10 @@ def get_actors_without_avatars(page: int = 1, page_size: int = None) -> tuple:
     for code, actors_str in rows:
         try:
             actors = json.loads(actors_str)
-            for a in actors:
-                if a and a.strip() and a != "佚名":
-                    actor_count[a] = actor_count.get(a, 0) + 1
+            for raw_name in actors:
+                name = _clean_actor_name(raw_name)
+                if name:
+                    actor_count[name] = actor_count.get(name, 0) + 1
         except Exception:
             pass
     conn.close()
