@@ -45,6 +45,10 @@ logs/*.log
 .DS_Store
 Thumbs.db
 
+# 网络挂载盘/外部盘（不跟踪）
+/y:
+/z:
+
 # Environment
 .env.local
 .env.*.local
