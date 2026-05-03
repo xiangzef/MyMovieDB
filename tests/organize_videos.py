@@ -26,6 +26,7 @@ _CODE_PATTERNS = [
     re.compile(r'\b(FC2[-_]?PPV[-_]?\d{5,9})\b', re.IGNORECASE),
     re.compile(r'\b(\d{3}[A-Z]{2,6}[-_]?\d{2,5})\b', re.IGNORECASE),
     re.compile(r'\b([A-Z]{2,6}-\d{2,5})\b', re.IGNORECASE),
+    re.compile(r'\b([A-Z]{2,6})(\d{3,5})([A-Z]{1,3})\b', re.IGNORECASE),
     re.compile(r'\b([A-Z]{2,6})(\d{3,5})\b', re.IGNORECASE),
 ]
 
@@ -61,17 +62,49 @@ def _extract_code(name: str) -> Optional[str]:
         m = pat.search(cleaned)
         if m:
             if i == 3:
+                # 匹配 [A-Z]{2,6})(\d{3,5})([A-Z]{1,3}) - 带字幕/盘符后缀
+                raw = f"{m.group(1)}-{m.group(2)}{m.group(3)}".upper()
+            elif i == 4:
+                # 匹配 [A-Z]{2,6})(\d{3,5}) - 无后缀
                 raw = f"{m.group(1)}-{m.group(2)}".upper()
+            elif i == 0:
+                raw = m.group(1).upper().replace('_', '-')
             else:
                 raw = m.group(1).upper().replace('_', '-')
             if _CODE_BLACKLIST.match(raw):
                 continue
             return raw
+
+    # 尝试剥离尾部字幕后缀字母再提取 (处理 SNOS-134U 这类情况)
+    for suffix_len in [1, 2]:
+        if len(name) > suffix_len:
+            try_name = name[:-suffix_len]
+            for i, pat in enumerate(_CODE_PATTERNS):
+                m = pat.search(try_name)
+                if m:
+                    if i == 3:
+                        raw = f"{m.group(1)}-{m.group(2)}{m.group(3)}".upper()
+                    elif i == 4:
+                        raw = f"{m.group(1)}-{m.group(2)}".upper()
+                    elif i == 0:
+                        raw = m.group(1).upper().replace('_', '-')
+                    else:
+                        raw = m.group(1).upper().replace('_', '-')
+                    if _CODE_BLACKLIST.match(raw):
+                        continue
+                    return raw
+            if not m:
+                break
+
     for i, pat in enumerate(_CODE_PATTERNS):
         m = pat.search(name)
         if m:
             if i == 3:
+                raw = f"{m.group(1)}-{m.group(2)}{m.group(3)}".upper()
+            elif i == 4:
                 raw = f"{m.group(1)}-{m.group(2)}".upper()
+            elif i == 0:
+                raw = m.group(1).upper().replace('_', '-')
             else:
                 raw = m.group(1).upper().replace('_', '-')
             if _CODE_BLACKLIST.match(raw):
@@ -84,6 +117,35 @@ def _extract_code_with_suffix(name: str) -> Tuple[Optional[str], str, str, str]:
     """从文件名提取番号 + 字幕类型 + 显示名 + 多盘标识"""
     base = Path(name).stem
     subtitle_type = "none"
+    disc_label = ""
+
+    # 优先尝试从完整文件名提取番号
+    code = _extract_code(base)
+    if code:
+        # 检查是否还有多余后缀需要识别
+        base_upper = base.upper()
+        code_upper = code.upper()
+        # 确保 base 是以 code 开头，才处理后缀
+        if base_upper.startswith(code_upper):
+            suffix = base_upper[len(code_upper):]
+            if suffix:
+                if suffix == "-UC":
+                    subtitle_type = "bilingual"
+                elif suffix == "-U":
+                    subtitle_type = "english"
+                elif suffix == "-C":
+                    subtitle_type = "chinese"
+                elif len(suffix) == 1 and suffix.isalpha():
+                    # 可能是盘符或字幕后缀
+                    if suffix in ("A", "B", "C"):
+                        disc_label = suffix
+                    elif suffix in ("U",):
+                        subtitle_type = "english"
+                    else:
+                        subtitle_type = "chinese"
+        return code, subtitle_type, "", disc_label
+
+    # 完整文件名无法提取，尝试剥离字幕/盘符后缀
     base_lower = base.lower()
 
     if base_lower.endswith("-uc"):
@@ -92,19 +154,19 @@ def _extract_code_with_suffix(name: str) -> Tuple[Optional[str], str, str, str]:
     elif base_lower.endswith("-u"):
         subtitle_type = "english"
         core = base[:-2]
-    elif base_lower.endswith("-c"):
+    elif base_lower.endswith("-c") and len(base) > 4 and base[-3].isdigit():
+        # HND966C 这样的情况：C前面是数字，不是盘符
         subtitle_type = "chinese"
         core = base[:-2]
     else:
         core = base
 
-    disc_label = ""
+    # 剥离盘符后缀
     core_lower = core.lower()
-
     if core_lower.endswith("-a") or core_lower.endswith("-b"):
         disc_label = core[-1].upper()
         core = core[:-2]
-    elif core_lower.endswith("-c"):
+    elif core_lower.endswith("-c") and len(core) > 3 and core[-3] == '-':
         disc_label = "C"
         core = core[:-2]
 
@@ -274,13 +336,10 @@ class VideoOrganizer:
             self.total_moved += 1
             self.log(f"📁 {code} → 创建文件夹并移入")
 
-        elif parent.parent == self.target_path and parent.name != _safe_name(code):
-            # 情况2：视频在目标目录的子文件夹中 → 清理文件夹内容，重命名文件夹
-            folder_name = parent.name
-
-            # 清理垃圾文件
-            junk_deleted = 0
-            for junk_file in parent.iterdir():
+        # 清理子文件夹内的垃圾文件（所有情况都需要）
+        junk_deleted = 0
+        if parent != self.target_path:
+            for junk_file in list(parent.iterdir()):
                 if _is_junk_file(junk_file):
                     try:
                         junk_file.unlink()
@@ -289,13 +348,18 @@ class VideoOrganizer:
                     except Exception:
                         pass
 
+        if parent.parent == self.target_path and parent.name != _safe_name(code):
+            # 情况2：视频在目标目录的子文件夹中 → 重命名文件夹并合并
+            folder_name = parent.name
+
             # 清理完后，检查是否只剩视频文件（可能多个盘）
             remaining_videos = [f for f in parent.iterdir() if f.suffix.lower() in VIDEO_EXTENSIONS]
 
             # 重命名文件夹
             new_folder_name = _safe_name(code)
-            if folder_name != new_folder_name:
-                new_parent = self.target_path / new_folder_name
+            new_parent = self.target_path / new_folder_name
+            same_folder = parent.resolve() == new_parent.resolve()
+            if folder_name != new_folder_name and not same_folder:
                 if new_parent.exists():
                     # 文件夹已存在，合并
                     for remaining_video in remaining_videos:
@@ -313,26 +377,34 @@ class VideoOrganizer:
                     except:
                         pass
                 else:
-                    shutil.move(str(parent), str(new_parent))
+                    # Windows 大小写不敏感 rename，需要两步
+                    tmp = self.target_path / f"_tmp_rename_{folder_name}_"
+                    os.rename(str(parent), str(tmp))
+                    os.rename(str(tmp), str(new_parent))
                 self.total_renamed += 1
                 self.log(f"📁 {folder_name} → {new_folder_name}" + (f" (清理{junk_deleted}个垃圾)" if junk_deleted else ""))
+            elif not same_folder:
+                # 文件夹已存在同名，跳过
+                pass
 
         else:
-            # 情况3：嵌套在更深的目录，尝试向上检查
-            for ancestor in video_path.parents:
-                if ancestor == self.target_path:
-                    break
-                # 检查是否是番号文件夹但名称不对
-                ancestor_name = ancestor.name
-                code_in_ancestor, _, _, _ = _extract_code_with_suffix(ancestor_name)
-                if code_in_ancestor and ancestor_name != _safe_name(code_in_ancestor):
-                    new_name = self.target_path / _safe_name(code_in_ancestor)
-                    if ancestor.name != _safe_name(code_in_ancestor):
-                        shutil.move(str(ancestor), str(new_name))
-                        self.total_renamed += 1
-                    break
-
-            self.log(f"✅ 已处理: {filename}")
+            # 情况3：处理子文件夹中的文件（清理文件名或移动到正确位置）
+            # 检查视频是否需要重命名（清理垃圾前缀等）
+            if normalized_name and filename != normalized_name + ext:
+                new_filename = normalized_name + ext
+                new_path = parent / new_filename
+                if new_path.exists():
+                    if new_path.stat().st_size >= video_path.stat().st_size:
+                        self.log(f"⏭️ 目标已存在且更大，跳过: {new_filename}")
+                    else:
+                        shutil.move(str(video_path), str(new_path))
+                        self.log(f"✏️ {filename} → {new_filename}")
+                else:
+                    shutil.move(str(video_path), str(new_path))
+                    self.log(f"✏️ {filename} → {new_filename}")
+            elif parent.parent == self.target_path and parent.name == _safe_name(code):
+                # 已经在正确文件夹且文件名规范
+                self.log(f"✅ {code} 已处理")
 
     def _print_summary(self):
         """打印整理结果汇总"""
