@@ -99,6 +99,21 @@ build.bat
 
 打包完成后，`dist/MyMovieDB.exe` 即为可执行文件，支持系统托盘运行。
 
+### 方式三：使用 PowerShell 脚本管理后端
+
+```powershell
+# 启动后端（自动检测 Python 版本，添加 ffmpeg 到 PATH）
+.\start-backend.ps1
+
+# 停止后端
+.\stop-backend.ps1
+```
+
+> **注意**：需要以管理员权限运行 PowerShell 脚本，或者在 PowerShell 中设置执行策略允许本地脚本：
+> ```powershell
+> Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+> ```
+
 ---
 
 ## 系统托盘功能
