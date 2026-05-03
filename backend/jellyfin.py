@@ -25,22 +25,35 @@ IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
 
 def detect_encoding(file_path: str) -> str:
-    """检测文件编码"""
+    """检测文件编码 - 优先 utf-8，chardet 仅作备用"""
+    # 先尝试最常见的 utf-8（大多数 NFO 都是）
+    for encoding in ['utf-8', 'utf-8-sig']:
+        try:
+            with open(file_path, 'r', encoding=encoding) as f:
+                f.read(8192)
+            return encoding
+        except UnicodeDecodeError:
+            continue
+
+    # 非 utf-8 才用 chardet
     if HAS_CHARDET:
-        with open(file_path, 'rb') as f:
-            raw = f.read(10000)  # 读取前 10KB 判断编码
-            result = chardet.detect(raw)
+        try:
+            with open(file_path, 'rb') as f:
+                raw = f.read(4096)  # 只读前 4KB，减少耗时
+                result = chardet.detect(raw)
             return result.get('encoding') or 'utf-8'
-    else:
-        # 没有 chardet，尝试常见编码
-        for encoding in ['utf-8', 'utf-8-sig', 'gbk', 'gb2312', 'big5']:
-            try:
-                with open(file_path, 'r', encoding=encoding) as f:
-                    f.read(10000)
-                return encoding
-            except UnicodeDecodeError:
-                continue
-        return 'utf-8'
+        except Exception:
+            pass
+
+    # 最后尝试其他常见编码
+    for encoding in ['gbk', 'gb2312', 'big5']:
+        try:
+            with open(file_path, 'r', encoding=encoding) as f:
+                f.read(8192)
+            return encoding
+        except UnicodeDecodeError:
+            continue
+    return 'utf-8'
 
 
 def parse_jellyfin_nfo(nfo_path: str) -> Optional[Dict]:
@@ -156,7 +169,7 @@ def parse_jellyfin_nfo(nfo_path: str) -> Optional[Dict]:
 def scan_jellyfin_directory(directory: str) -> List[Dict]:
     """
     扫描 Jellyfin 格式目录，返回所有有效影片信息
-    
+
     目录结构期望：
     根目录/
     ├── 女星A/
@@ -168,7 +181,7 @@ def scan_jellyfin_directory(directory: str) -> List[Dict]:
     │   └── SSIS-002/
     │       └── ...
     └── ...
-    
+
     或者直接：
     根目录/
     ├── SSIS-001/
@@ -176,131 +189,108 @@ def scan_jellyfin_directory(directory: str) -> List[Dict]:
     │   ├── SSIS-001.nfo
     │   └── ...
     └── ...
-    
+
     Args:
         directory: 根目录路径（如 Z:\\影视库）
-    
+
     Returns:
         影片信息列表，每项包含 code, video_path, nfo_path, metadata, 图片路径
     """
     results = []
     root_path = Path(directory)
-    
+
     if not root_path.exists():
         print(f"[Jellyfin] 目录不存在: {directory}")
         return results
-    
+
     print(f"[Jellyfin] 开始扫描目录: {directory}")
-    
-    # 递归扫描所有子目录
-    for dir_path in root_path.rglob('*'):
-        if not dir_path.is_dir():
-            continue
-        
+
+    # 预编译 NFO 后缀正则（用于基础番号匹配 SSIS-251-C → SSIS-251）
+    nfo_suffix_re = re.compile(r'[-_](C|U|UC|4K|HD|KT|TT)$', re.IGNORECASE)
+
+    # 用 os.walk 替代 rglob，更高效地只遍历目录
+    for dir_path, subdirs, files in os.walk(directory):
+        # 每个目录独立的 NFO 候选（避免跨目录污染）
+        nfo_candidates = []
+
         try:
-            # 检查目录名是否为番号格式
-            dir_name = dir_path.name
-            
-            # 标准化番号（大写）
-            code_match = CODE_PATTERN.match(dir_name)
-            if not code_match:
+            dir_name = os.path.basename(dir_path)
+            if not dir_name:
                 continue
-            
-            code = dir_name.upper()  # 标准化番号
-            
-            # 查找 NFO 文件（可选，支持 -C/-U/-UC/-4K 等后缀变体）
-            try:
-                nfo_files = list(dir_path.glob('*.nfo'))
-                nfo_path = None
-                if nfo_files:
-                    # ① 精确匹配：NFO 文件名（去扩展名）= 目录名
-                    for nf in nfo_files:
-                        stem = os.path.splitext(nf.name)[0]
-                        if stem.upper() == dir_name.upper():
-                            nfo_path = str(nf)
-                            break
-                    # ② 基础番号匹配（SSIS-251-C → SSIS-251）
-                    if not nfo_path:
-                        base_code = re.sub(r'[-_](C|U|UC|4K|HD|KT|TT)$', '',
-                                           dir_name, flags=re.IGNORECASE)
-                        if base_code.upper() != dir_name.upper():
-                            for nf in nfo_files:
-                                stem = os.path.splitext(nf.name)[0]
-                                if stem.upper() == base_code.upper():
-                                    nfo_path = str(nf)
-                                    break
-                    # ③ 兜底：使用第一个找到的 NFO
-                    if not nfo_path:
-                        nfo_path = str(nfo_files[0])
-            except Exception as e:
-                print(f"[Jellyfin] 扫描 NFO 失败 {dir_path}: {e}")
-                nfo_path = None
-            
-            # 查找视频文件
-            try:
-                video_files = [f for f in dir_path.iterdir() 
-                               if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS]
-            except Exception as e:
-                print(f"[Jellyfin] 扫描视频失败 {dir_path}: {e}")
+
+            # 快速跳过非番号目录（如果目录名明显不是番号，跳过）
+            # 只有匹配的才处理
+            if not CODE_PATTERN.match(dir_name):
                 continue
-            
-            if not video_files:
-                continue
-            
-            video_path = str(video_files[0])
-            
-            # 解析 NFO（如果没有，创建基本元数据）
-            if nfo_path:
-                metadata = parse_jellyfin_nfo(nfo_path) or {'title': code}
-            else:
-                # 没有 NFO 文件，创建基本元数据
-                print(f"[Jellyfin] 未找到 NFO 文件: {code}，将创建基本元数据")
-                metadata = {
-                    'title': code,
-                    'title_jp': None,
-                    'plot': None,
-                    'release_date': None,
-                    'studio': None,
-                    'maker': None,
-                    'director': None,
-                    'actors': None,
-                    'actors_male': None,
-                    'genres': None,
-                }
-        
-            # 查找本地图片文件
+
+            code = dir_name.upper()
+
+            # --- 一次性扫描目录下所有文件 ---
+            nfo_path = None
+            video_path = None
             poster_file = None
             fanart_file = None
             thumb_file = None
-            
-            try:
-                for img_file in dir_path.iterdir():
-                    if not img_file.is_file():
-                        continue
-                    if img_file.suffix.lower() not in IMAGE_EXTENSIONS:
-                        continue
-                    
-                    img_name = img_file.name.lower()
-                    img_name_lower = img_file.stem.lower()  # 不含扩展名
-                    
-                    # 优先匹配包含关键词的文件
-                    if 'poster' in img_name or 'cover' in img_name:
-                        poster_file = str(img_file)
-                    elif 'fanart' in img_name or 'background' in img_name or 'backdrop' in img_name:
-                        fanart_file = str(img_file)
-                    elif 'thumb' in img_name:
-                        thumb_file = str(img_file)
-                    # 其次匹配文件名包含番号的
-                    elif code.lower() in img_name_lower:
-                        if '-poster' in img_name or '_poster' in img_name:
-                            poster_file = str(img_file)
-                        elif '-fanart' in img_name or '_fanart' in img_name:
-                            fanart_file = str(img_file)
-                        elif '-thumb' in img_name or '_thumb' in img_name:
-                            thumb_file = str(img_file)
-            except Exception as e:
-                print(f"[Jellyfin] 扫描图片失败 {dir_path}: {e}")
-            
+
+            for fname in files:
+                ext = os.path.splitext(fname)[1].lower()
+                stem = os.path.splitext(fname)[0]
+
+                # NFO 文件（只记录，不立即解析）
+                if ext == '.nfo':
+                    if stem.upper() == dir_name.upper():
+                        nfo_path = os.path.join(dir_path, fname)
+                    else:
+                        # 暂存，等所有文件扫描完再做基础番号匹配
+                        nfo_candidates.append((stem, os.path.join(dir_path, fname)))
+
+                # 图片文件
+                elif ext in IMAGE_EXTENSIONS:
+                    img_lower = fname.lower()
+                    stem_lower = stem.lower()
+
+                    if 'poster' in img_lower or 'cover' in img_lower:
+                        poster_file = os.path.join(dir_path, fname)
+                    elif 'fanart' in img_lower or 'background' in img_lower or 'backdrop' in img_lower:
+                        fanart_file = os.path.join(dir_path, fname)
+                    elif 'thumb' in img_lower:
+                        thumb_file = os.path.join(dir_path, fname)
+                    # 其次用番号文件名匹配
+                    elif code.lower() in stem_lower:
+                        if '-poster' in img_lower or '_poster' in img_lower:
+                            poster_file = os.path.join(dir_path, fname)
+                        elif '-fanart' in img_lower or '_fanart' in img_lower:
+                            fanart_file = os.path.join(dir_path, fname)
+                        elif '-thumb' in img_lower or '_thumb' in img_lower:
+                            thumb_file = os.path.join(dir_path, fname)
+
+                # 视频文件
+                elif ext in VIDEO_EXTENSIONS and video_path is None:
+                    video_path = os.path.join(dir_path, fname)
+
+            # 处理 NFO 匹配
+            # ① 精确匹配已在上一步处理（nfo_path 已设置）
+            # ② 基础番号匹配
+            if not nfo_path and nfo_candidates:
+                base_code = nfo_suffix_re.sub('', dir_name)
+                if base_code.upper() != dir_name.upper():
+                    for stem, nfo_full_path in nfo_candidates:
+                        if stem.upper() == base_code.upper():
+                            nfo_path = nfo_full_path
+                            break
+                # ③ 兜底：使用第一个
+                if not nfo_path and nfo_candidates:
+                    nfo_path = nfo_candidates[0][1]
+
+            if not video_path:
+                continue
+
+            # 解析 NFO
+            if nfo_path:
+                metadata = parse_jellyfin_nfo(nfo_path) or {'title': code}
+            else:
+                metadata = {'title': code}
+
             results.append({
                 'code': code,
                 'video_path': video_path,
@@ -310,11 +300,15 @@ def scan_jellyfin_directory(directory: str) -> List[Dict]:
                 'thumb_file': thumb_file,
                 'metadata': metadata,
             })
-        
+
+            # 每 100 个影片打印一次进度
+            if len(results) % 100 == 0:
+                print(f"[Jellyfin] 扫描中... 已找到 {len(results)} 个影片")
+
         except Exception as e:
             print(f"[Jellyfin] 扫描目录失败 {dir_path}: {e}")
             continue
-    
+
     print(f"[Jellyfin] 扫描完成，找到 {len(results)} 个有效影片目录")
     return results
 
