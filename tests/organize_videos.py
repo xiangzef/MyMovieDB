@@ -18,6 +18,15 @@ import shutil
 from pathlib import Path
 from typing import Optional, List, Tuple
 
+
+def _move_file(src: Path, dst: Path):
+    """移动文件，跨设备（网络路径）时用复制+删除"""
+    try:
+        os.rename(str(src), str(dst))
+    except OSError:
+        shutil.copy2(str(src), str(dst))
+        src.unlink()
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 番号提取逻辑（来自 organizer.py）
 # ─────────────────────────────────────────────────────────────────────────────
@@ -316,9 +325,8 @@ class VideoOrganizer:
             # 检查是否有同名文件（需要先改名）
             same_name_file = self.target_path / code
             if same_name_file.exists() and same_name_file.is_file():
-                # 文件名冲突，临时改名
                 temp_path = self.target_path / f"{code}_temp{ext}"
-                same_name_file.rename(temp_path)
+                os.rename(str(same_name_file), str(temp_path))
                 video_path = temp_path
 
             new_path = target_dir / (normalized_name + ext)
@@ -332,7 +340,7 @@ class VideoOrganizer:
                 else:
                     self.log(f"🗑️ 替换更小的目标: {normalized_name}{ext}")
 
-            shutil.move(str(video_path), str(new_path))
+            _move_file(video_path, new_path)
             self.total_moved += 1
             self.log(f"📁 {code} → 创建文件夹并移入")
 
@@ -369,7 +377,7 @@ class VideoOrganizer:
                                 if target_path.stat().st_size >= remaining_video.stat().st_size:
                                     remaining_video.unlink()
                                     continue
-                            shutil.move(str(remaining_video), str(target_path))
+                            _move_file(remaining_video, target_path)
                     # 删除空文件夹
                     try:
                         if not any(parent.iterdir()):
@@ -397,10 +405,10 @@ class VideoOrganizer:
                     if new_path.stat().st_size >= video_path.stat().st_size:
                         self.log(f"⏭️ 目标已存在且更大，跳过: {new_filename}")
                     else:
-                        shutil.move(str(video_path), str(new_path))
+                        _move_file(video_path, new_path)
                         self.log(f"✏️ {filename} → {new_filename}")
                 else:
-                    shutil.move(str(video_path), str(new_path))
+                    _move_file(video_path, new_path)
                     self.log(f"✏️ {filename} → {new_filename}")
             elif parent.parent == self.target_path and parent.name == _safe_name(code):
                 # 已经在正确文件夹且文件名规范
