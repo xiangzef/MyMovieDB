@@ -2661,29 +2661,22 @@ createApp({
             } catch (e) { showToast('删除失败', 'error'); }
         };
 
-        // 普通目录重新扫描（复用 scanSources 逻辑，但只扫该目录）
+        // 普通目录重新扫描（扫指定目录）
         const rescanSource = async (source) => {
-            if (scanning.value) return;
-            // 直接触发全量扫描（后端会扫所有已注册目录）
-            await scanSources();
-        };
-
-        const scanSources = async () => {
             if (scanning.value) return;
             scanning.value = true;
             scanResult.value = null;
-            
-            // 打开进度浮窗
+
             scrapePanel.value.show = true;
             scrapePanel.value.title = '扫描本地目录';
             scrapePanel.value.logs = [];
             scrapePanel.value.pct = 0;
             scrapePanel.value.jobId = '_pending_';
             scrapePanel.value.stats = { success: 0, fail: 0, linked: 0 };
-            addScrapeLog('info', '🔍 开始扫描目录...');
-            
+            addScrapeLog('info', `🔍 开始扫描: ${source.path}`);
+
             try {
-                const res = await fetch(`${API}/local-sources/scan`, { method: 'POST' });
+                const res = await fetch(`${API}/local-sources/${source.id}/scan`, { method: 'POST' });
                 const reader = res.body.getReader();
                 const decoder = new TextDecoder();
                 let buffer = '';
@@ -2754,6 +2747,57 @@ createApp({
                 case 'error':
                     addScrapeLog('error', `❌ ${evt.message}`);
                     break;
+            }
+        };
+
+        // 扫描所有已添加的目录
+        const scanSources = async () => {
+            if (scanning.value) return;
+            scanning.value = true;
+            scanResult.value = null;
+
+            scrapePanel.value.show = true;
+            scrapePanel.value.title = '扫描本地目录';
+            scrapePanel.value.logs = [];
+            scrapePanel.value.pct = 0;
+            scrapePanel.value.jobId = '_pending_';
+            scrapePanel.value.stats = { success: 0, fail: 0, linked: 0 };
+            addScrapeLog('info', '🔍 开始扫描所有目录...');
+
+            try {
+                const res = await fetch(`${API}/local-sources/scan`, { method: 'POST' });
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        try {
+                            const evt = JSON.parse(line.slice(6));
+                            handleScanEvent(evt);
+                        } catch (e) { /* ignore */ }
+                    }
+                }
+
+                if (buffer.startsWith('data: ')) {
+                    try {
+                        const evt = JSON.parse(buffer.slice(6));
+                        handleScanEvent(evt);
+                    } catch (e) { /* ignore */ }
+                }
+            } catch (e) {
+                addScrapeLog('error', `扫描失败: ${e.message}`);
+            } finally {
+                scanning.value = false;
+                scrapePanel.value.jobId = null;
             }
         };
 
