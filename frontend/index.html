@@ -895,6 +895,9 @@
             <h1>🎬 MyMovieDB</h1>
             <div class="header-right">
                 <span class="badge">后端: {{ backendStatus }}</span>
+                <a href="settings.html" class="btn btn-sm" style="background:#17a2b8;color:#fff;border:none;border-radius:6px;padding:6px 10px;text-decoration:none;font-size:13px;margin-right:8px;">
+                    ⚙️ 设置
+                </a>
                 <!-- 用户信息 -->
                 <div v-if="currentUser" class="user-menu">
                     <a href="profile.html" class="user-name-link">
@@ -1155,12 +1158,19 @@
                     <div class="num">{{ videoStats.unscraped || 0 }}</div>
                     <div class="label">待刮削</div>
                 </div>
+                <div class="stat-card purple">
+                    <div class="num">{{ videoStats.jellyfin || 0 }}</div>
+                    <div class="label">📁 Jellyfin</div>
+                </div>
                 <div style="flex:1;"></div>
                 <button class="btn btn-sm btn-secondary" @click="checkAllScrape" :disabled="checking">
                     🔍 {{ checking ? '检查中...' : '检查刮削' }}
                 </button>
                 <button class="btn btn-sm btn-warning" @click="fixAllScrape" :disabled="fixing" v-if="scrapeCheckResult && scrapeCheckResult.incomplete > 0">
                     🔧 {{ fixing ? '修复中...' : '修复刮削' }}
+                </button>
+                <button class="btn btn-sm" style="background:#17a2b8;color:#fff;border:1px solid #17a2b8;" @click="enrichNFO" :disabled="enriching">
+                    📄 {{ enriching ? '补全中...' : '补全NFO' }}
                 </button>
                 <button class="btn btn-sm btn-danger" @click="cleanupInvalidCodes" :disabled="cleaning">
                     🗑️ {{ cleaning ? '清理中...' : '清理无效番号' }}
@@ -1205,7 +1215,6 @@
                     <option :value="null">全部状态</option>
                     <option value="complete">✅ 已完成</option>
                     <option value="not_complete">⚠️ 待刮削/不完整</option>
-                    <option value="partial">⚠️ 部分刮削</option>
                     <option value="empty">🔴 未刮削</option>
                 </select>
                 <select v-model="videoFilter.source_id" @change="loadLocalVideos">
@@ -1220,6 +1229,7 @@
                 <input v-model="videoFilter.keyword" placeholder="搜索文件名或编号..." @keyup.enter="loadLocalVideos">
                 <button class="btn btn-secondary btn-sm" @click="loadLocalVideos">筛选</button>
                 <button class="btn btn-secondary btn-sm" @click="videoFilter = {scrape_status:null, source_id:null, keyword:''}; loadLocalVideos()">重置</button>
+                <button class="btn btn-sm btn-warning" @click="scrapeFiltered" :disabled="scraping">批量刮削当前筛选</button>
                 <button class="btn btn-sm btn-secondary" @click="loadVideoStats">🔄 刷新统计</button>
             </div>
 
@@ -1253,7 +1263,7 @@
                     <div>
                         <span v-if="v.scrape_status === 'complete'" class="movie-badge badge-scraped">✅ 已完成</span>
                         <span v-else-if="v.scrape_status === 'partial'" class="movie-badge badge-partial">⚠️ 部分</span>
-                        <span v-else-if="v.scrape_status === 'empty' || !v.movie_id" class="movie-badge badge-unscraped">🔴 待刮削</span>
+                        <span v-else-if="!v.movie_id" class="movie-badge badge-unscraped">🔴 未关联</span>
                         <span v-else class="movie-badge badge-partial">⚠️ 待完善</span>
                     </div>
                     <!-- 大小 -->
@@ -2259,6 +2269,12 @@ createApp({
             const { label = '刮削', onSuccess } = opts;
             if (!code || scraping.value) return;
             scraping.value = true;
+            // 显示刮削进度面板
+            scrapePanel.value.show = true;
+            scrapePanel.value.title = `正在刮削 ${code}...`;
+            scrapePanel.value.logs = [];
+            scrapePanel.value.pct = 0;
+            scrapePanel.value.stats = { success: 0, fail: 0, linked: 0 };
             try {
                 const res = await fetch(`${API}/scrape`, {
                     method: 'POST',
@@ -2268,17 +2284,24 @@ createApp({
                 const data = await res.json();
                 if (data.success) {
                     showToast(`${label}成功: ${data.movie.title}`, 'success');
+                    addScrapeLog('success', `✅ ${code} → ${data.movie.title || '刮削成功'}`);
                     // 刷新所有数据，保证一致
                     fetchMovies();
                     loadSources();
                     loadVideoStats();
                     loadLocalVideos();
                     if (onSuccess) onSuccess(data);
+                    // 2秒后关闭面板
+                    setTimeout(() => { scrapePanel.value.show = false; }, 2000);
                 } else {
                     showToast(`${label}失败: ${data.message}`, 'error');
+                    addScrapeLog('fail', `❌ ${code} → ${data.message || '刮削失败'}`);
+                    setTimeout(() => { scrapePanel.value.show = false; }, 2000);
                 }
             } catch (e) {
                 showToast(`${label}请求失败，请确保后端已启动`, 'error');
+                addScrapeLog('error', `⚠ 请求失败: ${e.message}`);
+                setTimeout(() => { scrapePanel.value.show = false; }, 2000);
             }
             scraping.value = false;
         };
@@ -2504,12 +2527,16 @@ createApp({
                 if (m.thumb_path) thumbs.push(localToApi(m.thumb_path));
                 if (m.fanart_path) thumbs.push(localToApi(m.fanart_path));
                 if (thumbs.length === 0 && (m.local_cover_path || m.cover_url)) {
-                    thumbs.push(`${API}/covers/${m.code}.jpg`);
+                    thumbs.push(`${API}/cover/${m.code}.jpg`);
                 }
                 detailThumbs.value = thumbs;
                 detailMainSrc.value = thumbs[0] || getCoverUrl(m, 'detail');
                 detailActiveThumb.value = 0;
                 document.body.style.overflow = 'hidden';
+                // 打开详情时立即刷新刮削检查状态（避免显示上一个影片的缓存数据）
+                if (m.id) {
+                    checkMovieScrape(m.id).catch(() => {});
+                }
             } catch (e) {
                 console.error('[showDetail] 错误:', e);
                 showToast('打开详情失败: ' + e.message, 'error');
@@ -2547,9 +2574,16 @@ createApp({
         const getCoverUrl = (m, type = 'poster') => {
             if (!m || !m.code) return SAMPLE_IMG;
             if (type === 'fanart') return localToApi(m.fanart_path) || SAMPLE_IMG;
-            if (type === 'thumb') return localToApi(m.thumb_path) || (m.local_cover_path ? `${API}/covers/${m.code}.jpg` : SAMPLE_IMG);
-            if (m.poster_path) return localToApi(m.poster_path) || SAMPLE_IMG;
-            if (m.local_cover_path || m.cover_url) return `${API}/covers/${m.code}.jpg`;
+            if (type === 'thumb') return localToApi(m.thumb_path) || (m.local_cover_path ? `${API}/cover/${m.code}.jpg` : SAMPLE_IMG);
+            if (m.poster_path) {
+                const url = localToApi(m.poster_path);
+                if (url) return url;
+                // fallback: 从 poster_path 提取番号 → /cover/{code}.jpg
+                const match = m.poster_path.match(/\\covers\\([^\\]+)/);
+                if (match) return `${API}/cover/${match[1]}.jpg`;
+                return SAMPLE_IMG;
+            }
+            if (m.local_cover_path || m.cover_url) return `${API}/cover/${m.code}.jpg`;
             return SAMPLE_IMG;
         };
         // 防止图片加载失败后无限重试/reflow（_errorFixed 阻止同节点重复触发）
@@ -2563,7 +2597,11 @@ createApp({
         // ========== 二次刮削（复用 scrapeByCode） ==========
         const rescrapeMovie = (m) => scrapeByCode(m.code, {
             label: '重新刮削',
-            onSuccess: () => closeDetail()
+            onSuccess: () => {
+                loadVideoStats();
+                loadLocalVideos();
+                closeDetail();
+            }
         });
 
 
@@ -2902,6 +2940,59 @@ createApp({
         // ========== 本地视频单条刮削（复用 scrapeByCode） ==========
         const scrapeOneLocal = (v) => scrapeByCode(v.code, { label: '刮削' });
 
+        // ========== 批量刮削当前筛选结果 ==========
+        const scrapeFiltered = async () => {
+            if (scraping.value) return;
+            if (!localVideos.value.length) {
+                showToast('当前筛选没有视频', 'warning');
+                return;
+            }
+            const codes = [...new Set(localVideos.value.map(v => v.code).filter(Boolean))];
+            if (!codes.length) {
+                showToast('没有有效番号', 'warning');
+                return;
+            }
+            scraping.value = true;
+            scrapePanel.value.show = true;
+            scrapePanel.value.title = '批量刮削当前筛选';
+            scrapePanel.value.logs = [];
+            scrapePanel.value.pct = 0;
+            scrapePanel.value.jobId = '_pending_';
+            scrapePanel.value.stats = { success: 0, fail: 0, linked: 0 };
+            addScrapeLog('info', `🔄 开始批量刮削 ${codes.length} 部影片...`);
+
+            try {
+                const res = await fetch(`${API}/scrape/batch`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ keyword: codes.join(' '), save_cover: true })
+                });
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop();
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        try {
+                            const evt = JSON.parse(line.slice(6));
+                            handleScrapeEvent(evt);
+                        } catch {}
+                    }
+                }
+            } catch (e) {
+                addScrapeLog('error', `批量刮削失败: ${e.message}`);
+            }
+            scraping.value = false;
+            showToast(`批量刮削完成: ${scrapePanel.value.stats.success} 成功, ${scrapePanel.value.stats.fail} 失败`);
+            loadLocalVideos();
+            loadVideoStats();
+        };
+
         const deleteLocalVideo = async (id) => {
             if (!confirm('确定删除此记录？文件不会被删除。')) return;
             try {
@@ -2949,6 +3040,7 @@ createApp({
         // ========== 刮削检查和修复 ==========
         const checking = ref(false);
         const fixing = ref(false);
+        const enriching = ref(false);
         const scrapeCheckResult = ref(null);  // { total, complete, incomplete, issues }
         const movieCheckResult = ref(null);   // 单个影片检查结果
 
@@ -3025,6 +3117,67 @@ createApp({
             }
         };
 
+        // 补全 Jellyfin NFO（生成缺失的 NFO 文件）
+        const enrichNFO = async () => {
+            if (enriching.value) return;
+            enriching.value = true;
+            console.log('[enrichNFO] starting, scrapePanel:', JSON.stringify(scrapePanel.value));
+            scrapePanel.value.show = true;
+            scrapePanel.value.title = '补全 NFO 文件';
+            scrapePanel.value.logs = [];
+            scrapePanel.value.pct = 0;
+            scrapePanel.value.jobId = '_pending_';
+            scrapePanel.value.stats = { success: 0, fail: 0, linked: 0 };
+            addScrapeLog('info', '📄 开始补全 NFO 文件...');
+            console.log('[enrichNFO] after setup, scrapePanel.show:', scrapePanel.value.show, 'logs:', scrapePanel.value.logs);
+
+            try {
+                console.log('[enrichNFO] fetching /scrape/jellyfin-enrich-nfo');
+                const res = await fetch(`${API}/scrape/jellyfin-enrich-nfo`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})
+                });
+                console.log('[enrichNFO] response status:', res.status, 'body:', res.body);
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let eventCount = 0;
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop();
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        try {
+                            const evt = JSON.parse(line.slice(6));
+                            eventCount++;
+                            console.log('[enrichNFO] event', eventCount, ':', evt.type, evt.code);
+                            if (evt.type === 'enrich_done') {
+                                addScrapeLog('success', `🎉 完成！找到 NFO ${evt.nfo_found} 部，缺失 ${evt.nfo_missing} 部`);
+                                scrapePanel.value.pct = 100;
+                            } else if (evt.type === 'enrich_success') {
+                                addScrapeLog('success', `✅ ${evt.code}: ${evt.message}`);
+                                scrapePanel.value.stats.success++;
+                            } else if (evt.type === 'enrich_progress') {
+                                addScrapeLog('info', `📄 ${evt.code}: ${evt.message || '处理中'}`);
+                            } else if (evt.type === 'enrich_error') {
+                                addScrapeLog('error', `❌ ${evt.code}: ${evt.message}`);
+                                scrapePanel.value.stats.fail++;
+                            }
+                        } catch {}
+                    }
+                }
+            } catch (e) {
+                addScrapeLog('error', `连接失败: ${e.message}`);
+            }
+            enriching.value = false;
+            loadVideoStats();
+            loadLocalVideos();
+        };
+
         // 检查单个影片
         const checkMovieScrape = async (movieId) => {
             checking.value = true;
@@ -3046,12 +3199,13 @@ createApp({
                 const data = await res.json();
                 if (data.success) {
                     showToast('修复成功: ' + data.fixed.join(', '), 'success');
-                    // 刷新详情
+                    // 刷新详情、统计和列表
                     const movieRes = await fetch(`${API}/movies/${movieId}`);
                     const movie = await movieRes.json();
                     selectedMovie.value = movie;
-                    // 重新检查
                     await checkMovieScrape(movieId);
+                    loadVideoStats();
+                    loadLocalVideos();
                 } else {
                     showToast('修复失败: ' + (data.errors?.join(', ') || '未知错误'), 'error');
                 }
@@ -3100,7 +3254,7 @@ createApp({
                 if (v.cover_url_display.startsWith('http')) return v.cover_url_display;
                 return `${API}${v.cover_url_display.startsWith('/') ? '' : '/'}${v.cover_url_display}`;
             }
-            if (v.code) return `${API}/covers/${v.code}.jpg`;
+            if (v.code) return `${API}/cover/${v.code}.jpg`;
             return null;
         };
 
@@ -3867,6 +4021,7 @@ createApp({
         const translateFileInput = ref(null);
         const translateAsrTool = ref('whisper');  // whisper / vosk
         const translateEngine = ref('ollama');    // ollama
+
         const batchTranslateInput = ref('');
         const batchTranslateRunning = ref(false);
         const batchTranslateProgress = ref(0);
@@ -4024,7 +4179,7 @@ createApp({
         // Tab 切换
         const switchTab = (tab) => {
             currentTab.value = tab;
-            if (tab === 'movies') loadMovies();
+            if (tab === 'movies') { loadMovies(); }
             if (tab === 'sources') loadSources();
             if (tab === 'videos') { loadSources(); loadVideoStats(); loadLocalVideos(); }
             if (tab === 'categories') {
@@ -4048,6 +4203,7 @@ createApp({
             // Movies
             movies, total, currentPage, pageSize, loading, searchKeyword, scrapeKeyword, scraping, selectedMovie,
             showDetail, scrapeCheckResult,
+            // Sources Config
             totalPages, visiblePages,
             fetchMovies, searchMovies, loadMovies, prevPage, nextPage, goToPage,
             scrapeByCode, scrapeBatch, stopScrape, closeDetail, showMovieDetail, getCoverUrl, handleImgError,
@@ -4062,14 +4218,14 @@ createApp({
             localVideos, videoStats, localVideosLoading, videoPage, videoPageSize, videoFilter,
             videoTotalPages, videoVisiblePages,
             loadVideoStats, loadLocalVideos, videoPrevPage, videoNextPage, videoGoToPage,
-            scrapeOneLocal, deleteLocalVideo, cleanupInvalidCodes, cleanupResult, cleaning, formatSize, getVideoCoverUrl, playVideo,
+            scrapeOneLocal, scrapeFiltered, deleteLocalVideo, cleanupInvalidCodes, cleanupResult, cleaning, formatSize, getVideoCoverUrl, playVideo,
             // Jellyfin
             jellyfinCount, scanJellyfin, jellyfinSources, rescanJellyfin, regularSources,
             jellyfinVerifyResult, jellyfinFolderResult, verifyJellyfin, scanJellyfinFolders,
             // Scrape check and fix
-            checking, fixing, scrapeCheckResult, movieCheckResult, checkAllScrape, fixAllScrape, checkMovieScrape, fixMovieScrape,
+            checking, fixing, enriching, enrichNFO, scrapeCheckResult, movieCheckResult, checkAllScrape, fixAllScrape, checkMovieScrape, fixMovieScrape,
             // Scrape Panel
-            scrapePanel, scrapeLogEl,
+            scrapePanel, scrapeLogEl, addScrapeLog,
             // Rescrape
             rescrapeMovie, openLocalVideo, getFolderPath,
             // Misc

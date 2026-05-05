@@ -8,7 +8,7 @@ FastAPI 主入口
 """
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.staticfiles import StaticFiles
@@ -300,9 +300,9 @@ def _extract_code_from_filename(filename: str) -> Optional[str]:
         
         # 验证是否有效（传入完整文件名用于检查前缀）
         if _is_valid_av_code(prefix, number, full_match, filename):
-            # 标准化输出：去掉数字部分的前导零
-            normalized_number = str(int(number))
-            return f"{prefix}-{normalized_number}"
+            # 保持原始数字格式（包括前导零），例如 TRE-091 → TRE-091
+            # 之前错误地去除了前导零，导致影片文件与封面文件夹命名不一致
+            return f"{prefix}-{number}"
     
     return None
 
@@ -379,6 +379,40 @@ app.add_middleware(
 cfg.DATA_DIR.mkdir(parents=True, exist_ok=True)
 cfg.COVERS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/covers", StaticFiles(directory=str(cfg.COVERS_DIR)), name="covers")
+
+
+@app.get("/cover/{code}.jpg", tags=["静态文件"], include_in_schema=False)
+async def get_cover_by_code(code: str):
+    """按番号直接访问封面图（如 /cover/ABP-013.jpg）"""
+    from starlette.responses import FileResponse
+    import os
+    thumb_path = cfg.COVERS_DIR / code / f"{code}-thumb.jpg"
+    if thumb_path.exists():
+        return FileResponse(thumb_path)
+    poster_path = cfg.COVERS_DIR / code / f"{code}-poster.jpg"
+    if poster_path.exists():
+        return FileResponse(poster_path)
+    # 尝试从 movies 表获取 Jellyfin 封面路径
+    from database import get_db
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT poster_path, fanart_path, thumb_path FROM movies WHERE code = ?", (code,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        for field in ['thumb_path', 'poster_path', 'fanart_path']:
+            p = row[field] if row else None
+            if p and os.path.exists(p):
+                return FileResponse(p)
+    from fastapi.responses import JSONResponse
+    return JSONResponse({"error": "cover not found"}, status_code=404)
+
+
+@app.get("/covers/{code}.jpg", tags=["静态文件"], include_in_schema=False)
+async def get_cover_by_code_alias(code: str):
+    """/covers/{code}.jpg 别名（供已有链接兼容）"""
+    return await get_cover_by_code(code)
+
 
 # 挂载前端目录到根路径（必须在所有路由之后挂载）
 # 注意：静态文件挂载会在最后执行
@@ -838,6 +872,28 @@ async def admin_no_video_movies():
             orphan.append(item)
     conn.close()
     return {"scraped_only": scraped_only, "orphan": orphan}
+
+
+@app.get("/api/admin/jellyfin-no-video")
+async def admin_jellyfin_no_video():
+    """查找 Jellyfin 导入 movies 表但 local_videos 无对应视频文件的记录"""
+    conn = db.get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT m.id, m.code, m.title, m.scrape_status, m.release_date, m.poster_path,
+               m.actors, m.created_at
+        FROM movies m
+        WHERE m.source_type = 'jellyfin'
+        AND NOT EXISTS (SELECT 1 FROM local_videos v WHERE v.movie_id = m.id)
+        ORDER BY m.code
+    """)
+    records = []
+    for row in cursor.fetchall():
+        item = dict(zip(['id','code','title','scrape_status','release_date','poster_path','actors','created_at'], row))
+        item['has_poster'] = bool(item.get('poster_path'))
+        records.append(item)
+    conn.close()
+    return {"records": records, "total": len(records)}
 
 
 @app.get("/api/admin/cleanup")
@@ -1381,9 +1437,11 @@ async def scrape_batch(req: ScrapeRequest):
             local_video_id = local_video["id"] if local_video else None
             local_path = local_video.get("path") if local_video else None
 
-            # 跳过 Jellyfin 来源的影片（Jellyfin 有自己的元数据管理，不走网络刮削）
-            if existing and existing.get("source") in ("jellyfin",) or \
-               existing and existing.get("source_type") == "jellyfin":
+            # 跳过 Jellyfin 来源且数据完整的影片（Jellyfin 有自己的元数据管理，不走网络刮削）
+            # 但如果 Jellyfin 数据不完整（partial/empty/None），则允许网络刮削补充
+            is_jellyfin = existing and existing.get("source_type") == "jellyfin"
+            is_complete_jellyfin = is_jellyfin and existing.get("scrape_status") == "complete"
+            if is_complete_jellyfin:
                 skipped_count += 1
                 _se = _speed_eta()
                 yield _send_sse({
@@ -1391,7 +1449,7 @@ async def scrape_batch(req: ScrapeRequest):
                     "job_id": job_id,
                     "code": code,
                     "title": existing.get("title", ""),
-                    "message": "📁 Jellyfin 导入，跳过刮削",
+                    "message": "📁 Jellyfin 完整数据，跳过刮削",
                     "index": i + 1,
                     "total": total,
                     "pct": int(((i + 1) / total) * 100),
@@ -1975,6 +2033,7 @@ async def scrape_local_videos():
         return {"success": True, "message": "没有需要刮削的视频", "processed": 0}
 
     total = len(unscraped)
+    print(f"\n[批量刮削] 开始批量刮削 {total} 部影片...\n", flush=True)
 
     def generate():
         success_count = 0
@@ -2023,6 +2082,7 @@ async def scrape_local_videos():
 
             # 跳过 Jellyfin 来源的影片（双保险：is_jellyfin 字段 + source_type 判断）
             if video.get("is_jellyfin") == 1 or (existing and existing.get("source_type") == "jellyfin"):
+                print(f"[批量刮削] ⏭️ {code} → Jellyfin 来源，跳过", flush=True)
                 skip_count += 1
                 if current_pct != last_pct:
                     yield _send_sse({
@@ -2038,9 +2098,17 @@ async def scrape_local_videos():
 
             # 标志位校验通过（complete，含刚修正的情况）→ 跳过
             if not check["should_scrape"]:
-                if video_id and existing and not existing.get("local_video_id"):
-                    db.mark_video_scraped(video_id, existing["id"])
-                    db.link_movie_to_local_video(existing["id"], video_id)
+                # 无论 movie_id 是否已存在，都要确保 scraped=1（防止重复出现）
+                if video_id:
+                    if existing and not video.get("movie_id"):
+                        db.mark_video_scraped(video_id, existing["id"])
+                        db.link_movie_to_local_video(existing["id"], video_id)
+                        print(f"[批量刮削] ✅ {code} → 已建立关联（标志已修正为 complete）", flush=True)
+                    elif not video.get("scraped"):
+                        db.mark_video_scraped(video_id, video.get("movie_id"))
+                        print(f"[批量刮削] ⏭️ {code} → 已有完整削刮记录（已标记 scraped=1）", flush=True)
+                    else:
+                        print(f"[批量刮削] ⏭️ {code} → 已有完整削刮记录，跳过", flush=True)
                 skip_count += 1
                 if current_pct != last_pct:
                     yield _send_sse({
@@ -2055,6 +2123,7 @@ async def scrape_local_videos():
                 continue
 
             # 发送当前处理信息（重要事件，总是推送）
+            print(f"[批量刮削] 🔄 正在刮削 {code} ({i+1}/{total})", flush=True)
             yield _send_sse({
                 "type": "scraping",
                 "job_id": job_id,
@@ -2069,6 +2138,7 @@ async def scrape_local_videos():
                 movie_data = scrape_movie(code, save_cover=True)
                 if not movie_data:
                     fail_count += 1
+                    print(f"[批量刮削] ❌ {code} → 未找到刮削数据", flush=True)
                     # 失败事件总是推送
                     yield _send_sse({
                         "type": "fail",
@@ -2095,6 +2165,7 @@ async def scrape_local_videos():
                 db.mark_video_scraped(video_id, movie_id)
                 db.link_movie_to_local_video(movie_id, video_id)
                 success_count += 1
+                print(f"[批量刮削] ✅ {code} → 刮削成功（来自 {movie_data.get('source', '?')}）", flush=True)
 
                 # 成功事件总是推送
                 yield _send_sse({
@@ -2114,6 +2185,7 @@ async def scrape_local_videos():
 
             except Exception as e:
                 logger.error(f"刮削 {code} 失败: {e}")
+                print(f"[批量刮削] 💥 {code} → 刮削异常: {e}", flush=True)
                 fail_count += 1
                 yield _send_sse({
                     "type": "error",
@@ -2317,10 +2389,24 @@ async def check_scrape_results():
         source_type = m.get("source_type") or m.get("source")
         is_jellyfin = source_type == "jellyfin"
 
-        # Jellyfin 视频不参与修复检查（它们有自己的元数据系统）
+        # Jellyfin 视频：先重新计算 scrape_status（防止历史数据标志位错误）
         if is_jellyfin:
-            result.complete += 1
-            continue
+            check = db.check_and_fix_scrape_status(code)
+            # Jellyfin 完整度标准：有标题 + 有封面图即为完整
+            if check["new_status"] == "complete":
+                result.complete += 1
+                continue
+            else:
+                # 状态不正确，标记为需修复
+                issues.append(f"刮削状态需修正（当前: {check['new_status']}）")
+                item = ScrapeCheckResult(
+                    movie_id=movie_id, code=code, title=m.get("title"),
+                    scrape_status=check["new_status"], issues=issues,
+                    has_poster=False, has_fanart=False, has_thumb=False, has_nfo=False
+                )
+                result.incomplete += 1
+                result.issues.append(item)
+                continue
 
         # 检查必填字段
         if not m.get("title"):
@@ -2656,7 +2742,7 @@ async def scrape_jellyfin_missing():
                     movie_data = save_movie_assets(movie_data, covers_dir, video.get("path"))
                     # 关键：force_source_type='jellyfin' 保留来源标识
                     mid, is_new = db.upsert_movie(movie_data, force_source_type='jellyfin')
-                    db.mark_video_scraped(mid, video_id)
+                    db.mark_video_scraped(video_id, mid)
                     db.link_movie_to_local_video(mid, video_id)
                     # 更新 jellyfin_status（校验文件完整性）
                     db.update_jellyfin_status(mid)
@@ -3033,13 +3119,14 @@ async def fix_scrape_results(request: FixScrapeRequest = None):
             fixed = False
             message = ""
 
-            # 跳过 Jellyfin 来源的影片
-            if m.get("source") == "jellyfin" or m.get("source_type") == "jellyfin":
+            # 跳过 Jellyfin 来源且数据完整的影片
+            # 数据不完整的 Jellyfin 允许网络刮削补充
+            if m.get("source_type") == "jellyfin" and m.get("scrape_status") == "complete":
                 yield _send_sse({
                     "type": "skipped",
                     "job_id": job_id,
                     "code": code,
-                    "message": "📁 Jellyfin 导入，跳过修复"
+                    "message": "📁 Jellyfin 完整数据，跳过修复"
                 })
                 continue
 
@@ -3088,6 +3175,9 @@ async def fix_scrape_results(request: FixScrapeRequest = None):
                                     "thumb_path": updated.get("thumb_path")
                                 })
                                 message += "已下载封面; "
+
+                        # 重新计算刮削状态（更新 scrape_status）
+                        db.check_and_fix_scrape_status(code)
                     else:
                         message = "重新刮削失败"
                         failed_count += 1
@@ -3140,12 +3230,14 @@ async def fix_scrape_results(request: FixScrapeRequest = None):
                         "pct": int(((i + 1) / total) * 100)
                     })
                 else:
-                    failed_count += 1
+                    # 没有缺失元数据，也没有缺失封面/NFO → 检查并修正 scrape_status
+                    db.check_and_fix_scrape_status(code)
+                    fixed_count += 1
                     yield _send_sse({
-                        "type": "skipped",
+                        "type": "success",
                         "job_id": job_id,
                         "code": code,
-                        "message": "无需修复",
+                        "message": "状态已修正为完成",
                         "index": i + 1,
                         "total": total,
                         "pct": int(((i + 1) / total) * 100)
@@ -3893,6 +3985,218 @@ async def download_actor_avatars(keyword: str = Query(...)):
         "Cache-Control": "no-cache",
     }
     return StreamingResponse(generate(), media_type="text/event-stream", headers=headers)
+
+
+# ===============================================================================
+# 数据源配置路由
+# ===============================================================================
+
+@app.get("/sources", tags=["配置"])
+async def get_sources_config():
+    """
+    获取所有数据源配置（从 config.ini 读取）
+    返回全局刮削参数（timeout, delay, retry）和各数据源配置
+    """
+    import config as cfg_module
+    sources = cfg_module.SCRAPER_SOURCES
+    enabled_ids = {s["id"] for s in cfg_module.get_enabled_sources()}
+    result = []
+    for s in sources:
+        result.append({
+            "id": s.get("id", ""),
+            "name": s.get("name", ""),
+            "enabled": s.get("id") in enabled_ids,
+            "priority": s.get("priority", 999),
+            "url": s.get("url", ""),
+            "official_url": s.get("official_url", s.get("url", "")),
+            "anti_bot": s.get("anti_bot", False),
+        })
+    return {
+        "scrape": {
+            "timeout": cfg_module.getint("scrape", "timeout", 15),
+            "default_delay": cfg_module.getfloat("scrape", "default_delay", 0.5),
+            "default_retry": cfg_module.getint("scrape", "default_retry", 1),
+        },
+        "sources": result,
+    }
+
+
+@app.put("/sources", tags=["配置"])
+async def update_sources_config(request: dict):
+    """
+    更新数据源配置和全局刮削参数（写入 config.ini）
+    请求体: {
+        "scrape": {"timeout": 15, "default_delay": 0.5, "default_retry": 1},
+        "sources": [{ "id": "avdanyuwiki", "enabled": true, "priority": 1, "url": "https://...", "official_url": "https://..." }, ...]
+    }
+    """
+    import configparser
+    import config as cfg_module
+    sources_list = request.get("sources", [])
+    scrape_cfg = request.get("scrape", {})
+
+    cfg_file = Path(__file__).parent / "config.ini"
+    cfg_parser = configparser.ConfigParser()
+    cfg_parser.read(cfg_file, encoding="utf-8")
+
+    # 更新 [scrape] 全局参数
+    if not cfg_parser.has_section("scrape"):
+        cfg_parser.add_section("scrape")
+    if "timeout" in scrape_cfg:
+        cfg_parser.set("scrape", "timeout", str(int(scrape_cfg["timeout"])))
+    if "default_delay" in scrape_cfg:
+        cfg_parser.set("scrape", "default_delay", str(float(scrape_cfg["default_delay"])))
+    if "default_retry" in scrape_cfg:
+        cfg_parser.set("scrape", "default_retry", str(int(scrape_cfg["default_retry"])))
+
+    # 更新 [sources] sources_json
+    existing = {s["id"]: s for s in cfg_module.SCRAPER_SOURCES}
+    merged = []
+    for s in (sources_list or []):
+        sid = s.get("id")
+        if not sid:
+            continue
+        existing_s = existing.get(sid, {})
+        merged.append({
+            "id": sid,
+            "name": s.get("name", existing_s.get("name", sid)),
+            "enabled": bool(s.get("enabled", existing_s.get("enabled", True))),
+            "priority": int(s.get("priority", existing_s.get("priority", 999))),
+            "url": s.get("url", existing_s.get("url", "")),
+            "official_url": s.get("official_url", existing_s.get("official_url", "")),
+            "anti_bot": existing_s.get("anti_bot", False),
+        })
+
+    merged.sort(key=lambda x: x.get("priority", 999))
+    sources_json = json.dumps(merged, ensure_ascii=False)
+
+    if not cfg_parser.has_section("sources"):
+        cfg_parser.add_section("sources")
+    cfg_parser.set("sources", "sources_json", sources_json)
+
+    with open(cfg_file, "w", encoding="utf-8") as f:
+        cfg_parser.write(f)
+
+    import importlib
+    importlib.reload(cfg_module)
+
+    return {"success": True, "message": "配置已保存"}
+
+
+@app.post("/sources/test", tags=["配置"])
+async def test_source_url(request: dict):
+    """
+    测试指定数据源 URL 是否可访问（使用 cloudscraper 绕过 CloudFlare）
+    请求体: { "id": "avdanyuwiki", "url": "https://avdanyuwiki.com/?s={code}" }
+    返回: { "id": "avdanyuwiki", "reachable": true, "status": 200, "time_ms": 523 }
+    """
+    import config as cfg_module
+    import time
+
+    # 尝试 cloudscraper，失败则 fallback 到普通 requests
+    try:
+        import cloudscraper as _cs
+        _scraper = _cs.create_scraper(
+            browser={"browser": "chrome", "platform": "windows", "mobile": False},
+        )
+        _session = _scraper
+    except Exception:
+        import requests as _req
+        _session = _req.Session()
+        _session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "ja,en;q=0.7",
+        })
+
+    source_id = request.get("id", "")
+    url = request.get("url", "")
+
+    if not url:
+        return {"id": source_id, "reachable": False, "status": 0, "time_ms": 0, "error": "URL 为空"}
+
+    # 替换 {code} 为测试番号
+    test_url = url.replace("{code}", "SSIS-254")
+
+    timeout = cfg_module.getint("scrape", "timeout", 15)
+
+    start = time.time()
+    try:
+        resp = _session.get(test_url, timeout=timeout)
+        elapsed = int((time.time() - start) * 1000)
+        reachable = resp.status_code in (200, 403)
+        return {
+            "id": source_id,
+            "reachable": reachable,
+            "status": resp.status_code,
+            "time_ms": elapsed,
+            "note": "200=正常" if resp.status_code == 200 else ("403=有反爬但可访问" if resp.status_code == 403 else f"HTTP {resp.status_code}")
+        }
+    except Exception as e:
+        elapsed = int((time.time() - start) * 1000)
+        err_str = str(e)
+        if "Timeout" in err_str or "timed out" in err_str.lower():
+            return {"id": source_id, "reachable": False, "status": 0, "time_ms": elapsed, "error": "请求超时"}
+        return {"id": source_id, "reachable": False, "status": 0, "time_ms": elapsed, "error": err_str}
+
+
+@app.post("/sources/test-all", tags=["配置"])
+async def test_all_sources():
+    """
+    批量测试所有已启用的数据源连通性（使用 cloudscraper）
+    """
+    import config as cfg_module
+    import time
+    import concurrent.futures
+
+    # 初始化 cloudscraper session（每个线程独立）
+    try:
+        import cloudscraper as _cs
+        def _make_session():
+            s = _cs.create_scraper(browser={"browser": "chrome", "platform": "windows", "mobile": False})
+            return s
+        _HAS_CS = True
+    except Exception:
+        import requests as _req
+        def _make_session():
+            s = _req.Session()
+            s.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"})
+            return s
+        _HAS_CS = False
+
+    sources = cfg_module.get_enabled_sources()
+    timeout = cfg_module.getint("scrape", "timeout", 15)
+
+    def _test(source):
+        url = source.get("url", "")
+        sid = source.get("id", "")
+        name = source.get("name", sid)
+        if not url:
+            return {"id": sid, "name": name, "reachable": False, "status": 0, "time_ms": 0, "error": "URL 为空"}
+        test_url = url.replace("{code}", "SSIS-254")
+        start = time.time()
+        try:
+            sess = _make_session()
+            resp = sess.get(test_url, timeout=timeout)
+            elapsed = int((time.time() - start) * 1000)
+            return {
+                "id": sid,
+                "name": name,
+                "reachable": resp.status_code in (200, 403),
+                "status": resp.status_code,
+                "time_ms": elapsed,
+                "note": "正常" if resp.status_code == 200 else ("被拦截" if resp.status_code == 403 else f"HTTP {resp.status_code}")
+            }
+        except Exception as e:
+            elapsed = int((time.time() - start) * 1000)
+            err_str = str(e)
+            if "Timeout" in err_str or "timed out" in err_str.lower():
+                return {"id": sid, "name": name, "reachable": False, "status": 0, "time_ms": elapsed, "error": "超时"}
+            return {"id": sid, "name": name, "reachable": False, "status": 0, "time_ms": elapsed, "error": err_str or "连接失败"}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        results = list(executor.map(_test, sources))
+
+    return {"results": results}
 
 
 # ===============================================================================

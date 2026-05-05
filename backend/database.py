@@ -19,20 +19,17 @@ DATABASE_PATH = Path(__file__).resolve().parent.parent / "data" / "movies.db"
 # FC2-PPV 和 HEYDOUGA 特殊格式保持原样（数字段可能较长）
 #
 # 统一标准化意义：
-#   - _extract_code_from_filename() 在扫描时已去零
-#   - 刮削器( scraper )从网页抓取时保持原格式（如 BEB-016）
-#   - 导致 movies.code='BEB-016' 但 local_videos.code='BEB-16'
-#   - organize / get_movies_by_codes 精确匹配失败
+#   - 现在 preserve leading zeros：ABC-012 保持为 ABC-012
+#   - 这确保文件系统和数据库中的番号格式一致
 # ─────────────────────────────────────────────────────────────────────────────
-_CODE_NORMALIZE_RE = re.compile(r'^([A-Z0-9]+)-0*(\d+)$', re.IGNORECASE)
 _FC2_RE = re.compile(r'^FC2-PPV-\d+$', re.IGNORECASE)
 _HEYDOUGA_RE = re.compile(r'^HEYDOUGA-\d+-\d+$', re.IGNORECASE)
 
 
 def normalize_code(code: str) -> str:
     """
-    番号标准化：去除数字部分的前导零。
-    返回统一格式（如 BEB-016 → BEB-16）。
+    番号标准化：保持原始格式（包括前导零）。
+    ABC-012 → ABC-012，ABC-12 → ABC-12
     FC2-PPV / HEYDOUGA 等长数字段特殊格式保持原样。
     """
     if not code:
@@ -40,10 +37,7 @@ def normalize_code(code: str) -> str:
     # 特殊格式不做标准化
     if _FC2_RE.match(code) or _HEYDOUGA_RE.match(code):
         return code.upper()
-    m = _CODE_NORMALIZE_RE.match(code.strip())
-    if m:
-        return f"{m.group(1).upper()}-{int(m.group(2))}"
-    return code.upper()
+    return code.strip().upper()
 
 
 def get_db():
@@ -755,6 +749,7 @@ def calculate_scrape_status(movie_data: dict) -> str:
     # 检查封面
     has_cover = False
     poster_path = movie_data.get("poster_path")
+    cover_url = movie_data.get("cover_url")
     if poster_path:
         if is_jellyfin:
             # Jellyfin 视频：只要有 poster_path 就认为有封面（可能是远程 URL 或本地路径）
@@ -765,6 +760,9 @@ def calculate_scrape_status(movie_data: dict) -> str:
                 has_cover = Path(poster_path).exists()
             except:
                 pass
+    elif is_jellyfin and cover_url:
+        # Jellyfin 视频：cover_url（DMM远程图）也算有封面
+        has_cover = True
     
     # 检查 NFO 文件（仅非 Jellyfin 来源）
     has_nfo = False
@@ -778,11 +776,12 @@ def calculate_scrape_status(movie_data: dict) -> str:
             except Exception:
                 pass
     
-    # Jellyfin 视频：只要有标题和演员就认为是完整的（发布日期和制作商可能缺失）
+    # Jellyfin 视频：封面由 Jellyfin 服务器远程提供，不检查本地 poster_path
+    # 只要有标题就算 metadata 完整（发布日期/制作商/演员可能为空）
     if is_jellyfin:
-        if has_title and has_actors:
+        if has_title:
             return "complete"
-        elif has_title or has_actors or has_cover:
+        elif has_actors or has_cover:
             return "partial"
         else:
             return "empty"
@@ -1575,8 +1574,12 @@ def get_unscraped_local_videos() -> list:
 
         if check["exists"] and not check["should_scrape"]:
             # 标志位已修正为 complete，不需要再刮削
-            # 同步 local_videos.scraped = 1（避免下次还被查出来）
-            if video.get("movie_id") and not video.get("scraped"):
+            # 当 movie_id 为 NULL 时，通过 code 查 movie 并建立关联
+            if not video.get("movie_id"):
+                movie = get_movie_by_code(code)
+                if movie:
+                    _mark_video_scraped_silent(video["id"], movie["id"])
+            elif not video.get("scraped"):
                 _mark_video_scraped_silent(video["id"], video["movie_id"])
             continue
 
@@ -1709,11 +1712,10 @@ def get_local_video_stats() -> dict:
     """)
     total = cursor.fetchone()[0]
 
-    # ② Jellyfin 视频数（用 v.is_jellyfin 标识，不依赖 movies.source_type）
+    # ② Jellyfin 视频数（优先用 movies.source_type，fallback 到 is_jellyfin 标记）
+    #    is_jellyfin 标记在 cleanup 后已无有效数据，改用 movies 表作为权威来源
     cursor.execute("""
-        SELECT COUNT(*) FROM local_videos v
-        WHERE v.code IS NOT NULL AND v.code != ''
-          AND v.is_jellyfin = 1
+        SELECT COUNT(*) FROM movies WHERE source_type = 'jellyfin'
     """)
     jellyfin = cursor.fetchone()[0]
 
@@ -1725,40 +1727,29 @@ def get_local_video_stats() -> dict:
     """)
     is_null = cursor.fetchone()[0]
 
-    # ④ 非 Jellyfin 中 scrape_status='complete' 的数量
-    #   含 is_jellyfin = 0 和 is_jellyfin IS NULL（孤立记录按非 Jellyfin 处理）
+    # ④ scraped: 所有有完整刮削数据的本地视频（非 Jellyfin + 刮削完成）
     cursor.execute("""
         SELECT COUNT(*) FROM local_videos v
-        JOIN movies m ON v.movie_id = m.id
-        WHERE v.code IS NOT NULL AND v.code != ''
-          AND (v.is_jellyfin = 0 OR v.is_jellyfin IS NULL)
-          AND m.scrape_status = 'complete'
-    """)
-    scraped = cursor.fetchone()[0]
-
-    # ⑤ 其余 non-JF 视频，用 check_and_fix 预检验证并归类
-    #   包含 is_jellyfin = 0 和 is_jellyfin IS NULL
-    cursor.execute("""
-        SELECT v.id, v.code
-        FROM local_videos v
         LEFT JOIN movies m ON v.movie_id = m.id
         WHERE v.code IS NOT NULL AND v.code != ''
           AND (v.is_jellyfin = 0 OR v.is_jellyfin IS NULL)
-          AND (m.scrape_status IS NULL OR m.scrape_status != 'complete')
-        ORDER BY v.id
+          AND (m.id IS NOT NULL AND m.scrape_status = 'complete')
     """)
-    rows = cursor.fetchall()
+    scraped = cursor.fetchone()[0]
+
+    # ⑤ unscraped: 非 Jellyfin 来源的本地视频中需要刮削的数量
+    #   与 get_unscraped_local_videos() 的过滤口径保持一致
+    #   scraped + unscraped = is_jellyfin=0/ISNULL 的总数
+    cursor.execute("""
+        SELECT COUNT(*) FROM local_videos v
+        LEFT JOIN movies m ON v.movie_id = m.id
+        WHERE v.code IS NOT NULL AND v.code != ''
+          AND (v.is_jellyfin = 0 OR v.is_jellyfin IS NULL)
+          AND (m.id IS NULL OR m.scrape_status != 'complete')
+    """)
+    unscraped = cursor.fetchone()[0]
 
     complete_unlabeled = 0
-    unscraped = 0
-    for row in rows:
-        check = check_and_fix_scrape_status(row['code'])
-        if not check['exists']:
-            unscraped += 1
-        elif check['should_scrape']:
-            unscraped += 1
-        else:
-            complete_unlabeled += 1
 
     conn.close()
     return {
@@ -2040,8 +2031,7 @@ def enrich_jellyfin_movie_from_nfo(code: str) -> dict:
     if video_path:
         for ext in ['.mp4', '.mkv', '.avi', '.wmv', '.mov']:
             candidate = video_path.replace(ext, '.nfo')
-            search_paths.append(candidate)
-            if os.path.exists(candidate):
+            if candidate != video_path and os.path.exists(candidate):
                 nfo_path = candidate
                 break
 
@@ -2068,7 +2058,7 @@ def enrich_jellyfin_movie_from_nfo(code: str) -> dict:
             lv_path = lv_row[0]
             for ext in ['.mp4', '.mkv', '.avi']:
                 candidate = lv_path.replace(ext, '.nfo')
-                if os.path.exists(candidate):
+                if candidate != lv_path and os.path.exists(candidate):
                     nfo_path = candidate
                     break
             if not nfo_path:
@@ -2077,6 +2067,13 @@ def enrich_jellyfin_movie_from_nfo(code: str) -> dict:
                     if fname.endswith('.nfo'):
                         nfo_path = os.path.join(lv_dir, fname)
                         break
+
+    # ④ 标准路径：data/covers/{code}/{code}.nfo（Jellyfin 刮削输出目录）
+    if not nfo_path:
+        import pathlib as _pathlib
+        nfo_candidate = _pathlib.Path('data/covers') / code / f'{code}.nfo'
+        if nfo_candidate.exists():
+            nfo_path = str(nfo_candidate)
 
     if not nfo_path:
         conn.close()

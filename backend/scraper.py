@@ -994,43 +994,83 @@ class AvWikiScraper(BaseScraper):
         功能: 搜索 AV-Wiki
         文件: scraper.py
         URL 格式: https://av-wiki.net/?s=KEYWORD&post_type=product
+        说明: 素人电影（如 300NTK-406）需要尝试多种番号格式
         """
         results = []
-        url = f"{self.BASE_URL}/?s={quote(keyword)}&post_type=product"
-        soup = self._get(url)
+        keyword_upper = keyword.upper()
+        keyword_lower = keyword.lower()
 
-        if not soup:
-            return results
+        # 尝试的直接详情页 URL 格式（素人电影可能需要加前缀）
+        direct_urls = []
+        direct_urls.append(f"{self.BASE_URL}/{keyword_lower}/")
+        # 从 keyword 提取前缀和数字
+        prefix_match = re.match(r'^(\d+)([A-Z]+)-(\d+)$', keyword_upper)
+        if prefix_match:
+            num_prefix, code_part, number = prefix_match.groups()
+            direct_urls.append(f"{self.BASE_URL}/{keyword_lower}/")
+        else:
+            # 尝试加常见前缀（300/200/400 是素人电影常见前缀）
+            for p in ['300', '200', '400']:
+                direct_urls.append(f"{self.BASE_URL}/{p}{keyword_lower}/")
 
-        # AV-Wiki 使用 WordPress 结构，查找"続きを読む"链接
-        more_links = soup.select('a.more-link, a[href*="/' + keyword.lower() + '/"]')
-        for link in more_links:
-            href = link.get("href", "")
-            # 只保留包含番号的详情链接
-            if href and self.BASE_URL in href and keyword.upper() in href.upper():
-                # 获取详情页
-                detail_soup = self._get(href)
-                if detail_soup:
-                    # 提取标题
-                    title_tag = detail_soup.select_one("h1, .entry-title")
-                    title = title_tag.get_text(strip=True) if title_tag else ""
+        # 搜索页面兜底
+        search_url = f"{self.BASE_URL}/?s={quote(keyword)}&post_type=product"
+        search_soup = self._get(search_url)
+        found_url = None
 
-                    # 提取番号
-                    code_match = re.search(r"([A-Z]{1,6}-\d{2,5})", detail_soup.get_text(), re.IGNORECASE)
-                    code = code_match.group(1).upper() if code_match else keyword.upper()
+        # 1. 先尝试直接访问详情页
+        for direct_url in direct_urls:
+            test_soup = self._get(direct_url)
+            if test_soup:
+                title_tag = test_soup.select_one('h1, .entry-title')
+                if title_tag:
+                    title_text = title_tag.get_text(strip=True)
+                    # 排除 404 页面
+                    if title_text and '404' not in title_text and '見つかりません' not in title_text and 'ページが見つかりません' not in title_text:
+                        found_url = direct_url
+                        break
 
-                    # 提取封面
-                    img = detail_soup.select_one("img")
-                    cover = img.get("src", "") if img else ""
-
-                    results.append({
-                        "code": code,
-                        "title": title,
-                        "detail_url": href,
-                        "cover_url": cover,
-                        "source": "av-wiki",
-                    })
+        # 2. 如果直接访问失败，从搜索结果中找
+        if not found_url and search_soup:
+            # AV-Wiki 搜索结果中的"続きを読む"链接包含完整番号
+            more_links = search_soup.select('a.more-link, a[href*="/' + keyword_lower + '/"]')
+            for link in more_links:
+                href = link.get("href", "")
+                if href and self.BASE_URL in href and keyword_upper in href.upper():
+                    found_url = href
                     break
+
+            # 备用：从搜索结果中提取 av-wiki 详情页链接（包含 /数字+小写番号/ 格式）
+            # 注意：素人电影的详情页 URL 可能带数字前缀，如 /259luxu-1678/
+            if not found_url:
+                for link in search_soup.select('a[href]'):
+                    href = link.get('href', '')
+                    if 'av-wiki.net/' in href:
+                        # 检查 URL 路径部分（去掉查询参数和锚点）是否包含 keyword_lower
+                        # 匹配模式：av-wiki.net/任意内容+keyword_lower+任意内容
+                        path_match = re.match(r'^https?://[^/]+(/[^?#]*)', href)
+                        if path_match:
+                            path = path_match.group(1).lower()
+                            if keyword_lower in path:
+                                found_url = href
+                                break
+
+        if found_url:
+            detail_soup = self._get(found_url)
+            if detail_soup:
+                title_tag = detail_soup.select_one("h1, .entry-title")
+                title = title_tag.get_text(strip=True) if title_tag else ""
+
+                code_match = re.search(r"([A-Z]{1,6}-\d{2,5})", detail_soup.get_text(), re.IGNORECASE)
+                code = code_match.group(1).upper() if code_match else keyword_upper
+
+                results.append({
+                    "code": code,
+                    "title": title,
+                    "detail_url": found_url,
+                    "cover_url": "",  # 不在 search 中提取封面，由 get_detail 负责
+                    "source": "av-wiki",
+                })
 
         logger.info(f"AV-Wiki 找到 {len(results)} 个结果")
         return results
@@ -1053,21 +1093,31 @@ class AvWikiScraper(BaseScraper):
         """
         data = make_basic_data(url)
 
-        # 提取标题
+        # 提取标题（只取第一个文本节点，避免嵌套元素污染）
         title_tag = soup.select_one("h1, .entry-title")
         if title_tag:
-            data["title"] = title_tag.get_text(strip=True)
-            data["title_jp"] = data["title"]
+            # 只取直接文本，忽略子元素内容（防止获取整个页面的内容）
+            title_text = "".join(title_tag.find_all(string=True, recursive=False)).strip()
+            if not title_text:
+                title_text = title_tag.get_text(strip=True)
+            # 限制标题长度，防止异常数据
+            if len(title_text) > 200:
+                title_text = title_text[:200]
+            data["title"] = title_text
+            data["title_jp"] = title_text
 
         # 提取番号
         code_match = re.search(r"([A-Z]{1,6}-\d{2,5})", soup.get_text(), re.IGNORECASE)
         if code_match:
             data["code"] = code_match.group(1).upper()
 
-        # 查找文章内容
+        # 查找文章内容区域，提取关键信息
         article = soup.select_one("article, .entry-content, .post-content")
         if article:
-            article_text = article.get_text()
+            # 使用换行符分隔提取文本，限制长度避免捕获页面级别内容
+            article_text = article.get_text(separator="\n", strip=True)
+            if len(article_text) > 2000:
+                article_text = article_text[:2000]
 
             # 提取日期
             date_match = re.search(r"(\d{4}[-/]\d{2}[-/]\d{2})", article_text)
@@ -1121,18 +1171,23 @@ class AvWikiScraper(BaseScraper):
             if duration_match:
                 data["duration"] = int(duration_match.group(1))
 
-        # 提取封面
-        imgs = soup.find_all("img")
-        for img in imgs:
-            src = img.get("src", "") or img.get("data-src", "")
-            # 跳过延迟加载的占位图和 logo
-            if src and "data:image" not in src and "favicon" not in src and "logo" not in src:
-                # 优先选择 DMM 图片
-                if "dmm" in src.lower():
-                    data["cover_url"] = src
-                    break
-                elif not data["cover_url"]:
-                    data["cover_url"] = src
+        # 提取封面：优先使用 og:image（社交媒体分享图，通常是正确的封面）
+        og_img = soup.select_one('meta[property="og:image"]')
+        if og_img and og_img.get("content"):
+            data["cover_url"] = og_img["content"]
+        else:
+            # 兜底：查找页面中的图片
+            imgs = soup.find_all("img")
+            for img in imgs:
+                src = img.get("src", "") or img.get("data-src", "")
+                # 跳过延迟加载的占位图和 logo
+                if src and "data:image" not in src and "favicon" not in src and "logo" not in src:
+                    # 优先选择 DMM 图片
+                    if "dmm" in src.lower():
+                        data["cover_url"] = src
+                        break
+                    elif not data["cover_url"]:
+                        data["cover_url"] = src
 
         return data
 
@@ -1778,13 +1833,259 @@ def make_basic_data(url: str) -> Dict:
 
 class JavDBScraper(BaseScraper):
     """
-    功能: JavDB 数据源爬虫（已禁用）
+    功能: JavDB 数据源爬虫
     文件: scraper.py
-    状态: 已禁用 - 403 禁止访问
-    依赖: BaseScraper
-    未来: 等待更好的反反爬虫方案
+    网站: https://javdb.com
+    状态: 启用 - 使用 cloudscraper 绕过 CloudFlare
+    依赖: BaseScraper + cloudscraper (通过 session 注入)
+    特点: 数据全面，封面质量高，支持多域名（javdb.com / javdb572.com）
     """
-    # ... 代码保留，用于未来参考
+
+    BASE_URL = "https://javdb.com"
+    API_URL = "https://javdb.com/api/v1"
+
+    def __init__(self, **kwargs):
+        """初始化 JavDB 爬虫"""
+        super().__init__(**kwargs)
+        self.session.headers.update({
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Referer": self.BASE_URL,
+        })
+
+    def search(self, keyword: str) -> List[Dict]:
+        """
+        功能: 搜索 JavDB（优先 REST API，失败则 HTML 搜索）
+        文件: scraper.py
+        参数:
+            keyword: 番号（如 "IPZZ-792"）
+        返回: 搜索结果列表
+        """
+        # 优先尝试 REST API（返回 JSON，速度快）
+        api_result = self._search_by_api(keyword)
+        if api_result:
+            return api_result
+
+        # Fallback: HTML 搜索
+        return self._search_by_html(keyword)
+
+    def _search_by_api(self, keyword: str) -> List[Dict]:
+        """通过 REST API 搜索 JavDB"""
+        try:
+            url = f"{self.API_URL}/search?q={quote(keyword)}&t=all"
+            resp = self.session.get(url, timeout=self.timeout)
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+            results = []
+            for item in data.get("data", []):
+                # 跳过推广内容
+                if item.get("is_promo"):
+                    continue
+                results.append(self._parse_api_item(item))
+            if results:
+                logger.info(f"JavDB API 找到 {len(results)} 个结果")
+                return results
+        except Exception as e:
+            logger.debug(f"JavDB API 搜索失败: {e}")
+        return []
+
+    def _parse_api_item(self, item: dict) -> Dict:
+        """解析 API 返回的单个影片条目"""
+        # 提取番号（从 title 开头，如 "IPZZ-792"）
+        title = item.get("title", "")
+        code = ""
+        match = re.match(r'^([A-Z]+-\d+)', title.upper())
+        if match:
+            code = match.group(1)
+
+        # 演员
+        actors = []
+        for a in item.get("actors", []):
+            name = a.get("name", "")
+            if name:
+                actors.append(name)
+
+        # 标签/类别
+        genres = []
+        for t in item.get("tags", []):
+            name = t.get("name", "")
+            if name:
+                genres.append(name)
+
+        # 时长（秒转分钟）
+        duration = 0
+        d = item.get("duration")
+        if d:
+            duration = int(d) // 60
+
+        # 封面
+        cover_url = item.get("cover", "")
+        if not cover_url and item.get("poster"):
+            cover_url = item.get("poster", "")
+
+        return {
+            "code": code,
+            "title": title,
+            "title_jp": title,
+            "cover_url": cover_url,
+            "duration": duration,
+            "genres": genres,
+            "actors": actors,
+            "release_date": item.get("date", ""),
+            "maker": item.get("maker", ""),
+            "studio": item.get("maker", ""),
+            "detail_url": f"{self.BASE_URL}/v/{item.get('id', '')}",
+        }
+
+    def _search_by_html(self, keyword: str) -> List[Dict]:
+        """Fallback: 通过 HTML 页面搜索 JavDB"""
+        try:
+            url = f"{self.BASE_URL}/search?q={quote(keyword)}&f=all"
+            soup = self._get(url)
+            if not soup:
+                return []
+            return self._parse_search_page(soup)
+        except Exception as e:
+            logger.debug(f"JavDB HTML 搜索失败: {e}")
+        return []
+
+    def _parse_search_page(self, soup: BeautifulSoup) -> List[Dict]:
+        """解析 HTML 搜索结果页面"""
+        results = []
+        for card in soup.select(".movie-list .item"):
+            try:
+                a_tag = card.select_one("a")
+                if not a_tag:
+                    continue
+                detail_url = a_tag.get("href", "")
+                if detail_url:
+                    detail_url = self.BASE_URL + detail_url
+
+                title = card.select_one(".video-title") or card.select_one(".title")
+                title_text = title.get_text(strip=True) if title else ""
+
+                code = ""
+                match = re.match(r'^([A-Z]+-\d+)', title_text.upper())
+                if match:
+                    code = match.group(1)
+
+                img = card.select_one("img")
+                cover_url = img.get("src", "") or img.get("data-src", "") if img else ""
+
+                date_tag = card.select_one(".meta")
+                date_text = date_tag.get_text(strip=True) if date_tag else ""
+
+                results.append({
+                    "code": code,
+                    "title": title_text,
+                    "title_jp": title_text,
+                    "cover_url": cover_url,
+                    "release_date": date_text,
+                    "detail_url": detail_url,
+                })
+            except Exception:
+                continue
+
+        if results:
+            logger.info(f"JavDB HTML 找到 {len(results)} 个结果")
+        return results
+
+    def scrape(self, keyword: str) -> Optional[Dict]:
+        """
+        功能: 刮取单个影片详细信息
+        文件: scraper.py
+        参数:
+            keyword: 番号
+        返回: 影片信息字典
+        """
+        search_results = self.search(keyword)
+        if not search_results:
+            return None
+
+        # 返回第一个结果（最相关）
+        # 尝试获取详情页以补充更多信息
+        first = search_results[0]
+        if first.get("detail_url") and first.get("code"):
+            detail = self._get_detail(first["detail_url"])
+            if detail:
+                first.update(detail)
+                # 确保 code 不丢失
+                if not first.get("code"):
+                    first["code"] = keyword.upper()
+
+        if not first.get("code"):
+            first["code"] = keyword.upper()
+        if not first.get("title"):
+            first["title"] = keyword.upper()
+
+        return first
+
+    def _get_detail(self, url: str) -> Optional[Dict]:
+        """获取详情页面补充信息"""
+        try:
+            soup = self._get(url)
+            if not soup:
+                return None
+
+            # 解析页面
+            info = {}
+
+            # 片商/制作商
+            for label in soup.select(".detail-muted"):
+                text = label.get_text(strip=True)
+                if "制作商:" in text or "Maker:" in text:
+                    val = label.find_next_sibling()
+                    if val:
+                        info["maker"] = val.get_text(strip=True)
+
+            # 发行日期
+            for label in soup.select(".detail-muted"):
+                text = label.get_text(strip=True)
+                if "发行日期:" in text or "Release Date:" in text:
+                    val = label.find_next_sibling()
+                    if val:
+                        info["release_date"] = val.get_text(strip=True)
+
+            # 时长
+            for label in soup.select(".detail-muted"):
+                text = label.get_text(strip=True)
+                if "片长:" in text or "Duration:" in text:
+                    val = label.find_next_sibling()
+                    if val:
+                        dur_text = val.get_text(strip=True)
+                        m = re.search(r'(\d+)', dur_text)
+                        if m:
+                            info["duration"] = int(m.group(1))
+
+            # 演员
+            actors = []
+            for a_tag in soup.select(".actor-section a"):
+                name = a_tag.get_text(strip=True)
+                if name:
+                    actors.append(name)
+            if actors:
+                info["actors"] = actors
+
+            # 标签
+            genres = []
+            for tag in soup.select(".tag-contents a"):
+                name = tag.get_text(strip=True)
+                if name and name not in genres:
+                    genres.append(name)
+            if genres:
+                info["genres"] = genres
+
+            # 封面（高清）
+            cover_tag = soup.select_one(".cover-image")
+            if cover_tag:
+                img = cover_tag.get("src") or cover_tag.get("data-src")
+                if img:
+                    info["cover_url"] = img
+
+            return info
+        except Exception as e:
+            logger.debug(f"JavDB 详情页解析失败: {e}")
+        return None
 
 
 class JavBusScraper(BaseScraper):
@@ -1803,6 +2104,668 @@ class JavbooksScraper(BaseScraper):
     状态: 已禁用 - 站点失效
     """
     pass
+
+
+# ===============================================================================
+# JavSee 爬虫（与 JavDB 结构相似，可能无 CloudFlare）
+# ===============================================================================
+
+class JavSeeScraper(BaseScraper):
+    """
+    功能: JavSee 数据源爬虫
+    文件: scraper.py
+    网站: https://www.javsee.bond（也有多个镜像）
+    状态: 启用
+    依赖: BaseScraper + cloudscraper (通过 session 注入)
+    特点: JavDB 分支，结构相似，数据全面
+    """
+
+    BASE_URL = "https://www.javsee.bond"
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.session.headers.update({
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Referer": self.BASE_URL,
+        })
+
+    def search(self, keyword: str) -> List[Dict]:
+        """搜索 JavSee"""
+        # 尝试 API（与 JavDB 相似）
+        api_result = self._search_by_api(keyword)
+        if api_result:
+            return api_result
+        return self._search_by_html(keyword)
+
+    def _search_by_api(self, keyword: str) -> List[Dict]:
+        """通过 REST API 搜索"""
+        try:
+            url = f"{self.BASE_URL}/api/v1/search?q={quote(keyword)}&t=all"
+            resp = self.session.get(url, timeout=self.timeout)
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+            results = []
+            for item in data.get("data", []):
+                if item.get("is_promo"):
+                    continue
+                title = item.get("title", "")
+                code = ""
+                m = re.match(r'^([A-Z]+-\d+)', title.upper())
+                if m:
+                    code = m.group(1)
+                actors = [a.get("name", "") for a in item.get("actors", []) if a.get("name")]
+                genres = [t.get("name", "") for t in item.get("tags", []) if t.get("name")]
+                duration = int(item.get("duration", 0)) // 60 if item.get("duration") else 0
+                cover_url = item.get("cover") or item.get("poster", "")
+                results.append({
+                    "code": code,
+                    "title": title,
+                    "title_jp": title,
+                    "cover_url": cover_url,
+                    "duration": duration,
+                    "genres": genres,
+                    "actors": actors,
+                    "release_date": item.get("date", ""),
+                    "maker": item.get("maker", ""),
+                    "studio": item.get("maker", ""),
+                    "detail_url": f"{self.BASE_URL}/v/{item.get('id', '')}",
+                })
+            if results:
+                logger.info(f"JavSee API 找到 {len(results)} 个结果")
+                return results
+        except Exception as e:
+            logger.debug(f"JavSee API 失败: {e}")
+        return []
+
+    def _search_by_html(self, keyword: str) -> List[Dict]:
+        """HTML 搜索（Fallback）"""
+        try:
+            # JavSee 使用路径型搜索: /search/{code}&type=&parent=ce
+            url = f"{self.BASE_URL}/search/{quote(keyword)}&type=&parent=ce"
+            soup = self._get(url)
+            if not soup:
+                return []
+            return self._parse_search_page(soup)
+        except Exception as e:
+            logger.debug(f"JavSee HTML 搜索失败: {e}")
+        return []
+
+    def _parse_search_page(self, soup: BeautifulSoup) -> List[Dict]:
+        """解析 HTML 搜索结果"""
+        results = []
+        for card in soup.select(".movie-list .item, .item .video-cover"):
+            try:
+                a_tag = card.select_one("a")
+                if not a_tag:
+                    continue
+                href = a_tag.get("href", "")
+                detail_url = self.BASE_URL + href if href.startswith("/") else href
+                title_tag = card.select_one(".video-title, .title, .box-title")
+                title_text = title_tag.get_text(strip=True) if title_tag else ""
+                code = ""
+                m = re.match(r'^([A-Z]+-\d+)', title_text.upper())
+                if m:
+                    code = m.group(1)
+                img = card.select_one("img")
+                cover_url = ""
+                if img:
+                    cover_url = img.get("src") or img.get("data-src", "")
+                date_tag = card.select_one(".meta, .date, .time")
+                date_text = date_tag.get_text(strip=True) if date_tag else ""
+                results.append({
+                    "code": code,
+                    "title": title_text,
+                    "title_jp": title_text,
+                    "cover_url": cover_url,
+                    "release_date": date_text,
+                    "detail_url": detail_url,
+                })
+            except Exception:
+                continue
+        if results:
+            logger.info(f"JavSee HTML 找到 {len(results)} 个结果")
+        return results
+
+    def scrape(self, keyword: str) -> Optional[Dict]:
+        """刮取单个影片"""
+        results = self.search(keyword)
+        if not results:
+            return None
+        first = results[0]
+        if first.get("detail_url") and first.get("code"):
+            detail = self._get_detail(first["detail_url"])
+            if detail:
+                first.update(detail)
+        if not first.get("code"):
+            first["code"] = keyword.upper()
+        if not first.get("title"):
+            first["title"] = keyword.upper()
+        return first
+
+    def _get_detail(self, url: str) -> Optional[Dict]:
+        """获取详情页"""
+        try:
+            soup = self._get(url)
+            if not soup:
+                return None
+            info = {}
+            # 片商
+            for label in soup.select(".detail-muted, .info-label"):
+                text = label.get_text(strip=True)
+                if "制作商" in text or "Maker" in text or "studio" in text.lower():
+                    val = label.find_next_sibling()
+                    if val:
+                        info["maker"] = val.get_text(strip=True)
+                        info["studio"] = val.get_text(strip=True)
+                if "发行日期" in text or "Release" in text:
+                    val = label.find_next_sibling()
+                    if val:
+                        info["release_date"] = val.get_text(strip=True)
+                if "片长" in text or "Duration" in text:
+                    val = label.find_next_sibling()
+                    if val:
+                        t = val.get_text(strip=True)
+                        m = re.search(r'(\d+)', t)
+                        if m:
+                            info["duration"] = int(m.group(1))
+            # 演员
+            actors = []
+            for a_tag in soup.select(".actor-section a, .cast a"):
+                name = a_tag.get_text(strip=True)
+                if name:
+                    actors.append(name)
+            if actors:
+                info["actors"] = actors
+            # 标签
+            genres = []
+            for tag in soup.select(".tag-contents a, .tags a"):
+                name = tag.get_text(strip=True)
+                if name and name not in genres:
+                    genres.append(name)
+            if genres:
+                info["genres"] = genres
+            # 封面
+            cover_tag = soup.select_one(".cover-image img, .big-image img, .cover img")
+            if cover_tag:
+                img = cover_tag.get("src") or cover_tag.get("data-src", "")
+                if img:
+                    info["cover_url"] = img
+            return info
+        except Exception as e:
+            logger.debug(f"JavSee 详情页解析失败: {e}")
+        return None
+
+
+# ===============================================================================
+# Jav321 爬虫
+# ===============================================================================
+
+class Jav321Scraper(BaseScraper):
+    """
+    功能: Jav321 数据源爬虫
+    文件: scraper.py
+    网站: https://www.jav321.com
+    状态: 启用
+    依赖: BaseScraper
+    特点: 搜索简单，番号匹配精确
+    """
+
+    BASE_URL = "https://www.jav321.com"
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.session.headers.update({
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Referer": self.BASE_URL,
+        })
+
+    def search(self, keyword: str) -> List[Dict]:
+        """搜索 Jav321"""
+        try:
+            # Jav321 使用 /search 端点
+            url = f"{self.BASE_URL}/search?q={quote(keyword)}"
+            soup = self._get(url)
+            if not soup:
+                return []
+            return self._parse_search_page(soup, keyword)
+        except Exception as e:
+            logger.debug(f"Jav321 搜索失败: {e}")
+        return []
+
+    def _parse_search_page(self, soup: BeautifulSoup, keyword: str) -> List[Dict]:
+        """解析 Jav321 搜索结果"""
+        results = []
+        # Jav321 典型结构: .movie-box or .video-item
+        for card in soup.select(".movie-box, .video-item, .col-md-4, .item"):
+            try:
+                a_tag = card.select_one("a[href*='/video']")
+                if not a_tag:
+                    a_tag = card.select_one("a")
+                if not a_tag:
+                    continue
+                href = a_tag.get("href", "")
+                detail_url = href if href.startswith("http") else self.BASE_URL + href
+
+                # 获取标题和番号
+                title_tag = card.select_one(".video-title, .title, h3, .name")
+                title_text = title_tag.get_text(strip=True) if title_tag else ""
+
+                # 从 URL 或标题提取番号
+                code = ""
+                m = re.search(r'([A-Z]+-\d+)', title_text.upper() + href.upper())
+                if m:
+                    code = m.group(1)
+
+                # 封面
+                img_tag = card.select_one("img")
+                cover_url = ""
+                if img_tag:
+                    cover_url = img_tag.get("src") or img_tag.get("data-src", "")
+
+                # 日期
+                date_tag = card.select_one(".date, .time, .meta")
+                date_text = date_tag.get_text(strip=True) if date_tag else ""
+
+                results.append({
+                    "code": code,
+                    "title": title_text,
+                    "title_jp": title_text,
+                    "cover_url": cover_url,
+                    "release_date": date_text,
+                    "detail_url": detail_url,
+                })
+            except Exception:
+                continue
+
+        if not results:
+            # 备用：直接匹配番号
+            page_text = soup.get_text()
+            m = re.search(r'([A-Z]+-\d+)', page_text.upper())
+            if m:
+                code = m.group(1)
+                results.append({
+                    "code": code,
+                    "title": code,
+                    "title_jp": code,
+                    "cover_url": "",
+                    "detail_url": f"{self.BASE_URL}/video/{code}",
+                })
+
+        if results:
+            logger.info(f"Jav321 找到 {len(results)} 个结果")
+        return results
+
+    def scrape(self, keyword: str) -> Optional[Dict]:
+        """刮取单个影片"""
+        results = self.search(keyword)
+        if not results:
+            return None
+        first = results[0]
+        if first.get("detail_url"):
+            detail = self._get_detail(first["detail_url"])
+            if detail:
+                first.update(detail)
+        if not first.get("code"):
+            first["code"] = keyword.upper()
+        if not first.get("title"):
+            first["title"] = keyword.upper()
+        return first
+
+    def _get_detail(self, url: str) -> Optional[Dict]:
+        """获取 Jav321 详情页"""
+        try:
+            soup = self._get(url)
+            if not soup:
+                return None
+            info = {}
+            # 尝试解析详细信息
+            for row in soup.select(".info-row, .video-info p"):
+                text = row.get_text(strip=True)
+                if "製作商" in text or "Maker" in text or "Studio" in text:
+                    val = row.select_one("span, strong, b")
+                    if val:
+                        info["maker"] = val.get_text(strip=True)
+                if "上映日" in text or "Release" in text or "Date" in text:
+                    val = row.select_one("span, strong, b, a")
+                    if val:
+                        info["release_date"] = val.get_text(strip=True)
+                if "長さ" in text or "Duration" in text or "Length" in text:
+                    val = row.select_one("span, strong, b")
+                    if val:
+                        t = val.get_text(strip=True)
+                        m = re.search(r'(\d+)', t)
+                        if m:
+                            info["duration"] = int(m.group(1))
+            # 演员
+            actors = []
+            for a_tag in soup.select(".star a, .actor a, .cast a"):
+                name = a_tag.get_text(strip=True)
+                if name:
+                    actors.append(name)
+            if actors:
+                info["actors"] = actors
+            # 标签
+            genres = []
+            for tag in soup.select(".tag a, .genre a, .tags a"):
+                name = tag.get_text(strip=True)
+                if name and name not in genres:
+                    genres.append(name)
+            if genres:
+                info["genres"] = genres
+            # 封面
+            cover_tag = soup.select_one(".embed-responsive img, .cover-image img, #video-thumbnail img")
+            if cover_tag:
+                img = cover_tag.get("src") or cover_tag.get("data-src", "")
+                if img:
+                    info["cover_url"] = img
+            return info
+        except Exception as e:
+            logger.debug(f"Jav321 详情页解析失败: {e}")
+        return None
+
+
+# ===============================================================================
+# AvSox 爬虫
+# ===============================================================================
+
+class AvSoxScraper(BaseScraper):
+    """
+    功能: AvSox 数据源爬虫
+    文件: scraper.py
+    网站: https://avsox.click/cn
+    状态: 启用
+    依赖: BaseScraper
+    特点: 数据全面，支持中文，搜索效率高
+    """
+
+    BASE_URL = "https://avsox.click/cn"
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.session.headers.update({
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Referer": self.BASE_URL,
+        })
+
+    def search(self, keyword: str) -> List[Dict]:
+        """搜索 AvSox"""
+        try:
+            url = f"{self.BASE_URL}/search?keyword={quote(keyword)}"
+            soup = self._get(url)
+            if not soup:
+                return []
+            return self._parse_search_page(soup)
+        except Exception as e:
+            logger.debug(f"AvSox 搜索失败: {e}")
+        return []
+
+    def _parse_search_page(self, soup: BeautifulSoup) -> List[Dict]:
+        """解析 AvSox 搜索结果"""
+        results = []
+        # AvSox 典型: .movie-box, .item, .video-box
+        for card in soup.select(".movie-box, .item, .video-box, .col-md-3"):
+            try:
+                a_tag = card.select_one("a[href*='/cn/']")
+                if not a_tag:
+                    a_tag = card.select_one("a")
+                if not a_tag:
+                    continue
+                href = a_tag.get("href", "")
+                detail_url = href if href.startswith("http") else self.BASE_URL + href
+
+                # 标题
+                title_tag = card.select_one(".movie-title, .title, h4, h3")
+                title_text = title_tag.get_text(strip=True) if title_tag else ""
+
+                # 提取番号
+                code = ""
+                m = re.search(r'([A-Z]+-\d+)', title_text.upper())
+                if not m:
+                    m = re.search(r'([A-Z]+-\d+)', href.upper())
+                if m:
+                    code = m.group(1)
+
+                # 封面
+                img_tag = card.select_one("img")
+                cover_url = ""
+                if img_tag:
+                    cover_url = img_tag.get("src") or img_tag.get("data-src", "")
+
+                # 日期
+                date_tag = card.select_one(".date, .meta, .time")
+                date_text = date_tag.get_text(strip=True) if date_tag else ""
+
+                results.append({
+                    "code": code,
+                    "title": title_text,
+                    "title_jp": title_text,
+                    "cover_url": cover_url,
+                    "release_date": date_text,
+                    "detail_url": detail_url,
+                })
+            except Exception:
+                continue
+
+        if results:
+            logger.info(f"AvSox 找到 {len(results)} 个结果")
+        return results
+
+    def scrape(self, keyword: str) -> Optional[Dict]:
+        """刮取单个影片"""
+        results = self.search(keyword)
+        if not results:
+            return None
+        first = results[0]
+        if first.get("detail_url"):
+            detail = self._get_detail(first["detail_url"])
+            if detail:
+                first.update(detail)
+        if not first.get("code"):
+            first["code"] = keyword.upper()
+        if not first.get("title"):
+            first["title"] = keyword.upper()
+        return first
+
+    def _get_detail(self, url: str) -> Optional[Dict]:
+        """获取 AvSox 详情页"""
+        try:
+            soup = self._get(url)
+            if not soup:
+                return None
+            info = {}
+            # 片商
+            for label in soup.select(".info-label, .movie-info p strong"):
+                text = label.get_text(strip=True)
+                if any(x in text for x in ["製作商", "制作商", "Maker", "Studio", "Publisher"]):
+                    val = label.find_next_sibling()
+                    if val:
+                        info["maker"] = val.get_text(strip=True)
+                        info["studio"] = val.get_text(strip=True)
+                if any(x in text for x in ["上映日", "发行日期", "Release", "Release Date"]):
+                    val = label.find_next_sibling()
+                    if val:
+                        info["release_date"] = val.get_text(strip=True)
+                if any(x in text for x in ["片長", "片长", "Duration", "Length"]):
+                    val = label.find_next_sibling()
+                    if val:
+                        t = val.get_text(strip=True)
+                        m = re.search(r'(\d+)', t)
+                        if m:
+                            info["duration"] = int(m.group(1))
+            # 演员
+            actors = []
+            for a_tag in soup.select(".star a, .actor a, .cast a, .info-actor a"):
+                name = a_tag.get_text(strip=True)
+                if name and len(name) < 50:
+                    actors.append(name)
+            if actors:
+                info["actors"] = actors
+            # 标签
+            genres = []
+            for tag in soup.select(".tag a, .genre a, .tags a, .category a"):
+                name = tag.get_text(strip=True)
+                if name and name not in genres:
+                    genres.append(name)
+            if genres:
+                info["genres"] = genres
+            # 封面
+            for img_tag in soup.select(".cover-image img, .big-image img, #cover-image"):
+                img = img_tag.get("src") or img_tag.get("data-src", "")
+                if img and not info.get("cover_url"):
+                    info["cover_url"] = img
+                    break
+            return info
+        except Exception as e:
+            logger.debug(f"AvSox 详情页解析失败: {e}")
+        return None
+
+
+# ===============================================================================
+# AvMoo 爬虫（与 AvSox 结构相近）
+# ===============================================================================
+
+class AvMooScraper(BaseScraper):
+    """
+    功能: AvMoo 数据源爬虫
+    文件: scraper.py
+    网站: https://avmoo.shop/cn
+    状态: 启用
+    依赖: BaseScraper
+    特点: AvSox 兄弟站，结构相似
+    """
+
+    BASE_URL = "https://avmoo.shop/cn"
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.session.headers.update({
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Referer": self.BASE_URL,
+        })
+
+    def search(self, keyword: str) -> List[Dict]:
+        """搜索 AvMoo"""
+        try:
+            url = f"{self.BASE_URL}/search?keyword={quote(keyword)}"
+            soup = self._get(url)
+            if not soup:
+                return []
+            return self._parse_search_page(soup)
+        except Exception as e:
+            logger.debug(f"AvMoo 搜索失败: {e}")
+        return []
+
+    def _parse_search_page(self, soup: BeautifulSoup) -> List[Dict]:
+        """解析 AvMoo 搜索结果"""
+        results = []
+        for card in soup.select(".movie-box, .item, .video-box, .col-md-3"):
+            try:
+                a_tag = card.select_one("a[href*='/cn/']")
+                if not a_tag:
+                    a_tag = card.select_one("a")
+                if not a_tag:
+                    continue
+                href = a_tag.get("href", "")
+                detail_url = href if href.startswith("http") else self.BASE_URL + href
+
+                title_tag = card.select_one(".movie-title, .title, h4, h3")
+                title_text = title_tag.get_text(strip=True) if title_tag else ""
+
+                code = ""
+                m = re.search(r'([A-Z]+-\d+)', title_text.upper())
+                if not m:
+                    m = re.search(r'([A-Z]+-\d+)', href.upper())
+                if m:
+                    code = m.group(1)
+
+                img_tag = card.select_one("img")
+                cover_url = ""
+                if img_tag:
+                    cover_url = img_tag.get("src") or img_tag.get("data-src", "")
+
+                date_tag = card.select_one(".date, .meta, .time")
+                date_text = date_tag.get_text(strip=True) if date_tag else ""
+
+                results.append({
+                    "code": code,
+                    "title": title_text,
+                    "title_jp": title_text,
+                    "cover_url": cover_url,
+                    "release_date": date_text,
+                    "detail_url": detail_url,
+                })
+            except Exception:
+                continue
+
+        if results:
+            logger.info(f"AvMoo 找到 {len(results)} 个结果")
+        return results
+
+    def scrape(self, keyword: str) -> Optional[Dict]:
+        """刮取单个影片"""
+        results = self.search(keyword)
+        if not results:
+            return None
+        first = results[0]
+        if first.get("detail_url"):
+            detail = self._get_detail(first["detail_url"])
+            if detail:
+                first.update(detail)
+        if not first.get("code"):
+            first["code"] = keyword.upper()
+        if not first.get("title"):
+            first["title"] = keyword.upper()
+        return first
+
+    def _get_detail(self, url: str) -> Optional[Dict]:
+        """获取 AvMoo 详情页"""
+        try:
+            soup = self._get(url)
+            if not soup:
+                return None
+            info = {}
+            for label in soup.select(".info-label, .movie-info p strong"):
+                text = label.get_text(strip=True)
+                if any(x in text for x in ["製作商", "制作商", "Maker", "Studio", "Publisher"]):
+                    val = label.find_next_sibling()
+                    if val:
+                        info["maker"] = val.get_text(strip=True)
+                        info["studio"] = val.get_text(strip=True)
+                if any(x in text for x in ["上映日", "发行日期", "Release", "Release Date"]):
+                    val = label.find_next_sibling()
+                    if val:
+                        info["release_date"] = val.get_text(strip=True)
+                if any(x in text for x in ["片長", "片长", "Duration", "Length"]):
+                    val = label.find_next_sibling()
+                    if val:
+                        t = val.get_text(strip=True)
+                        m = re.search(r'(\d+)', t)
+                        if m:
+                            info["duration"] = int(m.group(1))
+            actors = []
+            for a_tag in soup.select(".star a, .actor a, .cast a, .info-actor a"):
+                name = a_tag.get_text(strip=True)
+                if name and len(name) < 50:
+                    actors.append(name)
+            if actors:
+                info["actors"] = actors
+            genres = []
+            for tag in soup.select(".tag a, .genre a, .tags a, .category a"):
+                name = tag.get_text(strip=True)
+                if name and name not in genres:
+                    genres.append(name)
+            if genres:
+                info["genres"] = genres
+            for img_tag in soup.select(".cover-image img, .big-image img, #cover-image"):
+                img = img_tag.get("src") or img_tag.get("data-src", "")
+                if img and not info.get("cover_url"):
+                    info["cover_url"] = img
+                    break
+            return info
+        except Exception as e:
+            logger.debug(f"AvMoo 详情页解析失败: {e}")
+        return None
 
 
 class JavhooScraper(BaseScraper):
@@ -1877,6 +2840,11 @@ class EnhancedMultiScraper:
             "av-wiki": AvWikiScraper,
             "javcup": JavcupScraper,
             "avdanyuwiki": AvdanyuwikiScraper,
+            "javdb": JavDBScraper,
+            "javsee": JavSeeScraper,
+            "jav321": Jav321Scraper,
+            "avsox": AvSoxScraper,
+            "avmoo": AvMooScraper,
         }
 
         # 从配置获取启用的数据源（按 priority 排序）
@@ -1950,14 +2918,23 @@ def scrape_movie_enhanced(keyword: str, save_cover: bool = True, local_video_pat
         save_cover: 是否保存封面到本地
         local_video_path: 本地视频路径（可选，用于封面保存位置）
     返回: 影片信息字典
-    依赖: EnhancedMultiScraper
+    依赖: EnhancedScraper (cloudscraper + 多源并发)
     使用语法:
         result = scrape_movie_enhanced("IPZZ-792")
         if result:
             print(result["title"])
     """
-    scraper = EnhancedMultiScraper()
-    return scraper.scrape(keyword)
+    import time as _time
+    _t0 = _time.time()
+    from enhanced_scraper import EnhancedScraper
+    scraper = EnhancedScraper()
+    result = scraper.scrape_to_movie_data(keyword)
+    elapsed = int((_time.time() - _t0) * 1000)
+    if result:
+        print(f"[scrape_movie_enhanced] ✅ {keyword} → {result.get('title', '')[:40]} (来自 {result.get('source', '?')}, {elapsed}ms)", flush=True)
+    else:
+        print(f"[scrape_movie_enhanced] ❌ {keyword} 刮削失败（{elapsed}ms）", flush=True)
+    return result
 
 
 # 兼容性别名（main.py 中的旧代码导入 scrape_movie）
