@@ -1116,6 +1116,10 @@ def init_local_videos_table():
             file_size INTEGER DEFAULT 0,
             scraped INTEGER DEFAULT 0,
             movie_id INTEGER,
+            fanart_path TEXT,
+            poster_path TEXT,
+            thumb_path TEXT,
+            is_jellyfin INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (source_id) REFERENCES local_sources(id) ON DELETE CASCADE,
@@ -1133,6 +1137,19 @@ def init_local_videos_table():
             print("  + local_videos.is_jellyfin 列已添加")
         except Exception:
             pass  # 已存在则忽略
+
+    # 添加 Jellyfin/Jellyfin 媒体路径列
+    for col, sql in [
+        ("fanart_path", "ALTER TABLE local_videos ADD COLUMN fanart_path TEXT"),
+        ("poster_path", "ALTER TABLE local_videos ADD COLUMN poster_path TEXT"),
+        ("thumb_path", "ALTER TABLE local_videos ADD COLUMN thumb_path TEXT"),
+    ]:
+        if col not in existing_lv_cols:
+            try:
+                cursor.execute(sql)
+                print(f"  + local_videos.{col} 列已添加")
+            except Exception:
+                pass  # 已存在则忽略
 
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_local_videos_code ON local_videos(code)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_local_videos_source ON local_videos(source_id)")

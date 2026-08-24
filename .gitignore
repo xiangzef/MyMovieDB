@@ -56,3 +56,6 @@ build/
 
 # Tests（测试文件统一放 tests/，不纳入版本追踪）
 tests/
+
+# API keys (不提交)
+backend/.env

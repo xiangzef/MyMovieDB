@@ -3350,6 +3350,96 @@ async def health_check():
 
 
 # ===============================================================================
+# 配置管理 API
+# ===============================================================================
+
+@app.get("/config")
+async def get_config():
+    """获取当前配置（数据源 + 设置）"""
+    from config import get, getint, getfloat, _parse_sources, SCRAPER_SOURCES
+
+    # 读取当前数据源配置
+    sources = []
+    for s in SCRAPER_SOURCES:
+        sources.append({
+            "id": s.get("id", ""),
+            "name": s.get("name", ""),
+            "url": s.get("url", ""),
+            "enabled": s.get("enabled", False),
+            "priority": s.get("priority", 999),
+            "anti_bot": s.get("anti_bot", False)
+        })
+
+    # 读取当前设置
+    settings = {
+        "timeout": getint("scrape", "timeout", 15),
+        "default_delay": getfloat("scrape", "default_delay", 0.5),
+        "default_retry": getint("scrape", "default_retry", 1),
+        "default_page_size": getint("page", "default_page_size", 24),
+        "max_page_size": getint("page", "max_page_size", 100)
+    }
+
+    return {"sources": sources, "settings": settings}
+
+
+class ConfigUpdateRequest(BaseModel):
+    """配置更新请求"""
+    sources: Optional[List[dict]] = None
+    settings: Optional[dict] = None
+
+
+@app.put("/config")
+async def update_config(request: ConfigUpdateRequest):
+    """更新配置（数据源 + 设置）"""
+    import configparser
+    import json
+
+    if not request.sources and not request.settings:
+        return {"success": False, "message": "没有需要保存的配置"}
+
+    # 读取现有配置
+    cfg = configparser.ConfigParser()
+    config_path = Path(__file__).parent / "config.ini"
+    cfg.read(config_path, encoding="utf-8")
+
+    # 更新数据源
+    if request.sources is not None:
+        if "sources" not in cfg:
+            cfg["sources"] = {}
+        # 保留注释行
+        sources_json = json.dumps(request.sources, ensure_ascii=False)
+        cfg.set("sources", "sources_json", sources_json)
+
+    # 更新设置
+    if request.settings is not None:
+        settings = request.settings
+        if "scrape" not in cfg:
+            cfg["scrape"] = {}
+        if settings.get("timeout"):
+            cfg.set("scrape", "timeout", str(settings["timeout"]))
+        if settings.get("default_delay") is not None:
+            cfg.set("scrape", "default_delay", str(settings["default_delay"]))
+        if settings.get("default_retry") is not None:
+            cfg.set("scrape", "default_retry", str(settings["default_retry"]))
+
+        if "page" not in cfg:
+            cfg["page"] = {}
+        if settings.get("default_page_size"):
+            cfg.set("page", "default_page_size", str(settings["default_page_size"]))
+        if settings.get("max_page_size"):
+            cfg.set("page", "max_page_size", str(settings["max_page_size"]))
+
+    # 写回文件
+    try:
+        with open(config_path, "w", encoding="utf-8") as f:
+            cfg.write(f)
+        return {"success": True, "message": "配置已保存，重启后生效"}
+    except Exception as e:
+        logger.error(f"保存配置失败: {e}")
+        return {"success": False, "message": f"保存失败: {str(e)}"}
+
+
+# ===============================================================================
 # Jellyfin 导入 API
 # ===============================================================================
 

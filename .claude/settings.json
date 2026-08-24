@@ -1,16 +1,24 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git mv *)",
-      "WebFetch(domain:minimax-algeng-chat-tts.oss-cn-wulanchabu.aliyuncs.com)",
-      "Bash(git commit -m ' *)",
-      "Bash(py -3.14 -c \"import vosk; print\\('vosk OK'\\)\")",
-      "Read(//c/vosk-model-ja-0.22/**)",
-      "Bash(py -3.14 tests/test_translate.py \"X:\\\\jellyfin\\\\明日花キララ\\\\HODV-20574\\\\HODV-20574.avi\")",
-      "Bash(py -3.14 -m pip install sqlparse -q)"
+      "Bash(git stash *)",
+      "Bash(git add *)",
+      "Bash(xargs -I{} basename {})",
+      "Bash(git status *)",
+      "Bash(git ls-files *)",
+      "Bash(python -c \"import main; print\\('OK'\\)\")",
+      "Bash(pip install *)",
+      "Bash(python -c \"import main\")",
+      "Bash(pip uninstall *)",
+      "Bash(python -c \"import ctranslate2; print\\('OK'\\)\")",
+      "Bash(python -c \"import translator\")",
+      "Bash(python -c \"import translator; print\\('OK'\\)\")",
+      "Bash(python -c \"import sys; print\\(sys.executable\\); import translator; print\\('translator OK'\\)\")",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8000/)",
+      "Bash(python main.py)"
     ],
     "additionalDirectories": [
-      "f:\\github\\MyMovieDB"
+      "C:\\git\\my-movie-db\\backups"
     ]
   }
 }

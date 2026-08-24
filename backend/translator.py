@@ -37,13 +37,14 @@ try:
     FASTER_WHISPER_AVAILABLE = True
     WHISPER_AVAILABLE = True
     logger.info("使用 Faster-Whisper (CTranslate2 优化版)")
-except ImportError:
+except (ImportError, OSError) as e:
+    logger.warning(f"Faster-Whisper 不可用: {e}")
     try:
         import whisper
         WHISPER_AVAILABLE = True
         FASTER_WHISPER_AVAILABLE = False
         logger.info("使用 OpenAI Whisper (原版)")
-    except ImportError:
+    except (ImportError, OSError):
         WHISPER_AVAILABLE = False
         logger.warning("Whisper 未安装，语音识别功能不可用")
 
@@ -57,7 +58,7 @@ try:
         logger.info(f"Vosk 日语模型可用: {VOSK_MODEL_PATH}")
     else:
         logger.warning(f"Vosk 模型不存在: {VOSK_MODEL_PATH}")
-except ImportError:
+except (ImportError, OSError):
     logger.warning("Vosk 未安装")
 
 

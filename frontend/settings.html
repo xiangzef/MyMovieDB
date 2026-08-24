@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>系统设置 - MyMovieDB</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚙️</text></svg>">
+    <script src="vue.global.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; color: #eee; min-height: 100vh; }
+        .container { max-width: 900px; margin: 0 auto; padding: 20px; }
+        header { display: flex; align-items: center; gap: 12px; padding: 20px 0; border-bottom: 1px solid #333; margin-bottom: 30px; }
+        header h1 { font-size: 22px; color: #e94560; }
+        .back-link { color: #4a9eff; text-decoration: none; font-size: 14px; }
+        .back-link:hover { text-decoration: underline; }
+        .section { background: #16213e; border-radius: 12px; padding: 20px; margin-bottom: 20px; }
+        .section h2 { font-size: 16px; color: #4a9eff; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+        .source-item { background: #0d1b3e; padding: 12px 16px; border-radius: 8px; margin-bottom: 10px; }
+        .source-item:last-child { margin-bottom: 0; }
+        .source-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+        .source-row input[type="checkbox"] { width: 16px; height: 16px; }
+        .source-name { font-size: 14px; color: #ccc; min-width: 80px; }
+        .source-url { flex: 1; min-width: 200px; padding: 6px 10px; border: 1px solid #333; border-radius: 4px; background: #1a1a2e; color: #fff; font-size: 12px; font-family: monospace; }
+        .source-url:focus { outline: none; border-color: #e94560; }
+        .source-url-edited { border-color: #ffc107; }
+        .btn { padding: 8px 16px; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; transition: all 0.2s; }
+        .btn-primary { background: #e94560; color: #fff; }
+        .btn-primary:hover { background: #ff6b6b; }
+        .btn-primary:disabled { background: #555; cursor: not-allowed; }
+        .btn-secondary { background: #16213e; color: #ccc; border: 1px solid #333; }
+        .btn-secondary:hover { border-color: #e94560; color: #e94560; }
+        .btn-success { background: #28a745; color: #fff; }
+        .btn-danger { background: #dc3545; color: #fff; }
+        .btn-sm { padding: 5px 12px; font-size: 12px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+        .field label { display: block; font-size: 12px; color: #888; margin-bottom: 6px; }
+        .field input { width: 100%; padding: 8px 12px; border: 1px solid #333; border-radius: 6px; background: #1a1a2e; color: #fff; font-size: 14px; }
+        .field input:focus { outline: none; border-color: #e94560; }
+        .actions { display: flex; gap: 12px; margin-top: 24px; }
+        .msg { margin-top: 12px; padding: 10px 14px; border-radius: 6px; font-size: 14px; }
+        .msg-ok { background: rgba(40,167,69,0.2); color: #4ade80; }
+        .msg-err { background: rgba(220,53,69,0.2); color: #f87171; }
+        .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #333; border-top-color: #e94560; border-radius: 50%; animation: spin 0.7s linear infinite; margin-right: 6px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .changed-badge { font-size: 10px; background: #ffc107; color: #000; padding: 2px 6px; border-radius: 4px; margin-left: 8px; }
+    </style>
+</head>
+<body>
+<div id="app">
+    <div class="container">
+        <header>
+            <a href="index.html" class="back-link">← 返回影片库</a>
+            <h1>⚙️ 系统设置</h1>
+        </header>
+
+        <!-- 数据源 -->
+        <div class="section">
+            <h2>🌐 刮削数据源</h2>
+            <div style="margin-bottom:12px;color:#888;font-size:13px;">启用/禁用数据源，可修改 URL 地址，点击测试连接查看响应速度</div>
+            <div v-for="src in sources" :key="src.id" class="source-item">
+                <div class="source-row">
+                    <input type="checkbox" v-model="src.enabled" />
+                    <span class="source-name">{{ src.name }}</span>
+                    <input type="text" class="source-url" :class="{ 'source-url-edited': src.url !== src.originalUrl }"
+                           v-model="src.url" :placeholder="src.originalUrl" />
+                    <button class="btn btn-sm" :class="src.testStatus === 'ok' ? 'btn-success' : src.testStatus === 'fail' ? 'btn-danger' : 'btn-secondary'"
+                            @click="testSource(src)" :disabled="src.testing">
+                        {{ src.testing ? (spinner + '测试中') : src.testStatus === 'ok' ? '✅ ' + src.latency + 'ms' : src.testStatus === 'fail' ? '❌ 超时' : '测试连接' }}
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 刮削参数 -->
+        <div class="section">
+            <h2>⏱️ 刮削参数</h2>
+            <div class="grid">
+                <div class="field">
+                    <label>请求超时（秒）</label>
+                    <input type="number" v-model.number="settings.timeout" min="5" max="60" />
+                </div>
+                <div class="field">
+                    <label>请求间隔（秒）</label>
+                    <input type="number" v-model.number="settings.default_delay" min="0" max="10" step="0.5" />
+                </div>
+                <div class="field">
+                    <label>默认重试次数</label>
+                    <input type="number" v-model.number="settings.default_retry" min="0" max="5" />
+                </div>
+            </div>
+        </div>
+
+        <!-- 分页参数 -->
+        <div class="section">
+            <h2>📄 分页设置</h2>
+            <div class="grid">
+                <div class="field">
+                    <label>默认每页数量</label>
+                    <input type="number" v-model.number="settings.default_page_size" min="10" max="100" />
+                </div>
+                <div class="field">
+                    <label>最大每页数量</label>
+                    <input type="number" v-model.number="settings.max_page_size" min="50" max="500" />
+                </div>
+            </div>
+        </div>
+
+        <div class="actions">
+            <button class="btn btn-primary" @click="saveConfig" :disabled="saving">
+                {{ saving ? spinner + '保存中...' : '💾 保存设置' }}
+            </button>
+            <button class="btn btn-secondary" @click="reset">重置</button>
+        </div>
+
+        <div v-if="msg" class="msg" :class="msgOk ? 'msg-ok' : 'msg-err'">{{ msg }}</div>
+    </div>
+</div>
+
+<script>
+const { createApp, ref } = Vue;
+createApp({
+    setup() {
+        const API = 'http://localhost:8000';
+        const spinner = '<span class="spinner"></span>';
+
+        const sources = ref([]);
+        const settings = ref({ timeout: 15, default_delay: 0.5, default_retry: 1, default_page_size: 24, max_page_size: 100 });
+        const saving = ref(false);
+        const msg = ref('');
+        const msgOk = ref(true);
+
+        // 加载配置
+        const loadConfig = async () => {
+            try {
+                const res = await fetch(`${API}/config`);
+                if (res.ok) {
+                    const data = await res.json();
+                    sources.value = (data.sources || []).map(s => ({ ...s, originalUrl: s.url }));
+                    if (data.settings) {
+                        settings.value = { ...settings.value, ...data.settings };
+                    }
+                }
+            } catch (e) {
+                showMsg('加载配置失败: ' + e.message, false);
+            }
+        };
+
+        // 测试连接
+        const testSource = async (src) => {
+            src.testing = true;
+            src.testStatus = null;
+            src.latency = 0;
+            const start = Date.now();
+            try {
+                const controller = new AbortController();
+                const tid = setTimeout(() => controller.abort(), 5000);
+                const testUrl = src.url.replace('{code}', 'SSIS-001');
+                const res = await fetch(testUrl, { signal: controller.signal, method: 'HEAD' });
+                clearTimeout(tid);
+                src.latency = Date.now() - start;
+                src.testStatus = 'ok';
+            } catch (e) {
+                src.testStatus = 'fail';
+            }
+            src.testing = false;
+        };
+
+        // 保存
+        const saveConfig = async () => {
+            saving.value = true;
+            msg.value = '';
+            try {
+                const res = await fetch(`${API}/config`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sources: sources.value.map(s => ({
+                            id: s.id, name: s.name, url: s.url,
+                            enabled: s.enabled, priority: s.priority, anti_bot: s.anti_bot
+                        })),
+                        settings: settings.value
+                    })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showMsg('保存成功，部分配置重启后生效', true);
+                    sources.value.forEach(s => s.originalUrl = s.url);
+                } else {
+                    showMsg('保存失败: ' + (data.message || '未知错误'), false);
+                }
+            } catch (e) {
+                showMsg('保存失败: ' + e.message, false);
+            }
+            saving.value = false;
+        };
+
+        // 重置
+        const reset = () => {
+            sources.value.forEach(s => { s.url = s.originalUrl; s.enabled = true; });
+            settings.value = { timeout: 15, default_delay: 0.5, default_retry: 1, default_page_size: 24, max_page_size: 100 };
+            msg.value = '';
+        };
+
+        const showMsg = (m, ok) => { msg.value = m; msgOk.value = ok; };
+
+        loadConfig();
+
+        return { sources, settings, saving, msg, msgOk, testSource, saveConfig, reset, spinner };
+    }
+}).mount('#app');
+</script>
+</body>
+</html>

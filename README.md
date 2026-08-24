@@ -1,11 +1,11 @@
-# MyMovieDB - 本地影视库刮削器
+# MyMovieDB · 本地影视库刮削器
 
-一个轻量级的本地影视库管理工具，支持刮削、搜索和浏览影片信息。
+> 轻量级本地影视库管理工具——刮削元数据、按女演员/番号分类、Jellyfin 一键导入，支持打包成 exe 托盘运行。
 
-![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.109+-green.svg)
-![Vue](https://img.shields.io/badge/Vue-3-4FC08D.svg)
-![License](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Python](https://img.shields.io/badge/Python-3.8+-3776AB?logo=python)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.109+-009688?logo=fastapi)
+![Vue](https://img.shields.io/badge/Vue-3-4FC08D?logo=vue.js)
+![License](https://img.shields.io/badge/license-MIT-green)
 
 ---
 

@@ -1,6 +1,9 @@
 # 启动 MyMovieDB 后端
 $ErrorActionPreference = "Continue"
 
+# 设置控制台为 UTF-8 编码（解决中文乱码）
+chcp 65001 > $null
+
 Write-Host "=== MyMovieDB 后端启动脚本 ===" -ForegroundColor Cyan
 Write-Host ""
 
@@ -12,7 +15,7 @@ if ($env:Path -notlike "*ffmpeg*") {
 }
 
 # 切换到后端目录
-Set-Location "F:\github\MyMovieDB\backend"
+Set-Location "$PSScriptRoot\backend"
 
 # 清除 Python 缓存
 if (Test-Path "__pycache__") {
