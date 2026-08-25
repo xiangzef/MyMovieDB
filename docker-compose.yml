@@ -1,0 +1,10 @@
+services:
+  my-movie-db:
+    build: .
+    container_name: my-movie-db
+    restart: unless-stopped
+    ports:
+      - "8200:8000"
+    volumes:
+      - /volume1/docker/my-movie-db/data:/app/data
+      - /volume1/video:/volume1/video

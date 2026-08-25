@@ -1,0 +1,13 @@
+.git
+.github
+data/
+dist/
+backups/
+logs/
+note/
+docs/
+tests/
+__pycache__/
+*.db
+.env
+*.md
