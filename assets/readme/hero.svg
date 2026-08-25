@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" role="img" aria-label="MyMovieDB 本地影视库刮削器">
+  <rect width="1200" height="320" fill="#0E0E14"/>
+
+  <!-- 顶部胶片带 -->
+  <rect x="-20" y="24" width="1240" height="104" fill="#17171F"/>
+  <rect x="-20" y="24" width="1240" height="4" fill="#26262F"/>
+  <rect x="-20" y="124" width="1240" height="4" fill="#26262F"/>
+
+  <!-- 胶片齿孔（上下各一排） -->
+  <g fill="#2E2E3A">
+    <rect x="20" y="36" width="20" height="13" rx="2"/><rect x="70" y="36" width="20" height="13" rx="2"/>
+    <rect x="120" y="36" width="20" height="13" rx="2"/><rect x="170" y="36" width="20" height="13" rx="2"/>
+    <rect x="220" y="36" width="20" height="13" rx="2"/><rect x="270" y="36" width="20" height="13" rx="2"/>
+    <rect x="320" y="36" width="20" height="13" rx="2"/><rect x="370" y="36" width="20" height="13" rx="2"/>
+    <rect x="420" y="36" width="20" height="13" rx="2"/><rect x="470" y="36" width="20" height="13" rx="2"/>
+    <rect x="520" y="36" width="20" height="13" rx="2"/><rect x="570" y="36" width="20" height="13" rx="2"/>
+    <rect x="620" y="36" width="20" height="13" rx="2"/><rect x="670" y="36" width="20" height="13" rx="2"/>
+    <rect x="720" y="36" width="20" height="13" rx="2"/><rect x="770" y="36" width="20" height="13" rx="2"/>
+    <rect x="820" y="36" width="20" height="13" rx="2"/><rect x="870" y="36" width="20" height="13" rx="2"/>
+    <rect x="920" y="36" width="20" height="13" rx="2"/><rect x="970" y="36" width="20" height="13" rx="2"/>
+    <rect x="1020" y="36" width="20" height="13" rx="2"/><rect x="1070" y="36" width="20" height="13" rx="2"/>
+    <rect x="1120" y="36" width="20" height="13" rx="2"/><rect x="1170" y="36" width="20" height="13" rx="2"/>
+    <rect x="20" y="103" width="20" height="13" rx="2"/><rect x="70" y="103" width="20" height="13" rx="2"/>
+    <rect x="120" y="103" width="20" height="13" rx="2"/><rect x="170" y="103" width="20" height="13" rx="2"/>
+    <rect x="220" y="103" width="20" height="13" rx="2"/><rect x="270" y="103" width="20" height="13" rx="2"/>
+    <rect x="320" y="103" width="20" height="13" rx="2"/><rect x="370" y="103" width="20" height="13" rx="2"/>
+    <rect x="420" y="103" width="20" height="13" rx="2"/><rect x="470" y="103" width="20" height="13" rx="2"/>
+    <rect x="520" y="103" width="20" height="13" rx="2"/><rect x="570" y="103" width="20" height="13" rx="2"/>
+    <rect x="620" y="103" width="20" height="13" rx="2"/><rect x="670" y="103" width="20" height="13" rx="2"/>
+    <rect x="720" y="103" width="20" height="13" rx="2"/><rect x="770" y="103" width="20" height="13" rx="2"/>
+    <rect x="820" y="103" width="20" height="13" rx="2"/><rect x="870" y="103" width="20" height="13" rx="2"/>
+    <rect x="920" y="103" width="20" height="13" rx="2"/><rect x="970" y="103" width="20" height="13" rx="2"/>
+    <rect x="1020" y="103" width="20" height="13" rx="2"/><rect x="1070" y="103" width="20" height="13" rx="2"/>
+    <rect x="1120" y="103" width="20" height="13" rx="2"/><rect x="1170" y="103" width="20" height="13" rx="2"/>
+  </g>
+
+  <!-- 海报墙色块（渐变示意） -->
+  <g>
+    <rect x="30" y="56" width="66" height="40" rx="3" fill="#3A2A1C"/>
+    <rect x="110" y="56" width="66" height="40" rx="3" fill="#22303C"/>
+    <rect x="190" y="56" width="66" height="40" rx="3" fill="#33202B"/>
+    <rect x="270" y="56" width="66" height="40" rx="3" fill="#1F2B22"/>
+    <circle cx="63" cy="76" r="11" fill="#EAB308" opacity="0.85"/>
+    <polygon points="60,70 60,82 71,76" fill="#0E0E14"/>
+    <rect x="143" y="68" width="52" height="5" rx="2" fill="#EAB308" opacity="0.7"/>
+    <rect x="143" y="79" width="38" height="5" rx="2" fill="#EF4444" opacity="0.6"/>
+  </g>
+
+  <!-- 主标题区 -->
+  <text x="500" y="215" font-family="system-ui,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif" font-size="72" font-weight="700" fill="#F5F5F4">My<tspan fill="#EAB308">MovieDB</tspan></text>
+  <text x="503" y="258" font-family="system-ui,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif" font-size="24" fill="#A8A8B3">本地影视库刮削器 · 刮削 / 分类 / Jellyfin 导入</text>
+
+  <!-- 番号装饰标签 -->
+  <g font-family="'Consolas',monospace" font-size="18">
+    <rect x="503" y="278" width="86" height="28" rx="14" fill="none" stroke="#EF4444" stroke-width="1.5"/>
+    <text x="546" y="297" text-anchor="middle" fill="#EF4444">SSIS</text>
+    <rect x="601" y="278" width="90" height="28" rx="14" fill="none" stroke="#EAB308" stroke-width="1.5"/>
+    <text x="646" y="297" text-anchor="middle" fill="#EAB308">SSNI</text>
+    <rect x="703" y="278" width="86" height="28" rx="14" fill="none" stroke="#3B82F6" stroke-width="1.5"/>
+    <text x="746" y="297" text-anchor="middle" fill="#60A5FA">ABP</text>
+  </g>
+</svg>
