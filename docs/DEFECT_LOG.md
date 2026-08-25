@@ -119,6 +119,72 @@ document.getElementById('app').classList.add('app-ready');
 
 ---
 
+## 🟠 技术债务 #4：封面图裁切逻辑依赖竖向源图
+
+**严重程度**: 中（已知限制）
+**首次发现**: 2026-05-05
+**相关文件**: `backend/scraper.py` (`download_and_crop_cover`, `_crop_poster_from_right`)
+
+### 问题描述
+
+`download_and_crop_cover` 函数的设计逻辑是：
+1. 下载原图作为 fanart（横向图）
+2. 从 fanart **右半边中间**裁切出竖向 poster（1000x1500，比例约 2:3）
+3. poster 缩放生成 thumb（300x450）
+
+这个逻辑**假设下载的原始封面是竖向图片**，裁切算法只取右半边来获得竖向比例。
+
+### 根本原因
+
+**mgstage 的 pb_e 图片不全是竖向海报**：
+- ABP/ABF 系列：pb_e 是竖向海报（840x566），裁切后得到正确的 1000x1500 poster
+- **MIUM 系列：pb_e 是横向宣传图（840x472，16:9）**，裁切后仍得到横向图片（420x472 → resize 到 1000x1500 会变形拉长）
+
+当 pb_e 本身就是横向时：
+- fanart = 横向原图（16:9）
+- poster = fanart 右半边裁切 → 仍是横向（只是窄了一些）
+- resize 到 1000x1500 时，图片被 **纵向拉伸**，比例严重失真
+
+### 影响范围
+
+以下系列的封面图比例异常（横向封面显示为竖向海报时会裁切）：
+- MIUM 系列（`300mium`）
+- 其他只提供横向 pb_e 的系列
+
+### 可能的解决方案
+
+| 方案 | 优点 | 缺点 |
+|------|------|------|
+| **方案 A**：使用其他图片源 | 可获得竖向海报 | 其他数据源可能也没竖向图 |
+| **方案 B**：检测源图比例，横向时改用不同裁切策略 | 兼容现有源图 | 横向图片内容可能不适合做 poster |
+| **方案 C**：横向图直接作为 fanart，放弃裁切 poster | 简单 | 缺少竖向 poster，前端海报展示效果差 |
+| **方案 D**：手动维护异常电影的封面 | 精准 | 工作量大，不可扩展 |
+
+### 相关代码
+
+```python
+# backend/scraper.py
+def _crop_poster_from_right(fanart: Image, target_width: int, target_height: int) -> Image:
+    """从 fanart 图片的右半边中间截取竖向 poster"""
+    width, height = fanart.size
+    target_ratio = target_width / target_height  # 2/3 ≈ 0.667
+
+    right_half_width = width // 2
+    # 当 fanart 是 840x472 (16:9) 时：
+    # crop_height = 420 / 0.667 ≈ 630 > 472
+    # 被限制为 height (472)
+    # 结果：crop 是 (420, 472) → resize 到 (1000, 1500) 严重纵向拉伸
+```
+
+### 代码习惯问题
+
+| 问题 | 合理做法 |
+|------|---------|
+| **假设源图比例固定** | 处理图片前先检查原始比例，对不同比例使用不同策略 |
+| **裁切后 resize 未验证比例保真度** | resize 后检查实际比例是否符合预期，不符合时记录警告 |
+
+---
+
 ## 🟡 不合理代码习惯清单
 
 ### 1. 全局变量污染（避免）
