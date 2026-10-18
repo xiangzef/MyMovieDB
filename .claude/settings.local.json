@@ -1,7 +1,18 @@
 {
   "permissions": {
+    "initialPermissionMode": "auto",
+    "defaultMode": "auto",
     "allow": [
-      "Bash(ollama list *)"
-    ]
+      "Read(**)",
+      "Write(**)",
+      "Edit(**)",
+      "Glob",
+      "Grep",
+      "Bash(*)",
+      "WebFetch(*)"
+    ],
+    "deny": [],
+    "autoApprove": true,
+    "debug": false
   }
 }

@@ -48,6 +48,44 @@ except ImportError:
     VOSK_AVAILABLE = False
     FASTER_WHISPER_AVAILABLE = False
 
+
+# ============================================================
+# 路径翻译：容器内 Linux 路径 <-> Windows 可读形式
+# ============================================================
+
+def to_windows_path(linux_path: str) -> str:
+    """把容器内 Linux 路径翻译成 Windows 可读形式（用于点击播放 / 打开文件夹）。
+
+    翻译顺序：
+      1. local_sources 表里配的 windows_path（最长前缀匹配）
+      2. config 里的 smb_volumes 兜底：/media/... → \\<NAS_IP>\volume2\...
+      3. 都没有：原样返回（播放器会报路径不存在）
+    """
+    if not linux_path:
+        return linux_path
+    norm = linux_path.rstrip("/\\")
+
+    # 1. 查 local_sources 的 windows_path
+    try:
+        src = db.find_local_source_for_path(norm)
+        if src and src.get("windows_path"):
+            wp = src["windows_path"].rstrip("/\\")
+            prefix = (src["path"] or "").rstrip("/\\")
+            return wp + norm[len(prefix):]
+    except Exception:
+        pass
+
+    # 2. config 兜底（UNC）
+    host = cfg.get_host_path_for(norm)
+    if host:
+        nas_ip = cfg.NAS_IP
+        # Windows UNC 路径：\\<IP>\<volume>\... 用正斜杠，
+        # Windows 资源管理器 / 迅雷都吃这种形式
+        return f"\\\\{nas_ip}\\{host.replace('/', chr(92)).replace(chr(92) + chr(92), chr(92))}"
+
+    # 3. 实在没有，原样返回
+    return linux_path
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -1113,14 +1151,18 @@ async def open_folder(path: str = Query(..., description="要打开的文件夹�
     if not is_allowed:
         raise HTTPException(status_code=403, detail="路径不在允许访问的范围内")
 
-    # 打开文件夹
-    if not os.path.exists(path):
-        raise HTTPException(status_code=404, detail="路径不存在")
+    # 把容器内 Linux 路径翻译成 Windows 可读形式
+    win_path = to_windows_path(path)
+    if not os.path.exists(win_path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Windows 端路径不存在（原始: {path}，翻译后: {win_path}）"
+        )
 
     try:
-        folder = os.path.dirname(path) if os.path.isfile(path) else path
+        folder = os.path.dirname(win_path) if os.path.isfile(win_path) else win_path
         subprocess.Popen(f'explorer "{folder}"')
-        return {"success": True, "message": f"已打开文件夹: {folder}"}
+        return {"success": True, "message": f"已打开文件夹: {folder}", "windows_path": win_path}
     except Exception as e:
         logging.error(f"[open_folder] 打开文件夹失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="打开文件夹失败")
@@ -1157,21 +1199,26 @@ async def play_video(path: str = Query(..., description="要播放的视频文�
     if not is_allowed:
         raise HTTPException(status_code=403, detail="路径不在允许访问的范围内")
 
-    if not os.path.exists(path):
-        raise HTTPException(status_code=404, detail="文件不存在")
+    # 把容器内 Linux 路径翻译成 Windows 可读形式
+    win_path = to_windows_path(path)
+    if not os.path.exists(win_path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Windows 端路径不存在（原始: {path}，翻译后: {win_path}）"
+        )
 
     try:
         # 迅雷播放器桌面快捷方式路径
         xmp_path = r"C:\Program Files (x86)\Thunder Network\Xmp\program\xmp.exe"
-        
+
         if os.path.exists(xmp_path):
             # 使用迅雷播放器桌面图标方式启动
-            subprocess.Popen([xmp_path, "-StartType:DesktopIcon", path])
-            return {"success": True, "message": "正在用迅雷播放器打开"}
+            subprocess.Popen([xmp_path, "-StartType:DesktopIcon", win_path])
+            return {"success": True, "message": "正在用迅雷播放器打开", "windows_path": win_path}
         else:
             # 回退：用系统默认程序打开
-            os.startfile(path)
-            return {"success": True, "message": "迅雷播放器未安装，已用默认程序打开"}
+            os.startfile(win_path)
+            return {"success": True, "message": "迅雷播放器未安装，已用默认程序打开", "windows_path": win_path}
     except Exception as e:
         logging.error(f"[play_video] 播放失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="播放视频失败")
@@ -1669,6 +1716,37 @@ async def remove_local_source(source_id: int):
     if not success:
         raise HTTPException(status_code=404, detail="视频源不存在")
     return {"success": True, "message": "已删除"}
+
+
+class WindowsPathUpdate(BaseModel):
+    """更新某个本地源的 windows_path（容器内 Linux 路径 → Windows 可读形式）"""
+    windows_path: Optional[str] = None
+
+
+@app.patch("/local-sources/{source_id}/windows-path", tags=["本地视频"])
+async def set_local_source_windows_path(source_id: int, body: WindowsPathUpdate):
+    """设置某个本地视频源的 windows_path。
+
+    传 None 或空字符串表示清空（用 config 兜底）。
+    """
+    src = db.get_local_source_by_id(source_id)
+    if not src:
+        raise HTTPException(status_code=404, detail="视频源不存在")
+    new_val = body.windows_path if body.windows_path else None
+    db.update_local_source_windows_path(source_id, new_val)
+    return {"success": True, "source_id": source_id, "windows_path": new_val}
+
+
+@app.get("/path/to-windows", tags=["工具"])
+async def path_to_windows(path: str = Query(..., description="容器内 Linux 路径")):
+    """调试用：把容器内 Linux 路径翻译成 Windows 可读形式。
+
+    给前端 UI「测试」按钮用，看映射配得对不对。
+    """
+    return {
+        "linux_path": path,
+        "windows_path": to_windows_path(path),
+    }
 
 
 def _find_image_path(directory: str, code: str, image_type: str) -> Optional[str]:

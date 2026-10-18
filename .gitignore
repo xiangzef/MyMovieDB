@@ -28,8 +28,16 @@ ENV/
 # Data (不跟踪数据库和封面图)
 data/*.db
 data/*.db-journal
+data/*.db.nas
 data/covers/*
 !data/covers/.gitkeep
+
+# Backend 运行时数据库（容器/本机数据，不跟踪）
+backend/*.db
+backend/*.db-journal
+backend/*.db.nas
+*.db-wal
+*.db-shm
 
 data/avatars/*
 !data/avatars/.gitkeep

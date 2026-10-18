@@ -3,13 +3,11 @@
 
 import sys
 sys.path.insert(0, 'backend')
-
 from database import get_db
-import os
 
 def check_jellyfin_sources():
     db = get_db()
-    cursor = db.conn.cursor()
+    cursor = db.cursor()
 
     print("=" * 60)
     print("Jellyfin 视频源状态检查")
@@ -71,6 +69,8 @@ def check_jellyfin_sources():
     for s in all_sources:
         print(f"  [{s[0]}] {s[1]}")
         print(f"      name={s[2]}, video_count={s[3]}, last_scan={s[4]}, is_jellyfin={s[5]}")
+
+    db.close()
 
 if __name__ == "__main__":
     check_jellyfin_sources()

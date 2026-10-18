@@ -1,0 +1,43 @@
+# NAS 部署。docker-compose v1.28.5（DSM 6 自带），所以用 version: "3.8"。
+#
+# 媒体目录是读写挂载：MyMovieDB 的「整理」功能会移动/复制影片文件，
+# 只读挂载会让整理直接失败。peach 是只读挂载，两者刻意不同。
+#
+# 更新代码时只改 image 或重新 build，/volume2/docker/mymoviedb/data 不动，
+# 数据库、封面缓存、头像、登录会话都留着。
+version: "3.8"
+
+services:
+  mymoviedb:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mymoviedb:1
+    container_name: mymoviedb
+    init: true
+    restart: unless-stopped
+    # DSM 上 admin 是 uid 1024；媒体目录属主是 admin，用默认 root 会写不进去，
+    # 镜像里已建好 1024 用户，这里显式写出来便于排查。
+    user: "1024:1024"
+    ports:
+      - "192.168.1.179:8200:8000"
+    volumes:
+      # 数据库 / 封面 / 头像。绝对不要删
+      - /volume2/docker/mymoviedb/data:/app/data
+      # 媒体：读写。顺序与 config.docker.ini 无关，媒体目录在界面里添加
+      #
+      # 2026-10-18 修正：原来挂的是 share 根目录，比库里路径少一层
+      # （/volume2/home1 -> /media/jellyfin，而库里写的是 /media/jellyfin/jellyfin/...），
+      # 结果 1125 条 local_videos 里 446 条指向不存在的文件。
+      # 挂载点必须与 data/movies.db 的 local_sources.path 逐字对应：
+      #   W: home1 -> /media/jellyfin/{jellyfin, 影视库}
+      #   X: home2 -> /media/jellyfin2/{jellyfin, 中转站}
+      #   Z: home5 -> /media/影视库
+      # 改这里之前先跑 scripts/sync_media_paths.py --check 对一遍。
+      - /volume2/home1/jellyfin:/media/jellyfin/jellyfin
+      - /volume2/home1/影视库:/media/jellyfin/影视库
+      - /volume3/home2/jellyfin:/media/jellyfin2/jellyfin
+      - /volume3/home2/中转站:/media/jellyfin2/中转站
+      - /volume5/home5/影视库:/media/影视库
+    environment:
+      - TZ=Asia/Shanghai

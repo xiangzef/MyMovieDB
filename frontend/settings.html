@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>刮削源设置 - MyMovieDB</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚙️</text></svg>">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; background: #1a1a2e; color: #eee; min-height: 100vh; }
+        .container { max-width: 960px; margin: 0 auto; padding: 20px; }
+        header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 28px; padding-bottom: 16px; border-bottom: 1px solid #333; }
+        header h1 { color: #e94560; font-size: 20px; display: flex; align-items: center; gap: 8px; }
+        header a { color: #00d4ff; text-decoration: none; font-size: 13px; }
+        header a:hover { text-decoration: underline; }
+
+        /* 全局设置卡片 */
+        .card { background: #16213e; border-radius: 10px; padding: 20px; margin-bottom: 20px; border: 1px solid #252538; }
+        .card-title { font-size: 14px; font-weight: 600; color: #e94560; margin-bottom: 16px; display: flex; align-items: center; gap: 6px; }
+        .card-title span { font-weight: normal; color: #888; font-size: 12px; }
+
+        /* 全局参数行 */
+        .global-row { display: flex; gap: 16px; flex-wrap: wrap; }
+        .field { display: flex; flex-direction: column; gap: 6px; }
+        .field label { font-size: 12px; color: #888; }
+        .field input, .field select { padding: 8px 12px; border-radius: 6px; border: 1px solid #333; background: #1a1a2e; color: #fff; font-size: 13px; width: 120px; }
+        .field input:focus, .field select:focus { outline: none; border-color: #e94560; }
+
+        /* 数据源列表 */
+        .source-item { background: #0f3460; border-radius: 8px; padding: 16px; margin-bottom: 14px; border: 1px solid #1a1a2e; }
+        .source-top { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+        .source-name { font-size: 15px; font-weight: 600; color: #fff; min-width: 90px; }
+        .source-badge { font-size: 10px; padding: 2px 8px; border-radius: 10px; }
+        .badge-on { background: #2ed573; color: #1a1a2e; }
+        .badge-off { background: #444; color: #aaa; }
+        .badge-bot { background: #facc15; color: #1a1a2e; }
+        .source-priority { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #888; margin-left: auto; }
+        .source-priority input { width: 48px; padding: 3px 6px; border-radius: 4px; border: 1px solid #333; background: #1a1a2e; color: #fff; text-align: center; font-size: 12px; }
+
+        /* 开关 */
+        .toggle { position: relative; width: 40px; height: 22px; }
+        .toggle input { opacity: 0; width: 0; height: 0; }
+        .toggle .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background: #333; border-radius: 22px; transition: 0.3s; }
+        .toggle .slider:before { position: absolute; content: ""; height: 16px; width: 16px; left: 3px; bottom: 3px; background: white; border-radius: 50%; transition: 0.3s; }
+        .toggle input:checked + .slider { background: #2ed573; }
+        .toggle input:checked + .slider:before { transform: translateX(18px); }
+
+        /* URL 区域 */
+        .url-block { margin-bottom: 8px; }
+        .url-label { font-size: 11px; color: #888; margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
+        .url-label.official { color: #555; }
+        .url-label.live { color: #4ade80; }
+        .url-input { width: 100%; padding: 8px 12px; border-radius: 6px; border: 1px solid #333; background: #1a1a2e; color: #fff; font-size: 13px; font-family: 'Consolas', monospace; }
+        .url-input.official { border-color: #2a2a3a; color: #666; }
+        .url-input.live { border-color: #4ade80; background: #0f2a1a; }
+        .url-input:focus { outline: none; border-color: #4ade80; }
+        .url-row { display: flex; align-items: center; gap: 8px; }
+
+        /* 测试按钮 */
+        .test-btn { padding: 5px 12px; border-radius: 6px; border: 1px solid #333; background: #16213e; color: #aaa; font-size: 12px; cursor: pointer; transition: 0.2s; white-space: nowrap; }
+        .test-btn:hover { border-color: #00d4ff; color: #00d4ff; }
+        .test-btn.testing { opacity: 0.6; cursor: not-allowed; }
+        .test-btn.ok { border-color: #2ed573; color: #2ed573; }
+        .test-btn.fail { border-color: #ff4757; color: #ff4757; }
+        .test-btn.timeout { border-color: #facc15; color: #facc15; }
+
+        /* 校验状态行 */
+        .status-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding-top: 10px; border-top: 1px solid #1a1a2a; }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; }
+        .status-dot.ok { background: #2ed573; box-shadow: 0 0 6px #2ed573; }
+        .status-dot.fail { background: #ff4757; }
+        .status-dot.unknown { background: #555; }
+        .status-text { font-size: 12px; color: #888; flex: 1; }
+        .status-text.ok { color: #2ed573; }
+        .status-text.fail { color: #ff4757; }
+
+        /* 底部操作 */
+        .actions { display: flex; gap: 10px; margin-top: 24px; padding-top: 20px; border-top: 1px solid #333; }
+        .btn { padding: 10px 24px; border-radius: 8px; cursor: pointer; font-size: 14px; border: none; transition: 0.2s; }
+        .btn-primary { background: #e94560; color: #fff; }
+        .btn-primary:hover { background: #ff6b6b; }
+        .btn-primary:disabled { background: #555; cursor: not-allowed; }
+        .btn-secondary { background: #16213e; color: #ccc; border: 1px solid #333; }
+        .btn-secondary:hover { border-color: #e94560; color: #e94560; }
+        .btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-check { background: #0f3460; color: #00d4ff; border: 1px solid #00d4ff; }
+        .btn-check:hover { background: #00d4ff; color: #1a1a2e; }
+
+        .msg { margin-top: 12px; padding: 10px 14px; border-radius: 6px; font-size: 13px; }
+        .msg-ok { background: #0f2a1a; border: 1px solid #2ed573; color: #2ed573; }
+        .msg-err { background: #2a0f0f; border: 1px solid #ff4757; color: #ff4757; }
+        .loading { text-align: center; padding: 40px; color: #888; }
+        .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #333; border-top-color: #00d4ff; border-radius: 50%; animation: spin 0.8s linear infinite; margin-right: 8px; vertical-align: middle; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .tip { font-size: 11px; color: #555; margin-top: 4px; }
+    </style>
+</head>
+<body>
+<div id="app" class="container">
+    <header>
+        <h1>⚙️ 刮削源设置</h1>
+        <a href="index.html">← 返回影片库</a>
+    </header>
+
+    <!-- 全局刮削参数 -->
+    <div class="card">
+        <div class="card-title">🌐 全局刮削参数</div>
+        <div class="global-row">
+            <div class="field">
+                <label>请求间隔（秒）</label>
+                <input type="number" v-model.number="scrape.default_delay" min="0.1" max="30" step="0.1" :disabled="saving">
+            </div>
+            <div class="field">
+                <label>请求超时（秒）</label>
+                <input type="number" v-model.number="scrape.timeout" min="5" max="120" step="1" :disabled="saving">
+            </div>
+            <div class="field">
+                <label>失败重试次数</label>
+                <input type="number" v-model.number="scrape.default_retry" min="0" max="5" step="1" :disabled="saving">
+            </div>
+            <div class="field" style="justify-content:flex-end;">
+                <label>&nbsp;</label>
+                <button class="btn btn-check" @click="checkAllSources" :disabled="checking">
+                    <span v-if="checking" class="spinner"></span>
+                    {{ checking ? '校验中...' : '🔍 校验所有源' }}
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 数据源列表 -->
+    <div class="card">
+        <div class="card-title">
+            📡 数据源配置
+            <span>（官网地址仅参考，实际刮削地址可填镜像站）</span>
+        </div>
+        <div v-if="loading" class="loading"><span class="spinner"></span>加载中...</div>
+        <div v-else>
+            <div v-for="src in sources" :key="src.id" class="source-item">
+
+                <!-- 顶部：开关 + 名称 + 优先级 + 测试按钮 -->
+                <div class="source-top">
+                    <label class="toggle">
+                        <input type="checkbox" v-model="src.enabled">
+                        <span class="slider"></span>
+                    </label>
+                    <span class="source-name">{{ src.name }}</span>
+                    <span :class="src.enabled ? 'source-badge badge-on' : 'source-badge badge-off'">
+                        {{ src.enabled ? '启用' : '禁用' }}
+                    </span>
+                    <span v-if="src.anti_bot" class="source-badge badge-bot">🔒 反爬</span>
+                    <label class="source-priority" style="display:flex;align-items:center;gap:6px;white-space:nowrap;">
+                        优先级
+                        <input type="number" v-model.number="src.priority" min="1" max="99" :disabled="saving" style="width:48px;padding:3px 6px;border-radius:4px;border:1px solid #333;background:#1a1a2e;color:#fff;text-align:center;font-size:12px;">
+                    </label>
+                    <button
+                        @click="testSource(src)"
+                        :class="['test-btn', getTestClass(src.id)]"
+                        :disabled="testing[src.id]"
+                        style="margin-left: auto;"
+                    >
+                        <span v-if="testing[src.id]">⏳</span>
+                        <span v-else-if="testResults[src.id]">{{ testResults[src.id].ok ? '✅' : '❌' }}</span>
+                        <span v-else>🧪</span>
+                        {{ testing[src.id] ? '测试中...' : (testResults[src.id] ? testResults[src.id].label : '测试') }}
+                    </button>
+                </div>
+
+                <!-- 官网地址（只读参考） -->
+                <div class="url-block">
+                    <div class="url-label official">🌐 官网地址（参考，不用于刮削）</div>
+                    <input type="text" class="url-input official" :value="src.official_url" readonly :title="src.official_url">
+                </div>
+
+                <!-- 实际刮削地址（可编辑） -->
+                <div class="url-block">
+                    <div class="url-label live">✏️ 实际刮削地址（可填镜像站）</div>
+                    <input type="text" class="url-input live" v-model="src.url" placeholder="填入镜像站地址，当前源不可用时使用" :disabled="saving">
+                </div>
+
+                <!-- 校验状态 -->
+                <div class="status-row" v-if="testResults[src.id]">
+                    <div :class="['status-dot', testResults[src.id].ok ? 'ok' : 'fail']"></div>
+                    <span :class="['status-text', testResults[src.id].ok ? 'ok' : 'fail']">
+                        {{ testResults[src.id].label }}
+                        <span v-if="testResults[src.id].ms" style="color:#555;"> · {{ testResults[src.id].ms }}ms</span>
+                        <span v-if="testResults[src.id].note"> · {{ testResults[src.id].note }}</span>
+                    </span>
+                </div>
+                <div class="status-row" v-else-if="!src.enabled" style="border-top:none;margin-top:0;padding-top:0;">
+                    <div class="status-dot unknown"></div>
+                    <span class="status-text">该源已禁用，不参与校验</span>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <!-- 操作按钮 -->
+    <div class="actions">
+        <button class="btn btn-secondary" @click="loadConfig" :disabled="saving || loading">
+            🔄 刷新
+        </button>
+        <button class="btn btn-primary" @click="saveConfig" :disabled="saving || loading">
+            {{ saving ? '保存中...' : '💾 保存配置' }}
+        </button>
+    </div>
+
+    <div v-if="msg" :class="['msg', msgOk ? 'msg-ok' : 'msg-err']">{{ msg }}</div>
+</div>
+
+<script src="vue.global.min.js"></script>
+<script>
+const { createApp, ref, reactive, onMounted } = Vue;
+// 同源访问：Windows 本地跑是 localhost:8000，容器里是 NAS 的 IP:8200
+const API = window.location.origin;
+
+createApp({
+    setup() {
+        const sources = ref([]);
+        const scrape = reactive({ timeout: 15, default_delay: 0.5, default_retry: 1 });
+        const loading = ref(false);
+        const saving = ref(false);
+        const checking = ref(false);
+        const testing = reactive({});   // source_id -> true while testing
+        const testResults = ref({});    // source_id -> {ok, label, ms, note}
+        const msg = ref('');
+        const msgOk = ref(false);
+
+        const loadConfig = async () => {
+            loading.value = true;
+            msg.value = '';
+            try {
+                const resp = await fetch(`${API}/sources`);
+                const data = await resp.json();
+                sources.value = data.sources || [];
+                Object.assign(scrape, data.scrape || {});
+                testResults.value = {};  // 加载新配置后清除测试结果
+            } catch (e) {
+                msg.value = '加载失败: ' + e.message;
+                msgOk.value = false;
+            } finally {
+                loading.value = false;
+            }
+        };
+
+        const saveConfig = async () => {
+            saving.value = true;
+            msg.value = '';
+            try {
+                const resp = await fetch(`${API}/sources`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ scrape, sources: sources.value })
+                });
+                const data = await resp.json();
+                msg.value = data.message || '保存成功';
+                msgOk.value = true;
+            } catch (e) {
+                msg.value = '保存失败: ' + e.message;
+                msgOk.value = false;
+            } finally {
+                saving.value = false;
+            }
+        };
+
+        const testSource = async (src) => {
+            testing[src.id] = true;
+            testResults.value[src.id] = null;
+            try {
+                const resp = await fetch(`${API}/sources/test`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ id: src.id, url: src.url })
+                });
+                const result = await resp.json();
+                let ok = result.reachable;
+                let label = ok ? '可访问' : '不可访问';
+                if (result.status === 200) label = '✅ 正常';
+                else if (result.status === 403) label = '⚠️ 403 有反爬';
+                else if (result.error) label = '❌ ' + result.error;
+                testResults.value[src.id] = {
+                    ok,
+                    label,
+                    ms: result.time_ms,
+                    note: result.note || '',
+                };
+            } catch (e) {
+                testResults.value[src.id] = { ok: false, label: '❌ 请求失败', ms: 0, note: '' };
+            } finally {
+                testing[src.id] = false;
+            }
+        };
+
+        const checkAllSources = async () => {
+            checking.value = true;
+            // 清空所有测试结果
+            testResults.value = {};
+            // 重置所有 testing 状态
+            for (const src of sources.value) {
+                testing[src.id] = false;
+            }
+            try {
+                const resp = await fetch(`${API}/sources/test-all`, { method: 'POST' });
+                const data = await resp.json();
+                for (const r of (data.results || [])) {
+                    testResults.value[r.id] = {
+                        ok: r.reachable,
+                        label: r.reachable
+                            ? (r.status === 200 ? '✅ 正常' : '⚠️ ' + r.status)
+                            : (r.error || '❌ 连接失败'),
+                        ms: r.time_ms,
+                        note: r.note || '',
+                    };
+                    testing[r.id] = false;
+                }
+            } catch (e) {
+                // 如果批量接口失败，fallback 到逐个测试
+                const promises = sources.value
+                    .filter(s => s.enabled && s.url)
+                    .map(src => (async () => {
+                        testing[src.id] = true;
+                        await testSource(src);
+                    })());
+                await Promise.all(promises);
+            } finally {
+                checking.value = false;
+            }
+        };
+
+        const getTestClass = (id) => {
+            const r = testResults.value[id];
+            if (!r) return '';
+            if (r.ok) return 'ok';
+            if (r.label.includes('超时')) return 'timeout';
+            return 'fail';
+        };
+
+        onMounted(() => {
+            loadConfig();
+        });
+
+        return {
+            sources, scrape, loading, saving, checking, testing,
+            testResults, msg, msgOk,
+            loadConfig, saveConfig, testSource, checkAllSources, getTestClass,
+        };
+    }
+}).mount('#app');
+</script>
+</body>
+</html>

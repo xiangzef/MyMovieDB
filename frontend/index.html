@@ -2069,6 +2069,8 @@
 
 <!-- Vue CDN + MD5: 加版本号强制刷新缓存 -->
 <script src="https://cdn.bootcdn.net/ajax/libs/vue/3.4.27/vue.global.prod.min.js?v=20260401"></script>
+<!-- CDN 不可达时回落到同目录的本地副本，否则整页只剩一行报错。NAS 上 DNS 偶尔抽风时靠它兜底 -->
+<script>window.Vue || document.write('<script src="vue.global.min.js"><\/script>');</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/blueimp-md5/2.19.0/js/md5.min.js?v=20260401"></script>
 <script>
 // Vue/MD5 加载诊断
@@ -2094,7 +2096,8 @@ const calcVisiblePages = (current, total) => {
 try {
 createApp({
     setup() {
-        const API = 'http://localhost:8000';
+        // 同源访问：Windows 本地跑是 localhost:8000，容器里是 NAS 的 IP:8200
+        const API = window.location.origin;
         
         // 用户管理
         const currentUser = ref(null);

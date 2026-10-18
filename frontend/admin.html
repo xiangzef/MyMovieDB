@@ -364,12 +364,14 @@
 </div>
 
 <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script>window.Vue || document.write('<script src="vue.global.min.js"><\/script>');</script>
 <script>
 const { createApp, ref, computed, onMounted } = Vue;
 
 createApp({
     setup() {
-        const API = 'http://localhost:8000';
+        // 同源访问：Windows 本地跑是 localhost:8000，容器里是 NAS 的 IP:8200
+        const API = window.location.origin;
         const token = ref(localStorage.getItem('token') || '');
         
         const users = ref([]);

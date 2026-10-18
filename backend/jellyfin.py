@@ -270,14 +270,24 @@ def scan_jellyfin_directory(directory: str) -> List[Dict]:
 
             # 处理 NFO 匹配
             # ① 精确匹配已在上一步处理（nfo_path 已设置）
-            # ② 基础番号匹配
+            # ② 基础番号匹配：尝试去除 NFO 文件名的后缀（如 -UC, -C）进行匹配
             if not nfo_path and nfo_candidates:
+                # 优先尝试：去除目录名后缀（如目录是 SSIS-251-C）
                 base_code = nfo_suffix_re.sub('', dir_name)
                 if base_code.upper() != dir_name.upper():
                     for stem, nfo_full_path in nfo_candidates:
                         if stem.upper() == base_code.upper():
                             nfo_path = nfo_full_path
                             break
+
+                # 备选：去除 NFO 文件名的后缀（如 NFO 是 SSIS-251-UC.nfo 但目录是 SSIS-251）
+                if not nfo_path:
+                    for stem, nfo_full_path in nfo_candidates:
+                        nfo_base = nfo_suffix_re.sub('', stem)
+                        if nfo_base.upper() == dir_name.upper():
+                            nfo_path = nfo_full_path
+                            break
+
                 # ③ 兜底：使用第一个
                 if not nfo_path and nfo_candidates:
                     nfo_path = nfo_candidates[0][1]

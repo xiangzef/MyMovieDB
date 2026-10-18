@@ -174,9 +174,14 @@
                                 <button class="btn" @click="checkInvalidCodes" :disabled="loading">检查</button>
                             </div>
                             <div class="card">
-                                <h3>🎬 无视频影片详情</h3>
-                                <p>列出所有无视频关联的影片（可查看所有）</p>
+                                <h3>📦 无视频影片</h3>
+                                <p>有刮削信息但没有关联本地视频的影片（含 Jellyfin 元数据但无文件）</p>
                                 <button class="btn" @click="findNoVideoMovies" :disabled="loading">查看全部</button>
+                            </div>
+                            <div class="card">
+                                <h3>📁 Jellyfin 无文件元数据</h3>
+                                <p>Jellyfin 导入 movies 表但 local_videos 无对应视频文件的记录</p>
+                                <button class="btn" @click="checkJellyfinNoVideo" :disabled="loading">查看列表</button>
                             </div>
                             <div class="card">
                                 <h3>🔗 视频路径状态</h3>
@@ -441,6 +446,22 @@ SELECT * FROM movies WHERE code = 'WAT-005';" @keydown.ctrl.enter="executeSql"><
                         this.checkResult = { type: 'no_video_movies', data: data.scraped_only || [] };
                     } catch (e) {
                         this.checkResult = { type: 'no_video_movies', data: [], error: e.message };
+                    }
+                    this.loading = false;
+                },
+
+                async checkJellyfinNoVideo() {
+                    this.loading = true;
+                    try {
+                        const response = await fetch('/api/admin/jellyfin-no-video');
+                        const data = await response.json();
+                        this.checkResult = {
+                            type: 'jellyfin_no_video',
+                            data: data.records || [],
+                            summary: `共 ${data.total || 0} 条无视频文件的 Jellyfin 元数据`
+                        };
+                    } catch (e) {
+                        this.checkResult = { type: 'jellyfin_no_video', data: [], error: e.message };
                     }
                     this.loading = false;
                 },

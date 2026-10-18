@@ -1083,6 +1083,7 @@ def init_local_sources_table():
             video_count INTEGER DEFAULT 0,
             last_scan_at TEXT,
             is_jellyfin INTEGER DEFAULT 0,
+            windows_path TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -1092,6 +1093,13 @@ def init_local_sources_table():
     if "is_jellyfin" not in existing_columns:
         try:
             cursor.execute("ALTER TABLE local_sources ADD COLUMN is_jellyfin INTEGER DEFAULT 0")
+        except Exception:
+            pass
+
+    # 添加 windows_path 字段（用于「点击播放时把容器内 Linux 路径翻译成 Windows 可读形式」）
+    if "windows_path" not in existing_columns:
+        try:
+            cursor.execute("ALTER TABLE local_sources ADD COLUMN windows_path TEXT")
         except Exception:
             pass
 
@@ -1132,6 +1140,18 @@ def init_local_videos_table():
             print("  + local_videos.is_jellyfin 列已添加")
         except Exception:
             pass  # 已存在则忽略
+
+    # 添加 Jellyfin 导出的图片路径列。建表语句里漏了这三列，
+    # 而 get_all_movies / get_search_movies / get_local_videos 都
+    # SELECT lv.fanart_path, lv.poster_path, lv.thumb_path，
+    # 从零建出来的库上这三个接口会全部 500（no such column: lv.fanart_path）。
+    for col_name in ('fanart_path', 'poster_path', 'thumb_path'):
+        if col_name not in existing_lv_cols:
+            try:
+                cursor.execute(f"ALTER TABLE local_videos ADD COLUMN {col_name} TEXT")
+                print(f"  + local_videos.{col_name} 列已添加")
+            except Exception:
+                pass  # 已存在则忽略
 
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_local_videos_code ON local_videos(code)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_local_videos_source ON local_videos(source_id)")
@@ -1272,7 +1292,8 @@ def get_local_sources() -> list:
     cursor = conn.cursor()
 
     cursor.execute("""
-        SELECT id, path, name, enabled, video_count, last_scan_at, created_at
+        SELECT id, path, name, enabled, video_count, last_scan_at, is_jellyfin,
+               windows_path, created_at
         FROM local_sources
         ORDER BY created_at DESC
     """)
@@ -1288,12 +1309,47 @@ def get_local_source_by_id(source_id: int) -> Optional[dict]:
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT id, path, name, enabled, video_count, last_scan_at, created_at
+        SELECT id, path, name, enabled, video_count, last_scan_at, is_jellyfin,
+               windows_path, created_at
         FROM local_sources WHERE id = ?
     """, (source_id,))
     row = cursor.fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+def update_local_source_windows_path(source_id: int, windows_path: Optional[str]) -> bool:
+    """更新某个本地视频源的 windows_path 字段。返回是否找到行。"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE local_sources SET windows_path = ? WHERE id = ?",
+        (windows_path, source_id),
+    )
+    affected = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return affected > 0
+
+
+def find_local_source_for_path(path: str) -> Optional[dict]:
+    """按路径最长前缀匹配找到所属的 local_source 行。"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, path, name, enabled, is_jellyfin, windows_path
+        FROM local_sources
+        WHERE enabled = 1
+        ORDER BY LENGTH(path) DESC
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    norm = path.rstrip("/\\")
+    for row in rows:
+        prefix = (row["path"] or "").rstrip("/\\")
+        if prefix and (norm == prefix or norm.startswith(prefix + "/") or norm.startswith(prefix + "\\")):
+            return dict(row)
+    return None
 
 
 def delete_local_source(source_id: int) -> bool:
@@ -2189,7 +2245,8 @@ def get_local_sources_with_jellyfin() -> list:
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT id, path, name, enabled, video_count, last_scan_at, is_jellyfin, created_at
+        SELECT id, path, name, enabled, video_count, last_scan_at, is_jellyfin,
+               windows_path, created_at
         FROM local_sources
         ORDER BY created_at DESC
     """)

@@ -1,0 +1,14 @@
+# 容器版依赖：在 requirements.txt 基础上去掉三样。
+#
+# pystray / pyinstaller —— Windows 托盘与打包专用，Linux 上装不上也用不到。
+# openai-whisper —— 会带进约 2GB 的 torch；语音翻译功能在容器里默认关闭，
+#                    需要时用 docker build --build-arg INSTALL_WHISPER=1 打开。
+fastapi==0.103.2
+uvicorn[standard]==0.22.0
+requests==2.31.0
+beautifulsoup4==4.12.3
+lxml
+python-dotenv==0.21.1
+deep-translator>=1.11.0
+Pillow
+cloudscraper

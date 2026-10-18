@@ -48,7 +48,17 @@ def migrate():
             print("[Migration] ⏭️ local_sources.is_jellyfin 字段已存在，跳过")
         else:
             print(f"[Migration] ❌ 添加 local_sources.is_jellyfin 失败: {e}")
-    
+
+    # 3.5 local_sources 表增加 windows_path 字段（点击播放时容器内 Linux 路径翻译成 Windows 可读形式）
+    try:
+        cursor.execute("ALTER TABLE local_sources ADD COLUMN windows_path TEXT")
+        print("[Migration] ✅ local_sources.windows_path 字段添加成功")
+    except sqlite3.OperationalError as e:
+        if "duplicate column" in str(e).lower():
+            print("[Migration] ⏭️ local_sources.windows_path 字段已存在，跳过")
+        else:
+            print(f"[Migration] ❌ 添加 local_sources.windows_path 失败: {e}")
+
     # 4. 检查并添加 movies 表其他可能缺失的字段
     existing_columns = [col[1] for col in cursor.execute("PRAGMA table_info(movies)")]
     

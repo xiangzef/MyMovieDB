@@ -185,6 +185,61 @@ def _crop_poster_from_right(fanart: Image, target_width: int, target_height: int
 
 ---
 
+## 🔴 缺陷 #5：local_videos 建表漏列 → /movies、/search、/local-videos 全部 500
+
+**严重程度**: 高
+**首次发现**: 2026-10-18（NAS 首次部署时暴露）
+
+### 现象
+NAS 部署后界面所有计数为 0。直接打接口：`/movies`、`/search`、`/local-videos` 返回 **500**，
+而 `/categories/stats`、`/local-videos/stats` 返回 200（值全 0）。
+
+### 根本原因（Root Cause）
+
+`init_local_videos_table()` 的 `CREATE TABLE` 语句里没有 `fanart_path` / `poster_path` / `thumb_path`，
+事后补列的逻辑只写了 `is_jellyfin`。而下面这些查询都依赖这三列：
+
+- `get_all_movies()`   `SELECT m.*, lv.fanart_path, lv.poster_path, lv.thumb_path`
+- `get_search_movies()` 同上
+- `get_local_videos()` `SELECT v.fanart_path AS local_fanart, v.poster_path AS local_poster, ...`
+
+从零建出来的库上执行这些 SQL 直接抛
+`sqlite3.OperationalError: no such column: lv.fanart_path`。
+异常发生在 `get_all_movies()` **内部**，接口层的 per-record `try/except` 接不住，整个请求 500。
+
+Windows 开发库的 `data/movies.db` 历史上被别的代码补过这三列，所以本地一直正常 ——
+问题只在「全新建库」这个场景暴露，测不出来。
+
+### 修复方案
+
+`init_local_videos_table()` 的补列循环里加上这三列，写法与 `is_jellyfin` 保持一致：
+
+```python
+for col_name in ('fanart_path', 'poster_path', 'thumb_path'):
+    if col_name not in existing_lv_cols:
+        try:
+            cursor.execute(f"ALTER TABLE local_videos ADD COLUMN {col_name} TEXT")
+            print(f"  + local_videos.{col_name} 列已添加")
+        except Exception:
+            pass  # 已存在则忽略
+```
+
+### 验证
+新建空库 → `init_all_tables()` → 三列齐全 → `get_all_movies` / `get_local_videos` 的 SQL 均通过；
+二次调用 `init_all_tables()` 幂等无报错；开发库数据未受影响（1198 / 1125）。
+
+### 顺带记录：跨平台迁移数据库的两个坑
+
+1. **SQLite 库里存的是绝对路径**。Windows 的 `X:\jellyfin\...` 在 Linux 容器里一条都解析不了。
+   且 `local_videos.path` 是 **UNIQUE 键**，不改写就重新扫描会插出一整份重复数据。
+   映射必须按 `local_sources` 的完整前缀，不能按盘符一对一，否则 `Z:\影视库\a.mp4`
+   会被错改成 `/media/影视库/影视库/a.mp4`。脚本：`scripts/migrate_db_to_nas.py`。
+2. **封面缓存路径不用改**。前端 `localToApi` 会用正则截出 `covers\<code>\<file>` 尾段，
+   重写成 `/covers/<code>/<file>`，后端从 `/app/data/covers` 读。
+   把 `data/covers/` 跟数据库一起拷过去即可。
+
+---
+
 ## 🟡 不合理代码习惯清单
 
 ### 1. 全局变量污染（避免）

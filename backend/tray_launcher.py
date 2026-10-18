@@ -104,7 +104,7 @@ def start_server():
                 app=fastapi_app,
                 host="127.0.0.1",
                 port=8000,
-                log_level="warning",
+                log_level="info",     # 开发时用 info，生产（windowed）用 warning
                 use_colors=False,   # 禁用彩色输出，避免无控制台时崩溃
                 access_log=False,
             )
