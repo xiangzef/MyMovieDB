@@ -6,6 +6,7 @@ import configparser
 import json
 import os
 from pathlib import Path
+from typing import Optional
 
 # config.ini 所在目录（即 backend/）
 _CONFIG_DIR = Path(__file__).parent

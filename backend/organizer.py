@@ -19,11 +19,13 @@
 
 import re
 import os
+import json
 import shutil
 import logging
 import asyncio
 import subprocess
 import threading
+import unicodedata
 from pathlib import Path
 from typing import Optional, List, Callable, Iterator, Generator
 from datetime import datetime
@@ -328,6 +330,72 @@ def _escape_xml(text: str) -> str:
     return text
 
 
+# 演员名里不该出现的包装字符。历史上 actors 字段存的是 JSON 字符串，
+# 某些读取路径拿到的不是单个名字而是整个 JSON 片段，于是 NFO 里写成
+# <name>"["石原希望"]"</name>，peach / Jellyfin 读出来就带着方括号和引号。
+# 只剥「首尾」的这些字符 —— 名字中间的括号（RUU（十束るう））是艺名的一部分，要留。
+_NAME_WRAPPERS = '[]{}<>「」『』\'"`　'
+
+
+def clean_performer_name(name) -> str:
+    """把单个演员名洗成裸名字：剥掉 JSON 包装、引号、方括号与首尾空白。
+
+    `["石原希望"]` -> `石原希望`；`"あやみ旬　"` -> `あやみ旬`
+    只动包装符号，不改名字本身，所以 `RUU（十束るう）` 这类含括号的艺名不受影响
+    （括号在中间不在首尾）。
+    """
+    if name is None:
+        return ""
+    # 用 NFC 而不是 NFKC：NFKC 会把 `（十束るう）` 里的全角括号折成半角，
+    # 下面的剥离循环就会把结尾的 `)` 当包装字符吃掉，名字被截断。
+    text = unicodedata.normalize("NFC", str(name)).strip()
+    previous = None
+    # 反复剥：JSON 片段外层可能套了好几层引号和方括号
+    while text and text != previous:
+        previous = text
+        text = text.strip()
+        text = text.strip(_NAME_WRAPPERS)
+        # 剥离后是形如 "名字",  名字" 的逗号列表时留第一个
+        if "," in text:
+            text = text.split(",")[0]
+    return text.strip()
+
+
+def _clean_actor_list(value) -> list:
+    """把 actors 字段（list / JSON 字符串 / 逗号串）统一成干净的演员名列表。
+
+    空名、剥完没剩东西的、以及广告文案（★Ada…★）都丢掉。
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("[") or text.startswith("{"):
+            try:
+                parsed = json.loads(text)
+                value = parsed if isinstance(parsed, list) else [text]
+            except (ValueError, TypeError):
+                value = [text]
+        else:
+            value = [text]
+    if not isinstance(value, list):
+        value = [value]
+
+    names = []
+    for entry in value:
+        if isinstance(entry, dict):
+            entry = entry.get("name") or entry.get("japanese_name") or ""
+        name = clean_performer_name(entry)
+        if not name:
+            continue
+        # 广告 / 商品链接不是人名
+        if any(mark in name for mark in ("★", "☆", "_sdk")):
+            continue
+        if name not in names:
+            names.append(name)
+    return names
+
+
 def generate_organize_nfo(
     movie_data: dict,
     target_dir: str,
@@ -359,19 +427,13 @@ def generate_organize_nfo(
         if movie_data.get("plot"):
             lines.append(f"  <plot>{_escape_xml(movie_data['plot'])}</plot>")
 
-        actors = movie_data.get("actors", [])
-        if isinstance(actors, str):
-            actors = [a.strip() for a in actors.split(",") if a.strip()]
-        for actor in (actors or []):
+        for actor in _clean_actor_list(movie_data.get("actors")):
             lines.append("  <actor>")
             lines.append(f"    <name>{_escape_xml(actor)}</name>")
             lines.append("    <type>Actress</type>")
             lines.append("  </actor>")
 
-        actors_male = movie_data.get("actors_male", [])
-        if isinstance(actors_male, str):
-            actors_male = [a.strip() for a in actors_male.split(",") if a.strip()]
-        for actor in (actors_male or []):
+        for actor in _clean_actor_list(movie_data.get("actors_male")):
             lines.append("  <actor>")
             lines.append(f"    <name>{_escape_xml(actor)}</name>")
             lines.append("    <type>Actor</type>")

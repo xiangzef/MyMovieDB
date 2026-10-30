@@ -397,20 +397,15 @@ def generate_nfo(movie_data: dict, nfo_path: Path, local_video_path: str = None)
             lines.append(f'  <director>{escape_xml(movie_data.get("director"))}</director>')
 
         # 演员
-        actors = movie_data.get("actors", [])
-        if isinstance(actors, str):
-            actors = [a.strip() for a in actors.split(",") if a.strip()]
-        for actor in (actors or []):
+        from organizer import _clean_actor_list  # 同一套清洗，避免两条写出路径不一致
+        for actor in _clean_actor_list(movie_data.get("actors")):
             lines.append(f'  <actor>')
             lines.append(f'    <name>{escape_xml(actor)}</name>')
             lines.append(f'    <type>Actress</type>')
             lines.append(f'  </actor>')
 
         # 男演员
-        actors_male = movie_data.get("actors_male", [])
-        if isinstance(actors_male, str):
-            actors_male = [a.strip() for a in actors_male.split(",") if a.strip()]
-        for actor in (actors_male or []):
+        for actor in _clean_actor_list(movie_data.get("actors_male")):
             lines.append(f'  <actor>')
             lines.append(f'    <name>{escape_xml(actor)}</name>')
             lines.append(f'    <type>Actor</type>')

@@ -149,12 +149,21 @@ def init_db():
     cursor.execute("SELECT id FROM users WHERE username = 'admin'")
     if not cursor.fetchone():
         from hashlib import sha256
-        password_hash = sha256("123".encode()).hexdigest()
+        import os
+        # 初始密码优先取环境变量 MYMOVIEDB_ADMIN_PASSWORD；没给就随机生成一个并打印。
+        # 原来这里硬编码 "123"，任何一次全新部署都会留下 admin/*** 的弱口令。
+        default_pwd = os.environ.get("MYMOVIEDB_ADMIN_PASSWORD") or ""
+        if not default_pwd:
+            import secrets
+            default_pwd = secrets.token_urlsafe(12)
+            print(f"⚠️  已创建 admin 账户，随机初始密码: {default_pwd} —— 请登录后立即修改")
+        else:
+            print("✅ 创建默认 admin 账户（密码取自 MYMOVIEDB_ADMIN_PASSWORD）")
+        password_hash = sha256(default_pwd.encode()).hexdigest()
         cursor.execute("""
             INSERT INTO users (username, password_hash, role, is_active)
             VALUES (?, ?, 'admin', 1)
         """, ('admin', password_hash))
-        print("✅ 创建默认 admin 账户（密码: 123）")
     
     # 创建 tokens 表（Token 持久化）
     cursor.execute("""

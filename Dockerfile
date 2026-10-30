@@ -7,7 +7,9 @@
 # 与 requirements.txt 的差别：pystray / pyinstaller 只服务 Windows 托盘与打包，
 # 容器里没有桌面，去掉；openai-whisper 会带进约 2GB 的 torch，语音翻译在容器里
 # 不可用（/translate/check-tools 会如实报缺），默认不装，要用再开构建参数。
-FROM python:3.11-slim
+# 基础镜像走 daocloud 镜像源：NAS 直连 registry-1.docker.io 会超时（约 12s 无响应）。
+ARG BASE_IMAGE=docker.m.daocloud.io/library/python:3.11-slim
+FROM ${BASE_IMAGE}
 
 ARG INSTALL_WHISPER=0
 
@@ -26,12 +28,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # 依赖单独一层，改代码时不会失效重装。
+# 依赖用本地 wheel 离线安装：NAS 到 pypi 的单连接带宽只有 ~15 KB/s，
+# 直接 pip install 会卡在 pillow（7.1MB）上几十分钟下不完。
+# wheel 在 PC 上用下面的命令取好（Windows 能直连 aliyun 源），传到 NAS 的 wheels/ 目录：
+#   pip download -d wheels \
+#     --platform manylinux_2_28_x86_64 --platform manylinux2014_x86_64 --platform any \
+#     --python-version 3.11 --implementation cp --only-binary=:all: \
+#     -i https://mirrors.aliyun.com/pypi/simple/ \
+#     -r requirements.docker.txt
 COPY requirements.docker.txt ./requirements.docker.txt
-RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple \
-        --extra-index-url https://pypi.org/simple \
+COPY wheels/ /tmp/wheels/
+RUN pip install --no-cache-dir --no-index --find-links=/tmp/wheels \
         -r requirements.docker.txt \
     && if [ "$INSTALL_WHISPER" = "1" ]; then \
-         pip install --no-cache-dir -i https://pypi.org/simple openai-whisper; \
+         pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ openai-whisper; \
        fi
 
 COPY backend/ ./backend/
