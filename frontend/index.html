@@ -895,9 +895,8 @@
             <h1>🎬 MyMovieDB</h1>
             <div class="header-right">
                 <span class="badge">后端: {{ backendStatus }}</span>
-                <a href="settings.html" class="btn btn-sm" style="background:#17a2b8;color:#fff;border:none;border-radius:6px;padding:6px 10px;text-decoration:none;font-size:13px;margin-right:8px;">
-                    ⚙️ 设置
-                </a>
+                <!-- 设置入口 -->
+                <a href="settings.html" class="btn btn-sm btn-secondary">⚙️ 设置</a>
                 <!-- 用户信息 -->
                 <div v-if="currentUser" class="user-menu">
                     <a href="profile.html" class="user-name-link">

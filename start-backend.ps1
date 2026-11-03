@@ -2,6 +2,9 @@
 $ErrorActionPreference = "Continue"
 $originalDir = Get-Location
 
+# 设置控制台为 UTF-8 编码（解决中文乱码）
+chcp 65001 > $null
+
 Write-Host "=== MyMovieDB 后端启动脚本 ===" -ForegroundColor Cyan
 Write-Host ""
 
