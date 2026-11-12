@@ -168,8 +168,12 @@ def download_and_crop_cover(cover_url: str, code: str, save_dir: Path) -> Option
         return None
 
     try:
-        # 下载原图
-        response = requests.get(cover_url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        # 下载原图（dmm 图床需要 Referer，否则 403）
+        response = requests.get(cover_url, timeout=15, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Referer": "https://www.dmm.co.jp/",
+        })
         if response.status_code != 200:
             logger.warning(f"封面下载失败: {cover_url}")
             return None

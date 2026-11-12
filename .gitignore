@@ -71,3 +71,16 @@ tests/
 
 # API keys (不提交)
 backend/.env
+
+# 一次性元数据包（不入库）
+scripts/tmdb_pack_*.json
+
+# 备份与一次性报告（不入库）
+backups/*.db
+data/*_report.json
+data/*salvage*.json
+data/rename_manifest_*.json
+
+# AV 削刮器已拆为独立仓库 F:\github\javcli（此处不再跟踪副本）
+javcli/
+scrape.bat

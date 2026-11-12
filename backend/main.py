@@ -251,12 +251,11 @@ def _is_valid_av_code(prefix: str, number: str, full_match: str = "", filename: 
     
     # 前缀必须在已知厂商列表中 OR 不能是混合前缀
     # 排除明显不合理的字母组合
-    # 如果前缀包含常见排除词的一部分（如 WEB, HD, BD, 720, 1080），则排除
-    for exclude in ['WEB', 'HD', 'BD', '720', '1080', '4K', 'UHD', 'SD', 'HD']:
-        if prefix.startswith(exclude) or prefix.endswith(exclude):
-            # 但如果整个前缀就是排除词本身，可以接受（如 HD 本身）
-            if prefix != exclude:
-                return False
+    # 注意：只做【精确匹配】排除（EXCLUDE_PREFIXES 在函数开头已检查）。
+    # 勿用 startswith/endswith —— 会误伤 JBD(-BD)、RBD(-BD)、SDSI(SD 开头)
+    # 这类真实番号前缀（2026-11 修复，之前误拒导致这些番号扫描不到）
+    if prefix in ['WEB', 'HD', 'SD', '4K', 'UHD', '1080', '720']:
+        return False
     
     # 排除以数字开头的组合（如 123ABC）
     if re.match(r'^\d', prefix):
